@@ -13,7 +13,9 @@ import {
   type Assignment, type AudioState, type ClientMessage, type ClientRecord, type HealthSnapshot,
   type ModeKind, type ModeParams, type RoomState, type ScenePlan, type ServerMessage, type StemRole,
 } from "@hive/protocol";
+import { createBrowserAudioEngine } from "./audio";
 import { ClockModel, CtxMapper, localNow } from "./clock";
+import type { StartDecision } from "./scheduler";
 import { Emitter, persistedClientId, RoomTransport } from "./transport";
 import type {
   CalibrationResult, ConnectionState, HiveAudio, HiveCalibration, HiveClient, HiveClientOptions, SyncStatus,
@@ -35,7 +37,22 @@ export interface AudioEngine extends HiveAudio {
   /** Schedules a calibration click to leave the speaker at this server time. */
   scheduleClick(serverTimeToExecute: number, spec: import("@hive/protocol").ClickSpec): void;
   calibration: HiveCalibration;
+  /**
+   * Scheduling diagnostics for /diag, the measurement rig and tests. Not part of the frozen
+   * `HiveClient` surface. `startCtxForZero` is the ctx time at which track position 0 leaves this
+   * device's speaker — map it back through `CtxMapper.serverTimeForCtx` and two phones become
+   * comparable in the only frame that matters, the server clock.
+   */
+  readonly debug: EngineDebug;
   dispose(): void;
+}
+
+export interface EngineDebug {
+  startCtxForZero: number | null;
+  lastDecision: StartDecision | null;
+  playing: boolean;
+  ctxState: string | null;
+  loadedTrackId: string | null;
 }
 
 /** Placeholder engine for B2: connects and syncs, plays nothing, and says so. */
@@ -61,6 +78,7 @@ export function nullAudioEngine(): AudioEngine {
     applyRoom: () => {},
     lastCorrectionMs: 0,
     outputLatencyMs: null,
+    debug: { startCtxForZero: null, lastDecision: null, playing: false, ctxState: null, loadedTrackId: null },
     scheduleClick: () => {},
     calibration: {
       async runAsReference(): Promise<CalibrationResult> {
@@ -73,9 +91,16 @@ export function nullAudioEngine(): AudioEngine {
 }
 
 export interface CreateHiveClientInternals {
-  /** Injected by B3/B8 and by tests; defaults to the null engine. */
+  /**
+   * Injected by tests (and by the rig) to supply a fake AudioContext. Defaults to the real browser
+   * engine where Web Audio exists, and to the null engine where it does not — so importing the package
+   * in Node or Bun never throws at module load.
+   */
   createAudioEngine?: (ctx: AudioEngineContext) => AudioEngine;
 }
+
+/** True when this runtime can actually play audio (a browser with Web Audio). */
+const hasWebAudio = (): boolean => typeof globalThis.AudioContext !== "undefined" && typeof document !== "undefined";
 
 /** What an audio engine gets handed: the clock, the mapper, a sender and the emitter. */
 export interface AudioEngineContext {
@@ -86,6 +111,8 @@ export interface AudioEngineContext {
   send: (msg: ClientMessage) => void;
   clientId: string;
   room: () => RoomState | null;
+  /** `localNow()`, injected so a test can drive time without touching performance.now(). */
+  now: () => number;
 }
 
 export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveClientInternals = {}): HiveClient {
@@ -122,7 +149,8 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     localNow,
   );
 
-  const audio: AudioEngine = (internals.createAudioEngine ?? nullAudioEngine)({
+  const makeEngine = internals.createAudioEngine ?? (hasWebAudio() ? createBrowserAudioEngine : nullAudioEngine);
+  const audio: AudioEngine = makeEngine({
     opts,
     clock,
     mapper,
@@ -130,6 +158,7 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     send: (m) => transport.send(m),
     clientId,
     room: () => room,
+    now: localNow,
   });
 
   const status = (): SyncStatus => ({

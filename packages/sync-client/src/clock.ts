@@ -247,4 +247,15 @@ export class CtxMapper {
   ctxTimeForNow(serverTime: number, ctxNow: number, at: number = localNow()): number {
     return ctxNow + (serverTime - this.clock.serverNow(at)) / 1000;
   }
+
+  /**
+   * Inverse of `ctxTimeFor`: the server time at which a given ctx time occurs. This is how a test (or
+   * the rig) converts "when this phone will emit track position 0" back into the shared clock, which is
+   * the only frame in which two phones can be compared.
+   */
+  serverTimeForCtx(ctxTime: number): number | null {
+    const base = this.localToCtxSec;
+    if (base == null) return null;
+    return (ctxTime - base) * 1000 + (this.clock.offsetMs ?? 0);
+  }
 }
