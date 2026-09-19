@@ -66,7 +66,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B9 (stretch) | server | todo | |
 | F0 | frontend | done | `evidence/frontend/F0-diag.png` |
 | F1 | frontend | 🟡 needs human (phones) | `evidence/frontend/F1-ready.png`, `F1-phones.md` |
-| F2 | frontend | todo | |
+| F2 | frontend | done | `evidence/frontend/F2-lobby.png`, `F2-stage.png` |
 | F3 | frontend | todo | |
 | F4 | frontend | todo | |
 | F5 | frontend | todo | |

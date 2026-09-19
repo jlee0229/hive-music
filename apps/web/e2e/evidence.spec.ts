@@ -31,3 +31,18 @@ test.describe("F1 evidence", () => {
     await page.screenshot({ path: path.join(OUT, "F1-ready.png") });
   });
 });
+
+test.describe("F2 evidence", () => {
+  test.use({ mockScenario: "join.json" });
+
+  test("F2 evidence: Lobby + Stage screenshots", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 980 });
+    await page.goto("/h/BZQ7");
+    await expect(page.getByText("Synthetic 60")).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F2-lobby.png") });
+
+    await page.getByRole("button", { name: /Start the hive|Start anyway/ }).click();
+    await expect(page.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F2-stage.png") });
+  });
+});

@@ -50,8 +50,9 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
   if (!clientRef.current) {
     clientRef.current = createClient(clientOpts);
     optsRef.current = clientOpts;
-  } else if (!everConnectedRef.current && optsRef.current?.name !== clientOpts.name) {
-    // Join screen: the name can change while the user is still typing, before the tap that connects.
+  } else if (!everConnectedRef.current && (optsRef.current?.name !== clientOpts.name || optsRef.current?.hostKey !== clientOpts.hostKey)) {
+    // Pre-connect only: the player's name can still change while typing, and the host's key
+    // arrives asynchronously from POST /rooms after the first render.
     clientRef.current = createClient(clientOpts);
     optsRef.current = clientOpts;
   }
