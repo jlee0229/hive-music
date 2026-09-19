@@ -59,7 +59,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B2 | engine | done | `evidence/backend/B2-clock-test.txt` |
 | B3 | engine | done | `evidence/backend/B3-scheduler-test.txt` (phone-only half 🟡 for INT) |
 | B4 | engine | todo | |
-| B5 | engine (B5e) + server (B5s) | todo | |
+| B5 | engine (B5e) + server (B5s) | B5e done | `evidence/backend/B5-engine.md` (B5s is the server agent's) |
 | B6 | server | todo | |
 | B7 | server | todo | |
 | B8 | engine (B8e) + server (B8s) | todo | |

@@ -11,7 +11,7 @@
  * music should be right now and starts there. Late join, reconnect, a resumed tab and a seek are all
  * the same code path.
  */
-import { evaluatePattern, type Assignment, type Pattern, type Transport } from "@hive/protocol";
+import { evaluatePattern, RESYNC_THRESHOLD_MS, type Assignment, type Pattern, type Transport } from "@hive/protocol";
 import type { ClockModel, CtxMapper } from "./clock";
 
 // ---- the slice of Web Audio this file needs ---------------------------------
@@ -137,7 +137,15 @@ interface AppliedKey {
   trackId: string;
   transportState: Transport["state"];
   serverTimeAtTrackZero: number;
+  /**
+   * The timing half of the assignment. A change here moves where the music should be, so it is a
+   * reschedule and not a ramp — but only once it is worth the interruption, hence the threshold below.
+   */
+  timingShiftMs: number;
 }
+
+/** delayMs − compensationMs: the net shift of this device's playhead, in ms. */
+const timingShiftOf = (a: Assignment | null): number => (a?.delayMs ?? 0) - (a?.compensationMs ?? 0);
 
 export class Scheduler {
   /** Master gain: local mute only, never part of the assignment. */
@@ -150,6 +158,8 @@ export class Scheduler {
   private assignment: Assignment | null = null;
   private patternTimer: ReturnType<typeof setInterval> | null = null;
   private patternWrittenUntilMs = 0;
+  /** Serialized last pattern: ROOM_STATE arrives at 2 Hz and must not restart identical automation. */
+  private patternKey: string | null = null;
   private muted = false;
 
   lastDecision: StartDecision | null = null;
@@ -223,12 +233,19 @@ export class Scheduler {
       trackId: opts.trackId,
       transportState: "playing",
       serverTimeAtTrackZero: transport.serverTimeAtTrackZero,
+      timingShiftMs: timingShiftOf(assignment),
     };
+    /*
+     * A timing shift under RESYNC_THRESHOLD_MS is left to the drift check (B4) to absorb; a bigger one
+     * is rescheduled now. This matters for WAVE: its delayMs is up to 300 ms, so switching into WAVE
+     * mid-song has to move the playhead immediately or the mode does nothing audible.
+     */
     const same =
       this.applied !== null &&
       this.applied.trackId === key.trackId &&
       this.applied.transportState === key.transportState &&
-      this.applied.serverTimeAtTrackZero === key.serverTimeAtTrackZero;
+      this.applied.serverTimeAtTrackZero === key.serverTimeAtTrackZero &&
+      Math.abs(this.applied.timingShiftMs - key.timingShiftMs) <= RESYNC_THRESHOLD_MS;
 
     if (same && this.playing && !opts.force) {
       // Gains and patterns may still have changed — that is a ramp, never a restart (B5e).
@@ -289,12 +306,14 @@ export class Scheduler {
     for (const source of branch.sources.values()) source.start(decision.whenCtx, decision.offsetSec);
 
     this.branches.push(branch);
-    this.startPatternAutomation(assignment?.pattern ?? null);
+    // A new branch needs its own curve even when the pattern object is unchanged.
+    this.startPatternAutomation(assignment?.pattern ?? null, { restart: true });
     return branch;
   }
 
   /** Stops every branch with a short fade so a pause does not click. */
   stopAll(_reason = "stop"): void {
+    this.patternKey = null;
     const at = this.deps.ctx.currentTime;
     for (const branch of this.branches) {
       if (branch.stopped) continue;
@@ -340,7 +359,10 @@ export class Scheduler {
    * `evaluatePattern(pattern, trackTimeMs)` and writes the next PATTERN_LOOKAHEAD_MS of values ahead of
    * the playhead, so WAVE and STROBE travel across the room without a single per-tick packet.
    */
-  private startPatternAutomation(pattern: Pattern | null): void {
+  private startPatternAutomation(pattern: Pattern | null, opts: { restart?: boolean } = {}): void {
+    const key = pattern ? JSON.stringify(pattern) : null;
+    if (key === this.patternKey && !opts.restart) return;
+    this.patternKey = key;
     if (!pattern) {
       this.stopPatternAutomation();
       for (const branch of this.branches) {

@@ -208,6 +208,34 @@ describe("audio engine lifecycle", () => {
     expect(master.gain.events.some((e) => e.kind === "setTarget" && e.value === 1)).toBe(true);
   });
 
+  test("a mode switch mid-song reloads nothing and re-announces nothing", async () => {
+    // The B5e check, at the engine level rather than the scheduler's: ORCHESTRA must be three gain
+    // ramps, not a second download and not a second AUDIO_READY.
+    const h = engineHarness();
+    h.engine.applyRoom(h.room, h.assignment);
+    await h.engine.unlock();
+
+    const playingRoom: RoomState = { ...h.room, transport: { state: "playing", serverTimeAtTrackZero: h.serverNow + 600 } };
+    h.engine.applyRoom(playingRoom, h.assignment);
+    expect(h.engine.debug.playing).toBe(true);
+    const sourcesAfterPlay = h.ctx.sources.length;
+    const readyCount = () => h.sent.filter((m) => (m as { type: string }).type === "AUDIO_READY").length;
+    expect(readyCount()).toBe(1);
+
+    const orchestra: Assignment = {
+      ...h.assignment,
+      label: "drums",
+      role: "drums",
+      gainsDb: { drums: 0, bass: -60, vocals: -60, other: -60 },
+    };
+    h.engine.applyRoom({ ...playingRoom, mode: { kind: "ORCHESTRA", params: {} } }, orchestra);
+
+    expect(h.ctx.sources.length).toBe(sourcesAfterPlay); // no reload
+    expect(readyCount()).toBe(1); // no second announcement
+    expect(h.engine.state).toBe("ready"); // and it never dropped back to loading
+    expect(h.engine.debug.playing).toBe(true);
+  });
+
   test("dispose tears the context down", async () => {
     const h = engineHarness();
     await h.engine.unlock();
