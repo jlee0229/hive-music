@@ -71,6 +71,21 @@ test.describe("F4 evidence", () => {
   });
 });
 
+test.describe("F9 evidence", () => {
+  test.use({ mockScenario: "restart.json" });
+  test.setTimeout(45_000);
+
+  test("F9 evidence: reconnect banner screenshot", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/j/BZQ7");
+    await page.getByPlaceholder("Your name").fill("Restart Test");
+    await page.getByRole("button", { name: "Tap to join" }).click();
+    await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Reconnecting to the hive")).toBeVisible({ timeout: 25_000 });
+    await page.screenshot({ path: path.join(OUT, "F9-restart.png") });
+  });
+});
+
 test.describe("F6 evidence", () => {
   test.use({ mockScenario: "party-12.json" });
 

@@ -21,7 +21,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const [name, setName] = useState(() => getPlayerName());
   const [joinRequested, setJoinRequested] = useState(false);
   const [joining, setJoining] = useState(false);
-  const [removedReason, setRemovedReason] = useState<string | null>(null);
+  const [removed, setRemoved] = useState<{ heading: string; detail: string } | null>(null);
   const device = detectDevice();
 
   const { client, room, me, connection, status, audio, connect } = useHiveClient({
@@ -33,9 +33,10 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
 
   useEffect(() => {
     return client.on("error", (code, message) => {
-      if (code === "KICKED") setRemovedReason(message || "Removed from hive");
-      if (code === "NO_ROOM") setRemovedReason("This hive no longer exists.");
+      if (code === "KICKED") setRemoved({ heading: "Removed from hive", detail: message || "The host removed this phone." });
+      if (code === "NO_ROOM") setRemoved({ heading: "Hive not found", detail: `No hive is running at code ${roomCode}.` });
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
 
   async function handleJoin() {
@@ -53,7 +54,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   }
 
   let view: View = "join";
-  if (removedReason) view = "removed";
+  if (removed) view = "removed";
   else if (joinRequested && audio.state !== "locked") {
     if (room?.calibration.state === "countdown" || room?.calibration.state === "running") view = "calibrating";
     else if (room?.transport.state === "playing") view = "playing";
@@ -63,8 +64,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   if (view === "removed") {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="font-display text-3xl font-bold">Removed from hive</h1>
-        <p style={{ color: "var(--muted)" }}>{removedReason}</p>
+        <h1 className="font-display text-3xl font-bold">{removed!.heading}</h1>
+        <p style={{ color: "var(--muted)" }}>{removed!.detail}</p>
         <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>

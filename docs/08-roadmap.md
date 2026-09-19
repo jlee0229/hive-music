@@ -73,7 +73,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | F6 | frontend | done | `evidence/frontend/F6-vibe.png` |
 | F7 | frontend | todo | |
 | F8 | frontend | todo | |
-| F9 | frontend | todo | |
+| F9 | frontend | 🟡 needs human (Vercel/Fly creds) | `evidence/frontend/F9-restart.png`, `F9-deploy.md` |
 
 ## Cut list
 

@@ -6,6 +6,13 @@ export const metadata: Metadata = {
   title: "HiveMusic",
   description: "Turn a crowd's phones into one distributed speaker.",
   manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-512.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" }],
+  },
 };
 
 export const viewport: Viewport = {
