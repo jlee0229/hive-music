@@ -2,8 +2,9 @@
 
 No Fly credentials and no Docker daemon in this environment (`docker info` fails: no `/var/run/docker.sock`),
 so the actual `fly launch`/`fly deploy` and a real image build are 🟡 **needs human** — see `docs/09-deploy.md`
-§A, unchanged and still accurate against the current `infra/Dockerfile` / `infra/fly.toml` / env vars
-(`PORT`, `CORS_ORIGIN`, `ROOM_FIXED_CODE`, `VIBE_MODEL`, `ANTHROPIC_API_KEY`, `NEXT_PUBLIC_WEB_URL`).
+§A, accurate against the current `infra/Dockerfile` / root `fly.toml` (moved there since this evidence was
+first drafted, so every `fly` command needs no `--config`/`--dockerfile` flags) / env vars (`PORT`,
+`CORS_ORIGIN`, `ROOM_FIXED_CODE`, `VIBE_MODEL`, `ANTHROPIC_API_KEY`, `NEXT_PUBLIC_WEB_URL`).
 
 What was verified instead, matching every step the Dockerfile and the workflow run:
 
@@ -39,21 +40,21 @@ What was verified instead, matching every step the Dockerfile and the workflow r
    working absolute URLs built from the request origin.
 
 4. **`.github/workflows/deploy-fly.yml` reviewed**: triggers on push to `main` touching
-   `apps/server/**`, `packages/protocol/**`, `fixtures/**`, `infra/**`, `package.json`, `bun.lock`, or itself;
-   `flyctl deploy --remote-only --config infra/fly.toml --dockerfile infra/Dockerfile` with `FLY_API_TOKEN`
-   from secrets; gated on `vars.FLY_DEPLOY_DISABLED != 'true'`. Valid YAML, matches `docs/09-deploy.md`'s
-   manual `fly deploy` invocation exactly, so the human's one-time `fly launch` (step A2–A3) is all that's
-   needed before every merge to `main` auto-deploys.
+   `apps/server/**`, `packages/protocol/**`, `fixtures/**`, `infra/**`, root `fly.toml`, `package.json`,
+   `bun.lock`, or itself; `flyctl deploy --remote-only` (no flags needed now that `fly.toml` is at the repo
+   root, with `dockerfile = "infra/Dockerfile"` inside it) with `FLY_API_TOKEN` from secrets; gated on
+   `vars.FLY_DEPLOY_DISABLED != 'true'`. Valid YAML, matches `docs/09-deploy.md`'s manual `fly deploy`
+   invocation exactly, so the human's one-time `fly launch` (step A2–A3) is all that's needed before every
+   merge to `main` auto-deploys.
 5. **`docs/09-deploy.md` re-read against the current code**: accurate as written — no changes needed.
 
 ## What the human must do
 
-1. `fly auth login`, `fly launch --copy-config --config infra/fly.toml --dockerfile infra/Dockerfile
-   --no-deploy` from the repo root on `main` (docs/09-deploy.md §A2).
+1. `fly auth login`, `fly launch --copy-config --no-deploy` from the repo root on `main` (`fly.toml` is
+   already there; docs/09-deploy.md §A2). Accept region `ewr` (Fly retired `bos` for new machines).
 2. `fly secrets set ROOM_FIXED_CODE=BZQ7 VIBE_MODEL=claude-sonnet-5 NEXT_PUBLIC_WEB_URL=https://<vercel-domain>`
    (+ `ANTHROPIC_API_KEY` if a Console key with credit is available — see B6 evidence).
-3. `fly deploy --config infra/fly.toml --dockerfile infra/Dockerfile`, then `curl https://<app>.fly.dev/health`
-   → `{"ok":true,...}`.
+3. `fly deploy --dockerfile infra/Dockerfile`, then `curl https://<app>.fly.dev/health` → `{"ok":true,...}`.
 4. `fly tokens create deploy -x 999999h` → GitHub secret `FLY_API_TOKEN` so `deploy-fly.yml` deploys every
    merge to `main` automatically.
 5. A real phone: join `https://<vercel-domain>/j/BZQ7` and confirm it reaches "Synced ±N ms" against the
