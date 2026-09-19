@@ -31,7 +31,7 @@ fly tokens create deploy -x 999999h    # copy the whole token, including the lea
 ```
 
 Two facts to remember: rooms live in memory, so **never scale to more than one machine**; and `auto_stop_machines = false`
-in `infra/fly.toml` is what keeps the room alive between songs — do not "optimize" it away.
+in `fly.toml` is what keeps the room alive between songs — do not "optimize" it away.
 
 ## B. Vercel — the PWA (`apps/web`)
 

@@ -62,7 +62,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8080          # REST base; production: http
 NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws          # WebSocket; production: wss://hivemusic-server.fly.dev/ws
 
 # apps/server
-PORT=8080                                          # Bun.serve port (Fly sets 8080 via infra/fly.toml)
+PORT=8080                                          # Bun.serve port (Fly sets 8080 via fly.toml)
 VIBE_MODEL=claude-sonnet-5                         # Claude model for the Vibe Director
 ANTHROPIC_API_KEY=                                 # empty → rules fallback
 REPLICATE_API_TOKEN=                               # B9 upload path only
