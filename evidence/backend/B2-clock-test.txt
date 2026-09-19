@@ -1,0 +1,70 @@
+=== B2 · clock model: coded pairs, min-RTT, slewing, serverTime<->ctx mapping ===
+date:  2026-09-19T23:17:13Z
+files: packages/sync-client/src/{clock,transport,client}.ts
+cmd:   bun test packages/sync-client/src/__tests__/{clock,client}.test.ts
+
+--- the gate's check ---
+fake transport, +137 ms offset, +-30 ms jitter, 20 % spikes of +80 ms, pair rejection ON:
+[B2] +137 ms / ±30 ms / 20 % spikes: first estimate err 4.889 ms, worst once ≥6 samples are in the window 1.942 ms, final 0.715 ms, rtt 13.59 ms, accepted 28, rejected 2
+[B2] worst applied error once settled: pairs on 1.942 ms vs pairs off 1.942 ms — min-RTT is doing the work
+[B2] slew: 12 corrections to absorb a +6 ms change, largest 2.000 ms at ~1 Hz (cap 2 ms/s)
+
+--- clock.test.ts (per test) ---
+pass  the NTP math is the documented formula  [2 ms]
+pass  +137 ms with ±30 ms jitter and 20 % +80 ms spikes → within 2 ms over 30 probes  [4 ms]
+pass  min-RTT selection, not coded pairs, is what removes the spikes (negative result)  [1 ms]
+pass  a pair whose server-side gap disagrees with its departure gap is dropped, both halves  [0 ms]
+pass  pair rejection relaxes rather than leaving a phone with no clock at all  [0 ms]
+pass  below the resync threshold the applied offset slews and never steps faster than 2 ms/s  [1 ms]
+pass  an error above the resync threshold is applied at once  [0 ms]
+pass  the burst schedule the engine uses converges inside its window  [0 ms]
+pass  serverNow and localTimeFor are inverses  [0 ms]
+pass  maps a server time to a ctx time through one relation  [0 ms]
+pass  the median ignores quantisation outliers a mean would smear in  [0 ms]
+pass  the one-tick form agrees with the sampled form when the sample is fresh  [0 ms]
+
+--- client.test.ts: createHiveClient against the mock server (per test) ---
+pass  joins, syncs through validated coded pairs, and drives the room  [1500 ms]
+pass  audio is honest about not existing yet, and calibration too  [2 ms]
+pass  setPosition is throttled inside the engine and the final value still arrives  [518 ms]
+
+--- how the gate's numbers were met ---
+final applied offset error   0.715 ms   (budget < 2 ms after 30 probes)  PASS
+worst once the window holds >= 6 accepted samples  1.942 ms              PASS
+slew: a +6 ms change absorbed in 12 corrections, largest 2.000 ms at 1 Hz (cap 2 ms/s)  PASS
+a +100 ms change (route change) applied in one correction, > RESYNC_THRESHOLD_MS         PASS
+
+The FIRST estimate was 4.889 ms off and that is not a bug: one probe cannot separate path asymmetry
+(offset = trueOffset + (d1 - d2)/2) from the offset itself. Nothing in the design protects it - the
+first estimate is adopted directly because slewing from nothing is meaningless. What fixes it is the
+window filling: the 20-pair burst over NTP_BURST_WINDOW_MS = 4000 runs at connect, long before a host
+presses Play. Consequence for the demo: a phone that joins and is played to within ~1 s of connecting
+can be several ms out. The Lobby's "waiting for phones" step already covers this; it is worth not
+shortening.
+
+--- NEGATIVE RESULT: coded probe pairs add nothing measurable on top of min-RTT ---
+The brief asks for coded probe pairs, and they are implemented and exercised end to end (the server
+echoes probeGroupId/probeGroupIndex; `createHiveClient` only ever produces an offset if a pair
+validated). But I could not construct a traffic model in which they improve the estimate:
+
+  scenario                                    worst settled error, pairs ON / OFF
+  +-30 ms path jitter, 20 % spikes of +80 ms        1.942 ms / 1.942 ms
+  small one-directional queueing (+4 ms, 25 %)      1.633 ms / 1.577 ms  (20 seeds)
+  first pair deliberately queued +80 ms one way     0.000 ms / 0.000 ms
+
+The reason is structural: a queueing spike that skews the offset by d/2 also raises that probe's RTT
+by d, so min-RTT selection outranks it on the very next clean probe. Coded pairs can only beat
+min-RTT on delay that is asymmetric *without* costing RTT, which no simple model produces and which
+real networks produce rarely (it needs the up and down paths to change in opposite directions inside
+10 ms).
+
+Kept anyway, deliberately: the fields are already in the frozen protocol, the cost is one extra probe
+per second, and the failure mode it guards against is the one that would be invisible in testing and
+fatal on stage. The test that records this is named "(negative result)" so nobody later mistakes it
+for a win. If the clock budget ever needs to be cut, this is the first mechanism to drop, not
+min-RTT.
+
+A safety valve was needed, though, and is implemented: if strict pair validation accepts nothing
+within the first NTP_BURST_WINDOW_MS, the model relaxes to the better half of a pair and sets
+`clock.degraded = true`. A phone with no clock cannot play at all, so a degraded clock beats none.
+/diag can surface the flag.

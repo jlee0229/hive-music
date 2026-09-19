@@ -56,9 +56,9 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 |---|---|---|---|
 | B0 | server | done | `evidence/server/B0-routes.txt` |
 | B1 | server | done | `evidence/server/B1-room-test.txt` |
-| B2 | engine | todo | |
-| B3 | engine | todo | |
-| B4 | engine | todo | |
+| B2 | engine | done | `evidence/backend/B2-clock-test.txt` |
+| B3 | engine | done | `evidence/backend/B3-scheduler-test.txt` (phone-only half 🟡 for INT) |
+| B4 | engine | done (table 🟡) | `evidence/backend/B4-drift.md` · INT handover `evidence/backend/INT-first-test.md` |
 | B5 | engine (B5e) + server (B5s) | server half done | `evidence/server/B5-scenes.txt` |
 | B6 | server | needs human | `evidence/server/B6-vibe.md` (rules path done; LLM path untested, no `ANTHROPIC_API_KEY`) |
 | B7 | server | needs human | `evidence/server/B7-deploy.md` (Dockerfile/workflow verified logically + clean-checkout boot; no Fly/Docker here) |

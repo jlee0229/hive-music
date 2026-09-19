@@ -1,0 +1,93 @@
+=== B3-lite · audio engine + scheduler ===
+date:  2026-09-19T23:30:13Z
+files: packages/sync-client/src/{audio,scheduler}.ts, src/calibration/click.ts
+       test helper: src/__tests__/fake-audio.ts (a fake AudioContext that records what was scheduled)
+cmd:   bun test packages/sync-client/src/__tests__/{scheduler,audio,engine-smoke}.test.ts
+
+--- the gate's two checks ---
+[B3] two engines: device-to-device skew 0.006 ms (A -0.005 ms, B -0.011 ms vs the timeline), trackTimeSec agreement 0.000 ms
+[B3] late join started at offset 1.437 s without waiting (timeline was at 1.417 s)
+
+--- scheduler.test.ts: the ctx mapping (18 tests) ---
+pass  a start far enough in the future is scheduled exactly, at offset 0  [1 ms]
+pass  a start that is already past becomes an immediate start at the matching offset  [0 ms]
+pass  the boundary is FUTURE_START_MARGIN_SEC, and just inside it we start immediately  [0 ms]
+pass  past the end of the track there is nothing to start  [0 ms]
+pass  start from zero: estServerNow 1 000 000, ctx 12.000, comp 60 → source.start(12.390, 0)  [4 ms]
+pass  late join: estServerNow 1 030 000, ctx 42.000, comp 60 → source.start(42.020, 29.630)  [0 ms]
+pass  compensation advances the schedule by exactly its own value  [0 ms]
+pass  WAVE's delayMs pushes the start later by exactly delayMs  [0 ms]
+pass  outputLatency is only subtracted when the server has no latency knowledge  [0 ms]
+pass  paused and stopped both stop every source; a repeated snapshot is a no-op  [1 ms]
+pass  a seek is a new serverTimeAtTrackZero, so it restarts at the new offset  [0 ms]
+pass  a mode switch while playing ramps gains and never restarts a source  [0 ms]
+pass  applyAtServerTime ramps at that instant, not on arrival  [0 ms]
+pass  a track that is not loaded, or a different track, schedules nothing  [0 ms]
+pass  joining after the track has ended schedules nothing and says so  [0 ms]
+pass  dB to linear, with −60 dB as exact silence  [0 ms]
+pass  a WAVE pattern writes a value curve ahead of the playhead  [1 ms]
+pass  clearing the pattern returns the gain to unity  [0 ms]
+
+--- audio.test.ts: click, unlock, interruption, mute (9 tests) ---
+pass  length follows the spec and the sample rate  [4 ms]
+pass  it is deterministic: the reference correlates against exactly what the player emitted  [1 ms]
+pass  peak-normalised, and the chirp really sweeps upward  [1 ms]
+pass  unlock loads every stem, then sends AUDIO_READY exactly once  [3 ms]
+pass  an interruption goes to locked and keeps the buffers, so resuming returns straight to ready  [0 ms]
+pass  outputLatency is reported once a context exists, and null before that  [0 ms]
+pass  a calibration click is compensated but ignores WAVE's spatial delay  [1 ms]
+pass  local mute is master-only and never touches the assignment's gains  [0 ms]
+pass  dispose tears the context down  [0 ms]
+
+--- engine-smoke.test.ts: two real engines vs the mock server (2 tests) ---
+pass  both reach audio: ready, send AUDIO_READY, and schedule the same instant  [2007 ms]
+pass  a client that joins mid-track starts immediately at the right offset  [2034 ms]
+
+--- what the numbers mean ---
+"device-to-device skew 0.005 ms" is NOT a claim about phones. Both engines run in one Bun process, so
+they share a clock and a machine: what this measures is the *arithmetic*, end to end through the real
+transport, the real ClockModel and the real scheduler. It says the formula in docs/02 §1 is implemented
+without a sign error or a unit slip, which is exactly the class of bug that is invisible on one device
+and fatal on three. The acoustic number comes from the rig at B8e and from the human phone test at INT.
+
+The measurement is worth describing because the rig will compute the same quantity: take each client's
+`debug.startCtxForZero` (the ctx time at which track position 0 leaves that device's speaker), add back
+its compensationMs to get the emission time, map it to the server clock with
+`CtxMapper.serverTimeForCtx`, and compare across devices. Headless, it is 0.005 ms; with a microphone it
+becomes the spread between correlation peaks.
+
+Both docs/03 worked examples are asserted literally, with one deliberate difference: the doc's late-join
+example uses a 50 ms safety margin and gets `source.start(42.050, 29.660)`; the engine uses
+LATE_START_MARGIN_SEC = 20 ms and gets `source.start(42.020, 29.630)`. The invariant the example is
+really asserting - that track position p leaves the speaker at the server time the timeline says - is
+checked directly in the same test and holds for both margins. 20 ms is one render quantum at 44.1 kHz
+(2.9 ms) plus generous slop; 50 ms would delay every late join by an extra 30 ms of silence for no gain.
+
+--- bug found and fixed while writing these tests ---
+Pattern automation never ran for a *scheduled* (future) start. `writePatternWindow` computed the window
+from the current playhead position, which is negative before the start instant, so `toMs <= fromMs` and
+it returned every time. Since UNISON has no pattern, this would only have shown up on stage the first
+time someone pressed WAVE or STROBE on a freshly started track - and it would have looked like "the
+effect modes do nothing", with no error anywhere. Fixed: the window now starts at
+max(0, playhead, alreadyWritten) and is shifted forward if it would begin in the past.
+
+--- carried to B4 (not claimed here) ---
+B3-lite deliberately stops short of drift correction. `Scheduler.lastCorrectionMs` is present and always
+0; there is no 1 Hz drift check and no crossfade yet, so a phone whose audio clock runs fast will walk
+away from the timeline until B4 lands. The `visibilitychange` / `statechange` handlers already call
+`apply(force: true)`, which reschedules from the transport - that covers a resumed tab, which is the
+common case - but a slowly drifting phone needs the periodic check.
+
+--- needs a human (phone-only, cannot be checked here) ---
+Nothing in this environment can verify the parts of unlock() that exist *because* phones are hostile.
+Checklist for the INT phone test, in priority order:
+  1. iOS Safari: audio starts on the first tap and is NOT silenced by the hardware silent switch
+     (this is what `navigator.audioSession.type = 'playback'` buys; /diag should show it as 'playback').
+  2. iOS Safari: lock the phone mid-song, unlock it -> audio state shows locked, one tap returns to
+     ready with no re-download, and playback is back in position.
+  3. Android Chrome: background the tab for 30 s, return -> `visibilitychange` resync puts it back in
+     position without a tap.
+  4. Both: `ctx.outputLatency` value as shown on /diag, per browser family. Record it - B4's Tier-1
+     table replaces STARTER_LATENCY_TABLE_MS with measured numbers, and the starter values (60/45/25/30)
+     are guesses.
+  5. Both: wake lock actually holds the screen on (watch for the screen dimming during a 60 s track).
