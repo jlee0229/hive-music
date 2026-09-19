@@ -175,12 +175,14 @@ export function detectDevice(userAgent: string = typeof navigator !== "undefined
 }
 
 /**
- * Creates the engine. NOT IMPLEMENTED YET — the backend agent replaces this body (gates B2–B4, B8).
- * The frontend agent builds every screen against the mock server using the types above and
- * `createStubClient` from "./stub" (re-exported here), which speaks the real protocol but plays no audio.
+ * Creates the engine. Transport + clock are live (gate B2); the audio graph arrives with gate B3 and
+ * until then `audio.unlock()` throws rather than reporting a readiness it cannot deliver. For UI work
+ * against the mock server, keep using `createStubClient`, which speaks the full protocol with no audio.
  */
-export function createHiveClient(_opts: HiveClientOptions): HiveClient {
-  throw new Error("@hive/sync-client is not implemented yet: backend agent, see agents/BACKEND-AGENT.md gate B2");
-}
+export { createHiveClient } from "./client";
+export type { AudioEngine, AudioEngineContext, CreateHiveClientInternals } from "./client";
 
-export { createStubClient, ClockModel } from "./stub";
+export { createStubClient } from "./stub";
+/** The clock model and the serverTime↔AudioContext mapping (exported for the rig, /diag and tests). */
+export { ClockModel, CtxMapper, SLEW_RATE_MS_PER_SEC, localNow } from "./clock";
+export { reconnectDelayMs } from "./transport";
