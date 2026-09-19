@@ -8,6 +8,10 @@ import { getHostKey, setHostKey } from "@/lib/hive/storage";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
+import { HiveMap } from "@/components/HiveMap";
+import { Legend } from "@/components/Legend";
+import { PlayerSheet } from "@/components/PlayerSheet";
+import { PlayersDrawer } from "@/components/PlayersDrawer";
 
 export default function HostPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = use(params);
@@ -20,6 +24,8 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const [tracks, setTracks] = useState<TrackLibraryEntry[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [startAnywayReady, setStartAnywayReady] = useState(false);
+  const [sheetClientId, setSheetClientId] = useState<string | null>(null);
+  const [showPlayers, setShowPlayers] = useState(false);
 
   useEffect(() => {
     if (hostKeyState) return;
@@ -45,7 +51,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     };
   }, [roomCode, hostKeyState]);
 
-  const { client, room, connection, audio } = useHiveClient({
+  const { client, room, connection, audio, health, healthServerTime } = useHiveClient({
     roomCode,
     kind: "host",
     plays: speakerOn,
@@ -128,23 +134,48 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
         <TransportBar room={room} clock={client.clock} host={client.host} />
 
-        <div className="rounded-2xl border p-4 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
-          Mode chips, the Hive Map, the vibe box and tuning are built in gates F4–F7. This transport bar and the players
-          list below already run against the live room.
+        <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
+          Mode chips and the vibe box are built in gates F5–F6; tuning in F7.
         </div>
 
-        <div className="flex flex-col gap-2">
-          {Object.values(room.clients)
-            .filter((c) => c.kind === "player")
-            .map((p) => (
-              <div key={p.id} className="flex items-center justify-between rounded-xl border px-3 py-2 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-                <span>{p.name}</span>
-                <span className="font-mono" style={{ color: "var(--muted)" }}>
-                  {p.assignment?.label ?? "—"}
-                </span>
-              </div>
-            ))}
+        <div className="flex justify-center">
+          <HiveMap room={room} health={health} healthServerTime={healthServerTime} host={client.host} onOpenSheet={setSheetClientId} />
         </div>
+
+        <Legend />
+
+        <div className="flex gap-2.5">
+          <button
+            disabled
+            className="flex h-13 grow items-center justify-center rounded-2xl border font-semibold opacity-50"
+            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+          >
+            Tune the hive
+          </button>
+          <button
+            onClick={() => setShowPlayers(true)}
+            className="flex h-13 grow items-center justify-center rounded-2xl border font-semibold"
+            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+          >
+            Players
+          </button>
+        </div>
+
+        {sheetClientId && room.clients[sheetClientId] ? (
+          <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} onClose={() => setSheetClientId(null)} />
+        ) : null}
+        {showPlayers ? (
+          <PlayersDrawer
+            room={room}
+            health={health}
+            healthServerTime={healthServerTime}
+            onSelect={(id) => {
+              setShowPlayers(false);
+              setSheetClientId(id);
+            }}
+            onClose={() => setShowPlayers(false)}
+          />
+        ) : null}
       </main>
     );
   }

@@ -59,3 +59,14 @@ test.describe("F3 evidence", () => {
     await page.screenshot({ path: path.join(OUT, "F3-playing.png") });
   });
 });
+
+test.describe("F4 evidence", () => {
+  test.use({ mockScenario: "party-12.json" });
+
+  test("F4 evidence: Hive Map screenshot", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.goto("/h/BZQ7");
+    await expect(page.locator('svg[aria-label^="Hive map"] g[data-client-id]')).toHaveCount(12, { timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F4-map.png") });
+  });
+});
