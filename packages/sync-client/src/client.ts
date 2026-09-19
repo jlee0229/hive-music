@@ -36,6 +36,8 @@ export interface AudioEngine extends HiveAudio {
   readonly outputLatencyMs: number | null;
   /** Schedules a calibration click to leave the speaker at this server time. */
   scheduleClick(serverTimeToExecute: number, spec: import("@hive/protocol").ClickSpec): void;
+  /** The server sends CALIBRATION_PLAN to the reference only; the engine hands it to `runAsReference`. */
+  onCalibrationPlan(plan: Extract<ServerMessage, { type: "CALIBRATION_PLAN" }>): void;
   calibration: HiveCalibration;
   /**
    * Scheduling diagnostics for /diag, the measurement rig and tests. Not part of the frozen
@@ -80,6 +82,7 @@ export function nullAudioEngine(): AudioEngine {
     outputLatencyMs: null,
     debug: { startCtxForZero: null, lastDecision: null, playing: false, ctxState: null, loadedTrackId: null },
     scheduleClick: () => {},
+    onCalibrationPlan: () => {},
     calibration: {
       async runAsReference(): Promise<CalibrationResult> {
         throw new Error("@hive/sync-client: calibration lands in gate B8");
@@ -197,6 +200,9 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
           audio.scheduleClick(msg.serverTimeToExecute, msg.action.clickSpec);
           ev.emit("calibrationClick", msg.serverTimeToExecute);
         }
+        break;
+      case "CALIBRATION_PLAN":
+        audio.onCalibrationPlan(msg);
         break;
       case "ERROR":
         ev.emit("error", msg.code, msg.message);

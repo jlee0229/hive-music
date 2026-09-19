@@ -16,6 +16,7 @@ import {
 } from "@hive/protocol";
 import type { AudioEngine, AudioEngineContext } from "./client";
 import { renderClick } from "./calibration/click";
+import { runAsReference, type CalibrationPlan } from "./calibration/reference";
 import { Scheduler, type BufferLike, type CtxLike } from "./scheduler";
 import type { CalibrationProgress, CalibrationResult, HiveCalibration } from "./index";
 
@@ -56,6 +57,8 @@ export function createBrowserAudioEngine(
   let lastRoom: RoomState | null = null;
   let lastAssignment: Assignment | null = null;
   let listenersBound = false;
+  let pendingPlan: CalibrationPlan | null = null;
+  let planWaiter: ((plan: CalibrationPlan) => void) | null = null;
 
   const setState = (next: AudioState): void => {
     if (state === next) return;
@@ -110,6 +113,17 @@ export function createBrowserAudioEngine(
         resync("visible");
       }
     });
+  }
+
+  /** Creates the AudioContext and the scheduler on first use. Safe to call inside a gesture. */
+  function ensureContext(): AudioContext {
+    if (!ctx) {
+      ctx = makeContext();
+      bindContextState(ctx);
+      scheduler = new Scheduler({ ctx: ctx as unknown as CtxLike, clock, mapper, now: host.now });
+      scheduler.setMuted(muted);
+    }
+    return ctx;
   }
 
   function bindContextState(current: AudioContext): void {
@@ -181,9 +195,45 @@ export function createBrowserAudioEngine(
     }
   }
 
+  /**
+   * The plan may arrive before or after `runAsReference` starts waiting for it: the host taps Calibrate,
+   * which both sends CALIBRATION_START and opens the microphone, and the server's reply races the
+   * `getUserMedia` prompt. So a plan that arrives first is held.
+   */
+  const awaitPlan = (timeoutMs: number): Promise<CalibrationPlan> =>
+    new Promise((resolve, reject) => {
+      if (pendingPlan) {
+        const plan = pendingPlan;
+        pendingPlan = null;
+        return resolve(plan);
+      }
+      const timer = setTimeout(() => {
+        planWaiter = null;
+        reject(new Error("CALIBRATION_PLAN did not arrive"));
+      }, timeoutMs);
+      planWaiter = (plan) => {
+        clearTimeout(timer);
+        planWaiter = null;
+        resolve(plan);
+      };
+    });
+
   const calibration: HiveCalibration = {
-    async runAsReference(_o?: { onProgress?: (p: CalibrationProgress) => void }): Promise<CalibrationResult> {
-      throw new Error("@hive/sync-client: runAsReference lands in gate B8e");
+    async runAsReference(o?: { onProgress?: (p: CalibrationProgress) => void }): Promise<CalibrationResult> {
+      // The Calibrate tap doubles as unlock() for the host (docs/04): the worklet has to run in a
+      // context that is already running, and this is the gesture we are inside.
+      const context = ensureContext();
+      if (context.state !== "running") await context.resume();
+      return runAsReference(
+        {
+          ctx: context,
+          mapper,
+          serverNow: () => clock.serverNow(),
+          awaitPlan,
+          report: (measurements) => send({ type: "CALIBRATION_REPORT", measurements }),
+        },
+        o,
+      );
     },
     renderClick: (spec: ClickSpec, sampleRate: number) => renderClick(spec, sampleRate),
   };
@@ -193,12 +243,7 @@ export function createBrowserAudioEngine(
      * Must be called from inside a tap. Everything WebKit cares about happens before the first await.
      */
     async unlock(): Promise<void> {
-      if (!ctx) {
-        ctx = makeContext();
-        bindContextState(ctx);
-        scheduler = new Scheduler({ ctx: ctx as unknown as CtxLike, clock, mapper, now: host.now });
-        scheduler.setMuted(muted);
-      }
+      const context = ensureContext();
       const nav = navigator as unknown as AudioSessionNavigator;
       // Without this, the iOS silent switch mutes Web Audio and the phone looks broken but healthy.
       if (nav.audioSession) {
@@ -210,15 +255,16 @@ export function createBrowserAudioEngine(
       }
       // A one-sample silent buffer satisfies WebKit's "you played something in a gesture" rule.
       try {
-        const silent = ctx.createBufferSource();
-        silent.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
-        silent.connect(ctx.destination);
+        const silent = context.createBufferSource();
+        silent.buffer = context.createBuffer(1, 1, context.sampleRate);
+        silent.connect(context.destination);
         silent.start(0);
       } catch {
         /* older engines: resume() alone is enough */
       }
-      await ctx.resume();
-      outputLatencyMs = typeof ctx.outputLatency === "number" && ctx.outputLatency > 0 ? ctx.outputLatency * 1000 : null;
+      await context.resume();
+      outputLatencyMs =
+        typeof context.outputLatency === "number" && context.outputLatency > 0 ? context.outputLatency * 1000 : null;
       bindLifecycle();
       void requestWakeLock();
 
@@ -291,6 +337,11 @@ export function createBrowserAudioEngine(
       const ol = useOutputLatency() ? ctx.outputLatency || 0 : 0;
       const at = mapper.ctxTimeForNow(serverTimeToExecute, ctxNow, host.now()) - comp - ol;
       source.start(Math.max(ctxNow, at));
+    },
+
+    onCalibrationPlan(plan: CalibrationPlan): void {
+      if (planWaiter) planWaiter(plan);
+      else pendingPlan = plan;
     },
 
     calibration,
