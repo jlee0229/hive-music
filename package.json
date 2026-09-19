@@ -1,0 +1,23 @@
+{
+  "name": "hive-music",
+  "private": true,
+  "packageManager": "bun@1.3.11",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "mock": "bun run --cwd packages/protocol mock",
+    "fixtures": "bun run fixtures/gen-synthetic.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "turbo": "^2",
+    "typescript": "^5.6"
+  }
+}

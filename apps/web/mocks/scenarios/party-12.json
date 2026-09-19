@@ -1,0 +1,31 @@
+{
+  "roomCode": "BZQ7",
+  "trackId": "synthetic-60s",
+  "mode": { "kind": "ORCHESTRA", "params": {} },
+  "transport": "playing",
+  "hostPlays": false,
+  "players": [
+    { "name": "Maya", "browserFamily": "ios-safari", "position": [0.25, 0.3], "health": "good", "pinnedRole": null },
+    { "name": "Jon", "browserFamily": "android-chrome", "position": [0.72, 0.28], "health": "good", "pinnedRole": null },
+    { "name": "Priya", "browserFamily": "ios-safari", "position": [0.5, 0.15], "health": "good", "pinnedRole": "vocals" },
+    { "name": "Luis", "browserFamily": "android-chrome", "position": [0.18, 0.62], "health": "warn", "pinnedRole": null },
+    { "name": "Aiko", "browserFamily": "ios-safari", "position": [0.82, 0.6], "health": "good", "pinnedRole": null },
+    { "name": "Sam", "browserFamily": "desktop-chrome", "position": [0.5, 0.5], "health": "good", "pinnedRole": null },
+    { "name": "Zoe", "browserFamily": "ios-safari", "position": [0.35, 0.8], "health": "good", "pinnedRole": null },
+    { "name": "Omar", "browserFamily": "android-chrome", "position": [0.65, 0.82], "health": "bad", "pinnedRole": null },
+    { "name": "Nia", "browserFamily": "ios-safari", "position": [0.1, 0.4], "health": "good", "pinnedRole": null },
+    { "name": "Theo", "browserFamily": "desktop-safari", "position": [0.9, 0.4], "health": "warn", "pinnedRole": null },
+    { "name": "Ivy", "browserFamily": "android-chrome", "position": [0.4, 0.45], "health": "good", "pinnedRole": null },
+    { "name": "Kai", "browserFamily": "other", "position": null, "health": "good", "pinnedRole": null }
+  ],
+  "calibration": null,
+  "scenePlan": {
+    "prompt": "calm then explode at the drop",
+    "scenes": [
+      { "atTrackSec": 0, "mode": "UNISON", "params": {}, "note": "calm" },
+      { "atTrackSec": 30, "mode": "ORCHESTRA", "params": {}, "note": "build" },
+      { "atTrackSec": 45, "mode": "WAVE", "params": { "axis": "x", "spanMs": 240 }, "note": "drop" }
+    ]
+  },
+  "chaos": null
+}

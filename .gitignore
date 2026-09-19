@@ -1,0 +1,22 @@
+# dependencies
+node_modules
+
+# build output
+.next
+dist
+.turbo
+*.tsbuildinfo
+next-env.d.ts
+
+# env
+.env
+.env.local
+.env.*.local
+
+# generated / large media (regenerate with `bun run fixtures`)
+evidence/**/*.mp4
+evidence/**/*.wav
+fixtures/tracks/**/*.wav
+
+# os
+.DS_Store

@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+.turbo
+evidence
+apps/web/.next
+apps/web/out
+fixtures/tracks/**/*.wav
+*.log
+.env
+.env.local

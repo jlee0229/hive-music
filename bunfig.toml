@@ -1,0 +1,12 @@
+# Bun config for the HiveMusic workspace.
+
+[install]
+# Bun 1.3 defaults workspaces to the isolated (pnpm-style) linker, which puts
+# packages under node_modules/.bun/ and breaks tsconfig `types: ["bun-types"]`
+# plus the hoisted layout Next/Turborepo tooling expects. Keep the classic layout.
+linker = "hoisted"
+
+[test]
+# Tests normally run per package via `bun run test` (turbo); `bun test` at the
+# root also discovers every package's *.test.ts because of this root.
+root = "."
