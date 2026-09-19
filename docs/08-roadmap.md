@@ -54,15 +54,15 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 
 | Gate | Owner | Status | Evidence |
 |---|---|---|---|
-| B0 | server | todo | |
-| B1 | server | todo | |
+| B0 | server | done | `evidence/server/B0-routes.txt` |
+| B1 | server | done | `evidence/server/B1-room-test.txt` |
 | B2 | engine | todo | |
 | B3 | engine | todo | |
 | B4 | engine | todo | |
-| B5 | engine (B5e) + server (B5s) | todo | |
-| B6 | server | todo | |
-| B7 | server | todo | |
-| B8 | engine (B8e) + server (B8s) | todo | |
+| B5 | engine (B5e) + server (B5s) | server half done | `evidence/server/B5-scenes.txt` |
+| B6 | server | needs human | `evidence/server/B6-vibe.md` (rules path done; LLM path untested, no `ANTHROPIC_API_KEY`) |
+| B7 | server | needs human | `evidence/server/B7-deploy.md` (Dockerfile/workflow verified logically + clean-checkout boot; no Fly/Docker here) |
+| B8 | engine (B8e) + server (B8s) | server half done | `evidence/server/B8-calibration.txt` |
 | B9 (stretch) | server | todo | |
 | F0 | frontend | todo | |
 | F1 | frontend | todo | |
