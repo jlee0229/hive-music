@@ -301,7 +301,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "CALIBRATION_REPORT": {
         for (const m of msg.measurements) {
           const c = room.clients[m.clientId];
-          if (!c) continue;
+          if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored, as index.ts promises
           c.calibratedOffsetMs = (c.calibratedOffsetMs ?? c.tableLatencyMs ?? 0) + m.residualMs;
           room.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
         }

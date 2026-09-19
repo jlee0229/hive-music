@@ -58,5 +58,5 @@ bun run mock --scenario apps/web/mocks/scenarios/party-12.json   # then: bun run
 
 ## Prior art we lean on
 
-[Beatsync](https://github.com/freeman-jiang/beatsync) (MIT; the NTP math and the shared-schema shape), [Snapcast](https://github.com/snapcast/snapcast)
+[Beatsync](https://github.com/freeman-jiang/beatsync) (MIT; the NTP math and the shared-schema shape), [Snapcast](https://github.com/badaix/snapcast)
 (the native sync ceiling), AmpMe (per-device latency table + nudge), BeepBeep (SenSys 2007, acoustic ranging — stretch), Demucs (stems).

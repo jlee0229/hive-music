@@ -50,7 +50,7 @@ inside the assignment, so the UI never adds these numbers itself.
 - Identity: the client generates a UUID once, keeps it in `localStorage`, and sends it in `JOIN`; the server keeps a
   disconnected record for `DISCONNECT_RETENTION_MS = 120 000` so a reconnect restores the same `joinIndex`, position and assignment.
 - Rates: `ROOM_STATE` ≤ 2 Hz (coalesced, always a full snapshot); `HEALTH` 1 Hz to hosts only; `CLIENT_STATUS` every 2 s;
-  `SET_POSITION` throttled to 10 Hz by the UI; `PING` every 20 s.
+  `SET_POSITION` throttled to 10 Hz inside the engine (the UI may call it on every pointer move); `PING` every 20 s.
 
 ## 3. Clock sync (NTP-style over the room WebSocket)
 
@@ -77,7 +77,7 @@ Discriminated on `type`. Host-only messages return `ERROR NOT_HOST` from a playe
 | `TRANSPORT` | `action: PLAY\|PAUSE\|SEEK, trackTimeSec?` | host | see §1 |
 | `SET_MODE` | `mode, params` | host | clears `scenePlan` (manual override wins) and re-plans |
 | `ASSIGN` | `clientId, role\|null` | host | pin / unpin a player's stem |
-| `SET_POSITION` | `clientId, x, y` | host | Hive Map drag; UI throttles to 10 Hz |
+| `SET_POSITION` | `clientId, x, y` | host | Hive Map drag; the engine throttles to 10 Hz |
 | `NUDGE` | `clientId, nudgeMs ∈ [−100, 100]` | host or self | folds into `compensationMs` |
 | `SET_PLAYS` | `plays` | host | "use this phone as a speaker too" |
 | `KICK` | `clientId` | host | removes the client |
