@@ -1,0 +1,39 @@
+=== B1 · room manager + WebSocket handlers ===
+date:   2026-09-19T23:04:21Z
+cmd:    bun run --cwd apps/server test   (bun test v1.3.11)
+files:  apps/server/src/{room,rooms,ws,server}.ts · test apps/server/src/__tests__/room.test.ts
+
+--- apps/server/src/__tests__/room.test.ts (per test) ---
+pass  JOIN → WELCOME → snapshot; NTP has t1 ≤ t2; host sees HEALTH; a player cannot drive the transport  [1001 ms]
+pass  SET_TRACK then PLAY puts track zero LEAD_MS ahead; PAUSE freezes the position  [2002 ms]
+pass  ROOM_STATE is coalesced to ROOM_STATE_MAX_HZ but the first change goes out immediately  [1803 ms]
+pass  disconnect + rejoin with the same clientId keeps joinIndex, position, pin and nudge  [1007 ms]
+pass  20 simultaneous joins all get WELCOME and appear in one snapshot in under 2 s  [195 ms]
+pass  NUDGE from a player is allowed for itself and refused for anyone else  [320 ms]
+pass  KICK removes the client and closes its socket  [41 ms]
+pass  SET_PLAYS makes a host a speaker and gives it an assignment  [465 ms]
+pass  calibration: the plan skips the reference and non-playing clients; only the reference may report  [3613 ms]
+pass  bad messages, unknown rooms and pre-JOIN traffic are rejected without dropping the socket  [25 ms]
+pass  a host claim without the hostKey is demoted to a player  [23 ms]
+pass  MAX_PLAYERS is a real limit  [4 ms]
+
+--- whole server package ---
+[B1] 20 simultaneous joins → WELCOME + full snapshot in 170 ms
+
+ 21 pass
+ 0 fail
+ 183 expect() calls
+Ran 21 tests across 3 files. [10.69s]
+
+--- what the gate asked for, and where it is checked ---
+3 fake clients join                     → test 1 (host + 2 players, WELCOME/isHost, full snapshot)
+t1 <= t2                                → test 1 (NTP_RESPONSE; t0 echoed, probeGroup ids echoed)
+snapshot lists them                     → test 1 (clients{}, non-playing host assignment null)
+disconnect + rejoin keeps joinIndex     → test 4 (also position, pinnedRole, nudgeMs, compensationMs)
+20 simultaneous joins complete < 2 s    → test 5 (measured, printed above)
+a player sending TRANSPORT gets NOT_HOST → test 1
+
+--- stability: 3 consecutive runs ---
+ 12 pass  0 fail 
+ 12 pass  0 fail 
+ 12 pass  0 fail 

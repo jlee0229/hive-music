@@ -47,7 +47,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | Gate | Owner | Status | Evidence |
 |---|---|---|---|
 | B0 | backend | done | `evidence/backend/B0-routes.txt` |
-| B1 | backend | todo | |
+| B1 | backend | done | `evidence/backend/B1-room-test.txt` |
 | B2 | backend | todo | |
 | B3 | backend | todo | |
 | B4 | backend | todo | |

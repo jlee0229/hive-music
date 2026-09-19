@@ -19,6 +19,12 @@ import {
 } from "@hive/protocol";
 import { serverNow } from "./clock";
 
+/**
+ * Below this matched-filter confidence a calibration residual is discarded (the sync-client API
+ * documents 0.5 as the cutoff and the mock server enforces the same number).
+ */
+export const CALIBRATION_MIN_CONFIDENCE = 0.5;
+
 /** The slice of a WebSocket the room needs; keeps the room unit-testable without a socket. */
 export interface SocketLike {
   send(data: string): unknown;
@@ -88,6 +94,10 @@ export class Room {
   playerCount(): number {
     return Object.values(this.state.clients).filter((c) => c.kind === "player").length;
   }
+  /** Connected players only — what MAX_PLAYERS is measured against (R-0), so stale records never lock the room. */
+  connectedPlayerCount(): number {
+    return Object.values(this.state.clients).filter((c) => c.kind === "player" && c.connected).length;
+  }
   connectedCount(): number {
     return Object.values(this.state.clients).filter((c) => c.connected).length;
   }
@@ -101,7 +111,7 @@ export class Room {
   /** JOIN. Restores an existing record when the clientId is known (reconnect or late refresh). */
   join(ws: SocketLike, req: JoinRequest): JoinResult {
     const existing = this.state.clients[req.clientId];
-    if (!existing && this.playerCount() >= MAX_PLAYERS) {
+    if (!existing && this.connectedPlayerCount() >= MAX_PLAYERS) {
       return { ok: false, code: "ROOM_FULL", message: `room is full (${MAX_PLAYERS})` };
     }
     // A host must present the room's hostKey; an id that is already a host stays one across reconnects.
@@ -140,8 +150,8 @@ export class Room {
       lastSeenServerTime: now,
     });
     this.touch();
-    this.replan();
-    return { ok: true, record };
+    this.replan(); // replan() rebuilds `clients`, so hand back the live record, not the pre-plan copy
+    return { ok: true, record: this.state.clients[record.id]! };
   }
 
   /** Socket closed: keep the record (retention window) but mark it disconnected. */
@@ -331,11 +341,15 @@ export class Room {
     this.markDirty();
   }
 
-  /** Accumulates residuals: calibratedOffsetMs = (calibrated ?? table ?? 0) + residual. */
+  /**
+   * Accumulates residuals: calibratedOffsetMs = (calibrated ?? table ?? 0) + residual.
+   * A peak below CALIBRATION_MIN_CONFIDENCE is noise the matched filter could not distinguish from
+   * the room; applying it would be worse than keeping the table value (sync-client's own contract).
+   */
   applyCalibrationReport(measurements: Array<{ clientId: string; residualMs: number; confidence: number }>): void {
     for (const m of measurements) {
       const c = this.state.clients[m.clientId];
-      if (!c) continue;
+      if (!c || m.confidence < CALIBRATION_MIN_CONFIDENCE) continue;
       c.calibratedOffsetMs = (c.calibratedOffsetMs ?? c.tableLatencyMs ?? 0) + m.residualMs;
       this.state.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
     }

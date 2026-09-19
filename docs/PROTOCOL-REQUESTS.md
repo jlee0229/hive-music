@@ -30,3 +30,20 @@ Numbers are sequential from R-1. Status moves `open → accepted | declined → 
 **Answer (backend):** accepted — `ERROR.code` is an open string set, so no `PROTOCOL_VERSION` bump; `ROOM_FULL` added to §5 and to the mock's `JOIN` handler behind a scenario knob. (commit: example)
 
 Real entries start at R-1 below this line.
+
+### R-1 · 2026-09-19 23:05 · from backend · status: done
+**Need:** the exact `ERROR.code` set the **real** server emits, and the one behavioural difference from the mock that the join screens will notice. **Why:** B1 is done and the frontend switches to `apps/server` at IC1; error states (F1) should match what actually arrives. **Proposal:** no wire change, no `PROTOCOL_VERSION` bump — `ERROR.code` is an open string set (`z.string()`), so this is a clarification only.
+**Answer (backend):** the real server sends exactly these codes, and nothing else:
+
+| code | when | what the UI should do |
+|---|---|---|
+| `BAD_MESSAGE` | a frame failed `ClientMessageSchema` | never expected from `@hive/sync-client`; log it |
+| `NO_ROOM` | `JOIN` for a code with no room | "this hive does not exist" — the room must be created with `POST /rooms` first (the mock pre-creates one; the real server does not) |
+| `NOT_JOINED` | any message other than `JOIN`/`NTP_REQUEST` before `WELCOME` | never expected; the engine sends `JOIN` first |
+| `NOT_HOST` | a player sent `SET_TRACK`, `TRANSPORT`, `SET_MODE`, `ASSIGN`, `SET_POSITION`, `KICK`, `SET_PLAYS` or `CALIBRATION_START` | ignore; the socket stays open |
+| `FORBIDDEN` | a player sent `NUDGE` for someone else's id; a non-reference sent `CALIBRATION_REPORT`; a host tried to `KICK` itself | ignore |
+| `NO_TRACK` | `TRANSPORT` with no track loaded, or `SET_TRACK` with an id the library does not have | "pick a track first" |
+| `ROOM_FULL` | `JOIN` from a new client when `MAX_PLAYERS` (64) players are **connected** | "this hive is full" (as accepted in R-0) |
+| `KICKED` | the host removed this client | close for good; `room = null` (the engine already does this) |
+
+Two notes that are not errors: a `JOIN` claiming `kind: "host"` with a wrong or missing `hostKey` is **demoted to a player** rather than refused (`WELCOME.isHost = false`), and a `JOIN` whose `protocolVersion` differs from the server's is **accepted** — `WELCOME.protocolVersion` is the server's, and comparing it is how a stale bundle knows to reload. (commit: B1, mock updated: not needed — the mock already emits `BAD_MESSAGE`/`NO_ROOM`/`NOT_HOST`/`NO_TRACK`/`KICKED` and the additional codes only narrow cases the mock silently ignores.)
