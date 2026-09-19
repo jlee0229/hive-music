@@ -1,0 +1,31 @@
+name: Deploy server to Fly
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/server/**"
+      - "packages/protocol/**"
+      - "fixtures/**"
+      - "infra/**"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/deploy-fly.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: fly deploy
+    runs-on: ubuntu-latest
+    if: ${{ vars.FLY_DEPLOY_DISABLED != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only --config infra/fly.toml --dockerfile infra/Dockerfile
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

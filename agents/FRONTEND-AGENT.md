@@ -79,6 +79,11 @@ every pointer move (the engine throttles to 10 Hz) and once more on release; nud
 
 ## Ordered tasks and gates
 
+> **Demo-first order (revised):** F0 → F1 → F2 → F3 → F4 → F5 → F6 → **F9** (deploy prep + restart recovery, pulled forward so the
+> Vercel project is live before the first phone test) → **F8** (first full real test with `NEXT_PUBLIC_HIVE_ENGINE=real` once the
+> engine's INT PR is on `main`) → **F7** (tuning-moment screens, second round). Open a PR to `main` after F3 (IC1: join/ready/playing on
+> the deployed stack) and after F6.
+
 Update the **status** column as you go (⬜ not started · 🟨 in progress · ✅ passed · 🟡 needs human · ❌ blocked → request written).
 
 | gate | deliverable | check | evidence | status |
@@ -94,7 +99,7 @@ Update the **status** column as you go (⬜ not started · 🟨 in progress · �
 | **F8** | end to end against the **real** server (joint with backend B3/B5/B8): `NEXT_PUBLIC_HIVE_ENGINE=real` | **phones:** 3+ phones in unison from the host phone, one stems mode, one vibe plan, one tuning moment; video | `F8-e2e.md` (+ video, gitignored) | ⬜ |
 | **F9** | manifest + icons, error states (`NO_ROOM`, `KICKED`), restart recovery UI, Vercel deploy with env pointing at Fly | Playwright with `restart.json`: banner appears at 20 s and clears within 5 s with the same `clientId`; Vercel URL loads on a phone | `F9-restart.png`, `F9-deploy.md` | ⬜ |
 
-Order is the order above. IC1 needs F0–F1; IC2 needs F2–F3; IC3 needs F4–F6; rehearsal needs F7–F9.
+Work in the demo-first order quoted above the table. IC1 needs F0–F3 on the deployed stack; the first full test needs F4–F6 + F9 + F8; F7 is the second round.
 
 ## When to write to `docs/PROTOCOL-REQUESTS.md`
 

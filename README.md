@@ -46,9 +46,10 @@ host phone ──POST /rooms──▶ room code + QR
 ## Start here
 
 - Building it: read [`CLAUDE.md`](CLAUDE.md), then [`agents/SHARED-RULES.md`](agents/SHARED-RULES.md), then your brief
-  ([backend](agents/BACKEND-AGENT.md) · [frontend](agents/FRONTEND-AGENT.md)).
+  ([engine](agents/BACKEND-AGENT.md) · [server](agents/SERVER-AGENT.md) · [frontend](agents/FRONTEND-AGENT.md)).
 - Design canvas (host mode + player mode screens): https://claude.ai/artifact/1CPiXwhDfDPqRenDQC9Nzb
 - Roadmap, checkpoints and the 3-minute demo script: [`docs/08-roadmap.md`](docs/08-roadmap.md)
+- Deploying (Fly + Vercel, once, ~20 min): [`docs/09-deploy.md`](docs/09-deploy.md)
 
 ```
 bun install && bun run fixtures

@@ -3,7 +3,8 @@
 You are one of two coding agents building this repo in parallel during a hackathon. Read, in order:
 
 1. `agents/SHARED-RULES.md` — ownership, the frozen contract, branches, commands, evidence.
-2. Your brief: `agents/BACKEND-AGENT.md` (server + protocol + sync engine, Opus 5) or `agents/FRONTEND-AGENT.md` (Next.js UI, Sonnet 5).
+2. Your brief: `agents/BACKEND-AGENT.md` (engine: sync-client + protocol, Opus 5, branch `agent/backend`), `agents/SERVER-AGENT.md`
+   (room server + vibe + infra, Sonnet 5, `agent/server`) or `agents/FRONTEND-AGENT.md` (Next.js UI, Sonnet 5, `agent/frontend`).
 3. `docs/00-context.md` → `docs/01-architecture.md` → `docs/02-protocol.md`, then the docs your brief lists.
 
 Five hard rules:

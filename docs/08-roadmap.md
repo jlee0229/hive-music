@@ -2,6 +2,14 @@
 
 Owner: both (each agent updates only its own rows in the status table)
 
+> **Revised (demo-first, three agents).** The backend was split into an **engine agent** (`agent/backend`, Opus 5: sync-client +
+> protocol; order B2 → B3-lite → B5e → INT → B4 → B8e) and a **server agent** (`agent/server`, Sonnet 5: apps/server + vibe + infra;
+> order B0 → B1 → B5s → B6 → B7 → B8s). The frontend works F0 → F6 → F9 → F8 → F7. Target: **first full real phone test ≈ H+4.5**
+> (unison, orchestra, wave, map, nudge, rules-based vibe), then a fix round, then drift and the tuning moment. Hosting: the human
+> creates the Fly and Vercel projects now ([09-deploy.md](09-deploy.md)); every merge to `main` deploys. The hour table below is the
+> original single-backend plan and is kept for the gate definitions; the checkpoint table in
+> [agents/SHARED-RULES.md](../agents/SHARED-RULES.md) §9 is the live schedule.
+
 Roughly 18 build hours from IC0. Two agents on two branches (`agent/backend`, `agent/frontend`) meet at four integration checkpoints and a rehearsal. Gate definitions with runnable checks and named evidence files are in `agents/BACKEND-AGENT.md` and `agents/FRONTEND-AGENT.md`; this doc is the timeline, the scoreboard, the cut list and the demo script. Context: [00-context.md](00-context.md); contract: [02-protocol.md](02-protocol.md); rules: `agents/SHARED-RULES.md`.
 
 ## Hour plan
@@ -46,16 +54,16 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 
 | Gate | Owner | Status | Evidence |
 |---|---|---|---|
-| B0 | backend | todo | |
-| B1 | backend | todo | |
-| B2 | backend | todo | |
-| B3 | backend | todo | |
-| B4 | backend | todo | |
-| B5 | backend | todo | |
-| B6 | backend | todo | |
-| B7 | backend | todo | |
-| B8 | backend | todo | |
-| B9 (stretch) | backend | todo | |
+| B0 | server | todo | |
+| B1 | server | todo | |
+| B2 | engine | todo | |
+| B3 | engine | todo | |
+| B4 | engine | todo | |
+| B5 | engine (B5e) + server (B5s) | todo | |
+| B6 | server | todo | |
+| B7 | server | todo | |
+| B8 | engine (B8e) + server (B8s) | todo | |
+| B9 (stretch) | server | todo | |
 | F0 | frontend | todo | |
 | F1 | frontend | todo | |
 | F2 | frontend | todo | |

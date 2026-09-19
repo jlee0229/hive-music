@@ -1,13 +1,19 @@
-# Backend agent brief — server, protocol, sync engine
+# Engine agent brief — sync engine + protocol (formerly "backend")
 
 **Model:** Claude Opus 5. **Branch:** `agent/backend`. **Rules:** [SHARED-RULES.md](SHARED-RULES.md) apply in full.
+
+> **Revised scope (demo-first split):** the room server, vibe director and infra now belong to the **server agent**
+> ([SERVER-AGENT.md](SERVER-AGENT.md), Sonnet 5, branch `agent/server`). You own the browser engine and the contract. Work the
+> gates in the **demo-first order** below: everything the first real phone test needs comes before drift correction and the
+> tuning moment.
 
 ## Mission
 
 Make N phones in a room play the same audio within **≤10 ms** of each other (≤30 ms is the floor), from a host's phone,
-with per-phone stem assignment and a "tuning moment" that measures each phone's output latency. You own everything that
-touches time: the room server, the shared protocol, and the headless browser engine the UI calls. The frontend agent is
-building the screens against the mock server *right now* and will switch to your server at IC1 (≈H+6).
+with per-phone stem assignment and, in the second round, a "tuning moment" that measures each phone's output latency. You own
+the browser engine (`packages/sync-client`) and the contract (`packages/protocol`). The frontend agent is building the screens
+against the mock and the stub *right now* and switches to your engine with `NEXT_PUBLIC_HIVE_ENGINE=real`; the server agent is
+porting the mock into `apps/server` in parallel.
 
 ## Read first (in this order, ~25 minutes)
 
@@ -23,8 +29,9 @@ building the screens against the mock server *right now* and will switch to your
 
 ## You own / you never touch
 
-Own: `apps/server/**`, `packages/protocol/**`, `packages/sync-client/**`, `fixtures/**`, `infra/**`, `evidence/backend/**`, this file's gate table.
-Never: `apps/web/**`, `docs/**` (except appending to `docs/PROTOCOL-REQUESTS.md` and your rows in `docs/08-roadmap.md`).
+Own: `packages/protocol/**`, `packages/sync-client/**`, `evidence/backend/**`, this file's gate table, your rows in `docs/08-roadmap.md`.
+Never: `apps/server/**`, `infra/**`, `fixtures/**` (server agent), `apps/web/**` (frontend agent), other docs. You are the only
+writer of `packages/protocol`: answer the other agents' requests in `docs/PROTOCOL-REQUESTS.md` promptly (additive, bump `PROTOCOL_VERSION`, update the mock in the same commit).
 
 ## What already exists (IC0) and what is left
 
@@ -83,32 +90,31 @@ Non-goals for the hackathon: uploads/Demucs (B9 stretch), phone-to-phone ranging
 - **Fly:** `fly launch --copy-config --dockerfile infra/Dockerfile` from the root; keep `auto_stop_machines = false`; `.dockerignore` at the repo root already excludes
   `node_modules`, `.git`, `evidence`, `apps/web/.next` and the generated WAVs (the image regenerates them). Cellular RTT asymmetry breaks the 10 ms target: B7 is a connectivity check only; the demo runs on one Wi-Fi/hotspot.
 
-## Ordered tasks and gates
+## Ordered tasks and gates (demo-first order)
 
 Update the **status** column as you go (⬜ not started · 🟨 in progress · ✅ passed · 🟡 needs human · ❌ blocked → request written).
+Gate ids keep their original numbers so the roadmap stays readable; the **order below is the order you work**. Server-side halves
+of B5/B8 and all of B0/B1/B6/B7/B9 are the server agent's.
 
-| gate | deliverable (files) | check | evidence | status |
-|---|---|---|---|---|
-| **B0** | `apps/server`: `GET /health`, `POST /rooms` (fixed code), `GET /rooms/:code`, `GET /tracks?q=` from `fixtures/tracks/*/meta.json` with `urls`, `GET /audio/:id/:stem.wav` (static, cache headers), CORS on all | `curl` each route; `bun run typecheck && bun run test` green | `evidence/backend/B0-routes.txt` | ⬜ |
-| **B1** | `apps/server/src/room.ts` + `ws.ts`: JOIN/WELCOME, hostKey, NTP responder (t1 on receive, t2 on send), coalesced `ROOM_STATE`, `HEALTH` to hosts, `PING/PONG`, reconnect-by-clientId, `SET_PLAYS`, `KICK`, `SET_TRACK`, `TRANSPORT`, `SET_MODE`, `ASSIGN`, `SET_POSITION`, `NUDGE` (host or self) with `plan()` on every change | `apps/server/src/__tests__/room.test.ts` modelled on `packages/protocol/src/__tests__/mock-server.test.ts`: 3 fake clients join; `t1 ≤ t2`; snapshot lists them; disconnect + rejoin keeps `joinIndex`; **20 simultaneous joins** complete < 2 s; a player sending `TRANSPORT` gets `NOT_HOST` | `evidence/backend/B1-room-test.txt` (test output) | ⬜ |
-| **B2** | `packages/sync-client/src/clock.ts`: `ClockModel` + coded probe pairs + slewing + serverTime↔ctx mapping; `createHiveClient` connects and syncs (no audio yet) | unit test with a fake transport: injected +137 ms offset, ±30 ms jitter, 20 % spikes of +80 ms, pair-rejection on → offset error **< 2 ms over 30 probes**; slew never steps > 2 ms/s below threshold | `evidence/backend/B2-clock-test.txt` | ⬜ |
-| **B3** | `packages/sync-client/src/audio.ts` + `scheduler.ts`: unlock, stem loading with progress, `AUDIO_READY`, transport-derived start/pause/seek/late-join, visibility/`interrupted` handling; **the measurement rig** `packages/sync-client/rig/` (a page: reference laptop/phone records while two devices play the synthetic click track; prints per-device arrival offsets using the same cross-correlation code as B8) | unit test: ctx mapping with a mocked clock (playing / paused / late join / seek); rig run: two devices play `synthetic-60s` drums, table compensation on → clicks within **10 ms**; kill the server mid-song → both devices rejoin and resume within 5 s at the right position | `evidence/backend/B3-rig.md` (numbers + screenshot), `B3-restart.md` | ⬜ |
-| **B4** | drift handling (hard resync + crossfade), Tier-1 table in `constants.ts` measured per browser family you have on hand, nudge → `compensationMs` end to end | rig at t=0 and t=5 min both < 10 ms; nudge +40 ms on one device shifts its click by **40 ± 3 ms** in the rig; unit test: simulated +50 ppm audio clock stays within 5 ms over 5 min via resyncs | `evidence/backend/B4-drift.md`, `B4-nudge.md` | ⬜ |
-| **B5** | server uses `withAssignments` on every change; `applyAtServerTime` honoured in the engine (gain ramps at the exact ctx time); pattern automation (`evaluatePattern`) in the engine; `SET_MODE` for all 5 modes | planner tests already exist; add engine test: switching UNISON→ORCHESTRA changes gains only (no reload, `AUDIO_READY` not re-sent); manual: two phones, ORCHESTRA, each hears a different stem | `evidence/backend/B5-modes.md` | ⬜ |
-| **B6** | `apps/server/src/vibe/{director,rules}.ts`, `POST /rooms/:code/vibe`, scene timer, `VIBE_MODEL` env | `bun test`: with `ANTHROPIC_API_KEY` unset the rules path returns a schema-valid plan whose first scene is calm and which switches to WAVE/STROBE at `dropSec`; with a key, 10 runs of "calm, then explode at the drop" on `synthetic-60s` → all schema-valid, ≥2 scenes, a low-energy mode before 30 s and WAVE or STROBE after | `evidence/backend/B6-vibe.md` (10 plans) | ⬜ |
-| **B7** | Fly deploy (`infra/`), env set (`CORS_ORIGIN` = Vercel origin, `ROOM_FIXED_CODE`, `VIBE_MODEL`) | `curl https://<app>.fly.dev/health` → 200; a phone on cellular joins over WSS and reaches `audio: ready` | `evidence/backend/B7-deploy.md` | ⬜ |
-| **B8** | Tier 2 in-app tuning: server `CALIBRATION_START/PLAN/CLICK/REPORT` + residual accumulation + `calibration` state; engine `calibration.runAsReference` (mic, worklet capture, xcorr, median-anchoring, mic release) and `calibrationClick` event | unit test: synthetic recording = click template delayed by 23.4 ms + noise → residual within **1 ms**; real: host phone listens, one player nudged +40 ms → recovered **40 ± 5 ms**; a phone that is not playing (`plays:false`) is never in `order` | `evidence/backend/B8-calibration.md` | ⬜ |
-| **B9** (stretch) | `POST /tracks` → Replicate Demucs → stems → `meta-from-wavs.ts`; crowd-sourced latency table (persist nudges by browser family); playbackRate slewing | only after B8 | – | ⬜ |
+| # | gate | deliverable (files) | check | evidence | status |
+|---|---|---|---|---|---|
+| 1 | **B2** | `packages/sync-client/src/clock.ts`: `ClockModel` + coded probe pairs + slewing + serverTime↔ctx mapping sampled per probe; `createHiveClient` connects and syncs (reuse the stub's transport) | unit test with a fake transport: +137 ms offset, ±30 ms jitter, 20 % spikes of +80 ms, pair-rejection on → offset error **< 2 ms over 30 probes**; slew ≤ 2 ms/s below threshold | `evidence/backend/B2-clock-test.txt` | ⬜ |
+| 2 | **B3-lite** | `audio.ts` + `scheduler.ts`: unlock (resume, silent buffer, `audioSession`, wake lock), stem loading with progress → `AUDIO_READY`, transport-derived start/pause/seek/late-join, `visibilitychange`/`interrupted` resync, `calibrationClick` event playing the synthesized click | unit test: ctx mapping with a mocked clock (start-from-zero / paused / late join / seek); a headless smoke test that two `createHiveClient`s against the mock reach `audio: ready` and compute the same `trackTimeSec` within 5 ms | `evidence/backend/B3-scheduler-test.txt` | ⬜ |
+| 3 | **B5e** | gain ramps from `assignment.gainsDb` (`setTargetAtTime`, 20 ms), `applyAtServerTime` honoured at the exact ctx time, pattern automation via `evaluatePattern` (100 ms look-ahead, `setValueCurveAtTime`), local mute | test: UNISON→ORCHESTRA changes gains only (no reload, no second `AUDIO_READY`); WAVE assignment produces a delayed start of `delayMs` | `evidence/backend/B5-engine.md` | ⬜ |
+| 4 | **INT** | integration: PR to `main` ("engine v1"); with the frontend on the deployed stack, `NEXT_PUBLIC_HIVE_ENGINE=real` — **this is the first real phone test** | the human runs 3 phones in unison + orchestra + wave; you fix what they report | `evidence/backend/INT-first-test.md` | ⬜ |
+| 5 | **B4** | hard-resync drift handling with 20 ms crossfade; Tier-1 table measured per browser family you can reach; nudge end to end | simulated +50 ppm audio clock stays within 5 ms over 5 min; nudge +40 ms shifts the scheduled start by 40 ms exactly (unit) | `evidence/backend/B4-drift.md` | ⬜ |
+| 6 | **B8e** | `calibration.runAsReference` (mic with EC/AGC/NS off, worklet capture, cross-correlation, ±150 ms window, median anchoring, `CALIBRATION_REPORT`, mic release) + `renderClick`; **the measurement rig** `packages/sync-client/rig/` reusing the same DSP | unit: synthetic recording = template delayed 23.4 ms + noise → residual within **1 ms**; two templates 300 ms apart resolved independently; real run 🟡 for the human (+40 ms nudge recovered ±5 ms) | `evidence/backend/B8-calibration.md` | ⬜ |
+| 7 | **B9e** (stretch) | `playbackRate` slewing instead of hard resync | after B8e | – | ⬜ |
 
-Order is the order above. IC1 needs B0–B2 + a runnable `apps/server`; IC2 needs B3–B4; IC3 needs B5–B6; rehearsal needs B7–B8.
+Open a PR to `main` after step 3 (INT) and again after B4 and B8e. The frontend's F8 (first full test) and the server's B1 gate meet you at INT.
 
 ## Definition of done for each commit
 
-`bun run typecheck && bun run test` green at the root; the mock server still passes its test; `docs/02-protocol.md` tables still match
-(the schema test enforces it); gate table updated; evidence file present.
+`bun run typecheck && bun run test` green at the root; the mock server and the stub still pass their tests (the frontend's Playwright
+suite depends on both); `docs/02-protocol.md` tables still match (the schema test enforces it); gate table updated; evidence file present.
 
 ## When to write to `docs/PROTOCOL-REQUESTS.md`
 
-You will mostly **answer** entries there (the frontend asks). When you add something to the contract on your own initiative, announce
+You will mostly **answer** entries there (the frontend and the server agent ask; you are the only writer of `packages/protocol`). When you add something to the contract on your own initiative, announce
 it there too so the frontend agent sees it. When a gate needs a second phone or a quiet room you do not have, mark 🟡 with the manual
 checklist in the evidence file and continue.

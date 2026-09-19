@@ -1,20 +1,23 @@
 # Shared rules for the two build agents
 
-Two agents build HiveMusic in parallel during HackMIT (≈18 hours). These rules exist so they never block each other.
-Read this first, then your brief: [BACKEND-AGENT.md](BACKEND-AGENT.md) or [FRONTEND-AGENT.md](FRONTEND-AGENT.md).
+Three agents build HiveMusic in parallel during HackMIT. These rules exist so they never block each other.
+Read this first, then your brief: [BACKEND-AGENT.md](BACKEND-AGENT.md) (engine, Opus 5, `agent/backend`),
+[SERVER-AGENT.md](SERVER-AGENT.md) (room server + vibe + infra, Sonnet 5, `agent/server`) or
+[FRONTEND-AGENT.md](FRONTEND-AGENT.md) (UI, Sonnet 5, `agent/frontend`). The build runs in **demo-first order**: the first real
+phone test (unison, orchestra, wave, map, nudge, rules-based vibe) comes before drift correction and the tuning moment.
 
 ## 1. Ownership is by directory, and it is absolute
 
 | path | owner | the other agent may… |
 |---|---|---|
-| `apps/server/**` | backend | read |
-| `packages/protocol/**` | backend | read, import, **request** changes |
-| `packages/sync-client/**` | backend | read, import, **request** changes |
-| `fixtures/**`, `infra/**` | backend | read, run `bun run fixtures` |
+| `apps/server/**` | server agent | read |
+| `packages/protocol/**` | engine agent | read, import, **request** changes |
+| `packages/sync-client/**` | engine agent | read, import, **request** changes |
+| `fixtures/**`, `infra/**` | server agent | read, run `bun run fixtures` |
 | `apps/web/**` (incl. `apps/web/mocks/scenarios/`) | frontend | read |
 | `docs/**` | setup (already written) | **append** to `docs/PROTOCOL-REQUESTS.md`; update **your own** rows in `docs/08-roadmap.md` status table |
 | `agents/<YOUR>-AGENT.md` | you | update your gate table only |
-| `evidence/<your-agent>/**` | you | – |
+| `evidence/<your-agent>/**` (`backend` = engine, `server`, `frontend`) | you | – |
 | root config, `.github/**`, `README.md`, `CLAUDE.md` | setup | propose in `PROTOCOL-REQUESTS.md`; the human decides |
 
 Never edit a file outside your tree. If you need something there, write the request (§3) and keep going.
@@ -24,12 +27,12 @@ Never edit a file outside your tree. If you need something there, write the requ
 `packages/protocol` (`PROTOCOL_VERSION = 1`) and the public surface of `packages/sync-client/src/index.ts` are the contract.
 Both agents build against them from minute one. After IC0:
 
-- Only the backend agent edits them, and only **additively** (new optional fields, new message types, new constants). Removing or
+- Only the engine agent edits them, and only **additively** (new optional fields, new message types, new constants). Removing or
   renaming anything requires a human decision.
 - Every change bumps `PROTOCOL_VERSION`, updates `docs/02-protocol.md` (the schema test enforces the message tables), updates the
   mock server in the **same commit**, and is announced with an entry in `docs/PROTOCOL-REQUESTS.md`.
-- The mock server and the real server pass the same schema tests. If the mock and the real server ever disagree, the mock is wrong
-  and the backend agent fixes it immediately, because the frontend is building against it.
+- The mock server and the real server pass the same schema tests. If they ever disagree, the engine agent fixes the mock immediately,
+  because the frontend is building against it; the server agent aligns the server.
 
 ## 3. Asking for something: `docs/PROTOCOL-REQUESTS.md`
 
@@ -47,12 +50,12 @@ The requester moves on to the next task while waiting. Never patch around the ga
 
 - `apps/web` imports only `@hive/protocol` and `@hive/sync-client`. Never from `apps/server`, never a raw `WebSocket`/`AudioContext`
   outside the sync-client package.
-- `apps/server` imports `@hive/protocol` only. Nothing imports from `apps/*`.
+- `apps/server` imports `@hive/protocol` only (it may copy code from the mock server, never import it). Nothing imports from `apps/*`.
 - New third-party dependencies: allowed inside your own package; note them in your gate table row.
 
 ## 5. Branches and merging
 
-- Work on `agent/backend` or `agent/frontend`, branched from `main` at IC0. Commit small and often with the gate id in the message (`B3: transport scheduler`).
+- Work on `agent/backend` (engine), `agent/server` or `agent/frontend`, branched from `main`. Commit small and often with the gate id in the message (`B3: transport scheduler`).
 - Before every gate: `git fetch origin main && git rebase origin/main` (your own branch only), then `bun run typecheck && bun test` at the root must be green.
 - At each integration checkpoint (IC1–IC3, rehearsal) open a PR to `main`; the human merges. Merge conflicts are only possible in
   `docs/PROTOCOL-REQUESTS.md` and the roadmap status table, both append-only → keep both sides.
@@ -90,11 +93,12 @@ Rules that are never relaxed: no skipping, disabling or quarantining a test to g
 
 | when | joint exit criterion |
 |---|---|
-| IC0 (done) | protocol + planner + mock + stub client + sync-client API + fixtures on `main` |
-| IC1 ≈ H+6 | frontend Join/Ready on two phones against the **real** server: `WELCOME`, sync numbers, `AUDIO_READY` |
-| IC2 ≈ H+11 | three phones in unison from the host phone; nudge works; measured < 10 ms |
-| IC3 ≈ H+15 | Orchestra + one more mode, Hive Map placement, a vibe plan running |
-| Rehearsal ≈ H+17 | the 3-minute demo script in `docs/08-roadmap.md`, twice, on the venue Wi-Fi |
+| IC0 (done) | protocol + planner + mock + stub client + sync-client API + fixtures on `main`; Fly + Vercel projects created by the human (docs/09-deploy.md) |
+| IC1 ≈ H+1.5 | server B1 + frontend F0–F3 merged and deployed: two phones join, show sync numbers, reach `audio: ready` (stub engine) |
+| INT ≈ H+3.5 | engine B2/B3-lite/B5e merged: three phones in **unison** from the host phone with `NEXT_PUBLIC_HIVE_ENGINE=real`; nudge works |
+| First full test ≈ H+4.5 | + F4–F6, server B5s/B6: orchestra, wave, map placement, rules-based vibe plan. The human tests and files what is wrong |
+| Second round | fixes from the test, then B4 drift, B8 tuning moment (engine + server + F7) |
+| Rehearsal | the 3-minute demo script in `docs/08-roadmap.md`, twice, on the venue Wi-Fi |
 
 Cut list, in order, when behind: B9 (upload/crowd table/slewing) → drag-to-reassign polish → B8/F7 tuning moment (keep Tier 1) →
-STROBE → the vibe LLM call (keep the rules fallback) → STEREO.
+STROBE → the vibe LLM call (keep the rules fallback) → STEREO. Merges to `main` are done by the human or by the check-in routine when CI is green.
