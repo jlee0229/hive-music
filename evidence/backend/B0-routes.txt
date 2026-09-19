@@ -1,0 +1,74 @@
+=== B0 · apps/server REST routes ===
+commit: ce21ea8 (pre-commit working tree)
+date:   2026-09-19T22:57:30Z
+server: PORT=8099 ROOM_FIXED_CODE=DEMO CORS_ORIGIN=http://localhost:3000 bun run --cwd apps/server start
+
+--- server boot log ---
+$ bun src/index.ts
+[hive] listening on http://localhost:8099 (protocol v1, cors http://localhost:3000) · tracks: synthetic-60s
+
+$ curl -sS -D- $B/health
+HTTP/1.1 200 OK
+Content-Type: application/json
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Max-Age: 86400
+Date: Sat, 19 Sep 2026 22:57:30 GMT
+Content-Length: 63
+
+{"ok":true,"protocolVersion":1,"serverTime":1789858650810.0076}
+
+$ curl -sS -X OPTIONS -D- -o /dev/null $B/tracks   (CORS preflight)
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Max-Age: 86400
+Date: Sat, 19 Sep 2026 22:57:30 GMT
+Content-Length: 0
+
+
+$ curl -sS -X POST $B/rooms   (twice: ROOM_FIXED_CODE makes it idempotent)
+{"code":"DEMO","hostKey":"8ca87d8f5f324e1cada861cb4fe64a40","joinUrl":"http://localhost:3000/j/DEMO"}
+{"code":"DEMO","hostKey":"8ca87d8f5f324e1cada861cb4fe64a40","joinUrl":"http://localhost:3000/j/DEMO"}
+
+$ curl -sS $B/rooms/DEMO
+{"code":"DEMO","exists":true,"players":0}
+$ curl -sS -w " [HTTP %{http_code}]" $B/rooms/ZZZZ
+{"code":"ZZZZ","exists":false,"players":0} [HTTP 404]
+
+$ curl -sS "$B/tracks?q=syn"
+{"tracks":[{"id":"synthetic-60s","title":"Synthetic 60","durationSec":60,"stems":["drums","bass","vocals","other"],"bpm":120,"urls":{"drums":"http://localhost:8099/audio/synthetic-60s/drums.wav","bass":"http://localhost:8099/audio/synthetic-60s/bass.wav","vocals":"http://localhost:8099/audio/synthetic-60s/vocals.wav","other":"http://localhost:8099/audio/synthetic-60s/other.wav"},"energy":[0.8016,0.7837,0.7987,0.7869,0.7962,0.788,0.7966,0.7852,0.8001,0.7824,0.8013,0.784,0.7988,0.7867,0.7959,0.7883,0.7972,0.7853,0.8002,0.7823,0.8015,0.7833,0.7985,0.7867,0.7956,0.7882,0.7969,0.7853,0.8003,0.7825,0.9964,0.9223,0.9591,0.9731,0.919,0.9897,0.934,0.9481,0.9824,0.9078,0.9994,0.9213,0.9595,0.9718,0.91
+
+$ curl -sS -D- -o /dev/null $B/audio/synthetic-60s/drums.wav
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Max-Age: 86400
+Content-Type: audio/wav
+Cache-Control: public, max-age=3600
+Accept-Ranges: bytes
+content-length: 5292044
+Date: Sat, 19 Sep 2026 22:57:30 GMT
+
+
+$ curl -sS -r 0-43 -D- -o /dev/null $B/audio/synthetic-60s/drums.wav   (Range → 206)
+HTTP/1.1 206 Partial Content
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Max-Age: 86400
+Content-Type: audio/wav
+Cache-Control: public, max-age=3600
+Accept-Ranges: bytes
+Content-Range: bytes 0-43/5292044
+content-length: 44
+Date: Sat, 19 Sep 2026 22:57:30 GMT
+
+
+$ curl -sS -w " [HTTP %{http_code}]" $B/audio/synthetic-60s/nope.wav
+{"error":"not_found","hint":"run `bun run fixtures`"} [HTTP 404]
+$ curl -sS -w " [HTTP %{http_code}]" $B/nope
+{"error":"not_found","path":"/nope"} [HTTP 404]
