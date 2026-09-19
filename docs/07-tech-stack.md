@@ -112,7 +112,7 @@ Every REST route answers with `Access-Control-Allow-Origin: CORS_ORIGIN` (the Ve
 
 ```toml
 app = "hivemusic-server"
-primary_region = "bos"
+primary_region = "ewr"
 
 [build]
   dockerfile = "Dockerfile"

@@ -163,7 +163,7 @@ Server-only state (never on the wire): `hostKey`; per-client health record (`Hea
   │ host phone   │── HTTPS (pages) ──────────▶│ Vercel · apps/web             │
   │ player phones│                            └───────────────────────────────┘
   │              │── WSS /ws + HTTPS REST ───▶┌───────────────────────────────┐
-  │              │   GET /audio/*.wav (CORS)  │ Fly.io bos · hivemusic-server │
+  │              │   GET /audio/*.wav (CORS)  │ Fly.io ewr · hivemusic-server │
   └──────────────┘                            │ always-on, 1 machine,         │
                                               │ PING every 20 s, /health 15 s │
                                               └───────────────────────────────┘
