@@ -20,3 +20,9 @@ fixtures/tracks/**/*.wav
 
 # os
 .DS_Store
+
+# playwright
+apps/web/test-results
+apps/web/playwright-report
+apps/web/blob-report
+apps/web/playwright/.cache
