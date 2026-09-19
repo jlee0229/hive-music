@@ -20,7 +20,7 @@ The human deploys your server to Fly.io from `main` (a GitHub Action does it on 
 
 ## You own / you never touch
 
-Own: `apps/server/**`, `infra/**`, `fixtures/**`, `evidence/server/**`, this file's gate table, your rows in `docs/08-roadmap.md`.
+Own: `apps/server/**`, `infra/**`, `fly.toml`, `fixtures/**`, `evidence/server/**`, this file's gate table, your rows in `docs/08-roadmap.md`.
 Never: `apps/web/**`, `packages/**` (the engine agent owns the contract; ask in `docs/PROTOCOL-REQUESTS.md`).
 
 ## Engineering notes
@@ -45,8 +45,9 @@ Never: `apps/web/**`, `packages/**` (the engine agent owns the contract; ask in 
 - Static audio: `GET /audio/:id/:stem.wav` from `fixtures/tracks`, `Cache-Control: public, max-age=31536000, immutable`; `GET /tracks?q=`
   from `meta.json` files with absolute `urls` built from the request origin.
 - CORS on every route: `Access-Control-Allow-Origin: process.env.CORS_ORIGIN ?? "*"`, `OPTIONS` → 204.
-- Deploy: the human runs `fly launch` once (docs/09-deploy.md); after that every merge to `main` deploys via
-  `.github/workflows/deploy-fly.yml`. Keep the Dockerfile building: `bun install`, `bun run fixtures`, `bun apps/server/src/index.ts`.
+- Deploy: `fly.toml` is at the repo root (Fly resolves paths relative to it) with `dockerfile = "infra/Dockerfile"`; the human
+  ran `fly launch` once (docs/09-deploy.md) and every merge to `main` deploys via `.github/workflows/deploy-fly.yml`
+  (`flyctl deploy --remote-only`). Keep the Dockerfile building: `bun install`, `bun run fixtures`, `bun apps/server/src/index.ts`.
 
 ## Ordered tasks and gates (demo-first)
 
@@ -59,7 +60,7 @@ original numbers so the roadmap stays readable; the order below is the order you
 | **B1** | room manager + WS: JOIN/WELCOME/hostKey, NTP responder, coalesced ROOM_STATE, HEALTH to hosts, PING/PONG, reconnect-by-clientId, retention, SET_TRACK, TRANSPORT, SET_MODE, ASSIGN, SET_POSITION, NUDGE (host or self), SET_PLAYS, KICK, AUDIO_READY, CLIENT_STATUS, planner on every change | `apps/server/src/__tests__/room.test.ts` modelled on the mock's test: 3 fake clients; `t1 ≤ t2`; rejoin keeps `joinIndex`; 20 simultaneous joins < 2 s; player `TRANSPORT` → `NOT_HOST`; PLAY sets `serverTimeAtTrackZero ≈ now + 600` | `evidence/server/B1-room-test.txt` | ⬜ |
 | **B5s** | scene timer + `applyAtServerTime` at boundaries; `SET_MODE` clears the plan | test: a 3-scene plan on a fake clock re-plans at each boundary with `applyAtServerTime` = boundary | `evidence/server/B5-scenes.txt` | ⬜ |
 | **B6** | `POST /rooms/:code/vibe`: rules fallback first, then the LLM path behind `ANTHROPIC_API_KEY` | key unset: schema-valid plan, calm first, WAVE/STROBE at `dropSec`; key set (if the human provides one): 10/10 valid on "calm, then explode at the drop" | `evidence/server/B6-vibe.md` | ⬜ |
-| **B7** | deployable: Dockerfile + `.dockerignore` verified, `docs/09-deploy.md` accurate, `deploy-fly.yml` green on `main`; after the human's first `fly launch`, every merge deploys | `curl https://<app>.fly.dev/health` (human) → 200; you: the workflow file is valid and `bun apps/server/src/index.ts` boots from a clean checkout | `evidence/server/B7-deploy.md` | ⬜ |
+| **B7** | deployable: Dockerfile + `.dockerignore` + root `fly.toml` verified, `docs/09-deploy.md` accurate, `deploy-fly.yml` green on `main`; after the human's first `fly launch`, every merge deploys | `curl https://<app>.fly.dev/health` (human) → 200; you: the workflow file is valid and `bun apps/server/src/index.ts` boots from a clean checkout | `evidence/server/B7-deploy.md` | ⬜ |
 | **B8s** | calibration server side (START/PLAN/CLICK/REPORT, accumulation, failed timeout) | test with fake clients: reference gets PLAN, players get one CLICK each on the 400 ms grid, REPORT updates `calibratedOffsetMs`, low-confidence ignored | `evidence/server/B8-calibration.txt` | ⬜ |
 | **B9** (stretch) | `POST /tracks` upload → Replicate Demucs → `fixtures/meta-from-wavs.ts`; crowd-sourced latency table | after B8s | – | ⬜ |
 

@@ -1,11 +1,12 @@
-# Backend agent: deploy with `fly launch --copy-config --dockerfile infra/Dockerfile` from the repo root; keep auto_stop off so the room survives idle minutes.
+# Deploy from the repo root: `fly deploy` (fly.toml lives here so every fly command works with no flags).
+# Keep auto_stop off so the room survives idle minutes. One machine only: rooms are in memory.
 # The Docker build context is the repo root (the Dockerfile copies the whole workspace and runs apps/server/src/index.ts).
 
 app = "hivemusic-server"
 primary_region = "bos"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "infra/Dockerfile"
 
 [env]
   PORT = "8080"

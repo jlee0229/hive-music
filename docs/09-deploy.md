@@ -11,21 +11,21 @@ Requires a Fly account with a payment method (the app runs on one tiny always-on
 fly auth login
 
 # 2. from the repo root, on main (git pull first)
-fly launch --copy-config --config infra/fly.toml --dockerfile infra/Dockerfile --no-deploy
-#    accept region bos; if the app name "hivemusic-server" is taken, pick another (the config is updated in place)
+fly launch --copy-config --no-deploy
+#    (fly.toml is in the repo root; the Dockerfile path is inside it.) Accept region bos; if the app name
+#    "hivemusic-server" is taken, pick another (fly.toml is updated in place). Already launched? skip to step 3.
 
 # 3. runtime config (leave CORS_ORIGIN unset for the hackathon: the server defaults to "*").
-#    Every fly command after launch needs --config infra/fly.toml (or -a <app>) because fly.toml is not in the repo root.
-fly secrets set ROOM_FIXED_CODE=BZQ7 VIBE_MODEL=claude-sonnet-5 NEXT_PUBLIC_WEB_URL=https://<your-vercel-domain> --config infra/fly.toml
+fly secrets set ROOM_FIXED_CODE=BZQ7 VIBE_MODEL=claude-sonnet-5 NEXT_PUBLIC_WEB_URL=https://<your-vercel-domain>
 #    optional, only if you have a Console key with credit:
-fly secrets set ANTHROPIC_API_KEY=sk-ant-... --config infra/fly.toml
+fly secrets set ANTHROPIC_API_KEY=sk-ant-...
 
 # 4. first deploy + check
-fly deploy --config infra/fly.toml --dockerfile infra/Dockerfile
+fly deploy --dockerfile infra/Dockerfile
 curl https://<app>.fly.dev/health      # → {"ok":true,"protocolVersion":1,...}
 
 # 5. let GitHub deploy on every merge to main
-fly tokens create deploy -x 999999h --config infra/fly.toml    # copy the whole token, including the leading "FlyV1"
+fly tokens create deploy -x 999999h    # copy the whole token, including the leading "FlyV1"
 #    GitHub → repo → Settings → Secrets and variables → Actions → New secret: FLY_API_TOKEN
 #    .github/workflows/deploy-fly.yml then deploys on every push to main that touches the server, protocol, fixtures or infra.
 ```

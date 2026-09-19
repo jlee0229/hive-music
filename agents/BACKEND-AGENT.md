@@ -87,7 +87,7 @@ Non-goals for the hackathon: uploads/Demucs (B9 stretch), phone-to-phone ranging
   drop/explode/party → WAVE then STROBE for 16 s; stereo/wide → STEREO) placed at `meta.dropSec` when present, else the first second
   whose energy exceeds 1.15× the median of the preceding 10 s. Scene timer: `LEAD_MS` before each boundary set `mode`, re-plan with
   `applyAtServerTime = boundary`, broadcast. `SET_MODE` clears the plan.
-- **Fly:** `fly launch --copy-config --dockerfile infra/Dockerfile` from the root; keep `auto_stop_machines = false`; `.dockerignore` at the repo root already excludes
+- **Fly:** (server agent) `fly.toml` is at the repo root; keep `auto_stop_machines = false`; `.dockerignore` at the repo root already excludes
   `node_modules`, `.git`, `evidence`, `apps/web/.next` and the generated WAVs (the image regenerates them). Cellular RTT asymmetry breaks the 10 ms target: B7 is a connectivity check only; the demo runs on one Wi-Fi/hotspot.
 
 ## Ordered tasks and gates (demo-first order)

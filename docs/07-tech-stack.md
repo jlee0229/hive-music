@@ -108,7 +108,7 @@ This is the shape of `packages/protocol/src/mock-server.ts`; the real server reu
 
 Every REST route answers with `Access-Control-Allow-Origin: CORS_ORIGIN` (the Vercel origin in production; `*` when unset), `Access-Control-Allow-Methods: GET,POST,OPTIONS`, `Access-Control-Allow-Headers: content-type`, and `OPTIONS` → 204. `/audio` also sends `Content-Type: audio/wav` and `Cache-Control: public` (the mock uses `max-age=3600`; the real server may use a long immutable cache because track ids are content-stable — assumption), so a reload does not re-download 40 MB of stems. WebSocket upgrades are not subject to CORS and the server does not check `Origin` (demo).
 
-## Fly.io (`infra/fly.toml`, `infra/Dockerfile`)
+## Fly.io (`fly.toml` (repo root; `dockerfile = "infra/Dockerfile"`), `infra/Dockerfile`)
 
 ```toml
 app = "hivemusic-server"
