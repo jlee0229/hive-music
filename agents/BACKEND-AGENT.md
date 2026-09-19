@@ -41,7 +41,7 @@ writer of `packages/protocol`: answer the other agents' requests in `docs/PROTOC
 | `packages/sync-client` | frozen public API (`src/index.ts`); `createStubClient` (`src/stub.ts`): real WS + JOIN + NTP probes + `ClockModel` (min-RTT) + host controls + reconnect, **no audio**; 2 tests | `createHiveClient`: the audio engine (B2–B4), calibration (B8). Reuse the stub's transport; keep the stub working (Playwright uses it) |
 | `apps/server` | `Bun.serve` stub: `/health` + CORS | everything else (B0–B1, B5–B7) |
 | `fixtures` | `gen-synthetic.ts` (4 WAV stems, 60 s, 120 BPM, drop at 30 s, `meta.json` with `energy[]`, `clickTimesSec[]`, `dropSec`) | `meta-from-wavs.ts` for real Demucs tracks (energy via RMS) — optional |
-| `infra` | `fly.toml` (always-on, `bos`), `Dockerfile` | `.dockerignore`, deploy (B7) |
+| `infra` | `fly.toml` (always-on, `ewr` (Newark; Fly retired `bos`)), `Dockerfile` | `.dockerignore`, deploy (B7) |
 
 Non-goals for the hackathon: uploads/Demucs (B9 stretch), phone-to-phone ranging, playbackRate slewing (stretch), a database, auth beyond `hostKey`.
 

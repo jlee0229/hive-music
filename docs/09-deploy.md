@@ -12,7 +12,7 @@ fly auth login
 
 # 2. from the repo root, on main (git pull first)
 fly launch --copy-config --no-deploy
-#    (fly.toml is in the repo root; the Dockerfile path is inside it.) Accept region bos; if the app name
+#    (fly.toml is in the repo root; the Dockerfile path is inside it.) Accept region ewr; if the app name
 #    "hivemusic-server" is taken, pick another (fly.toml is updated in place). Already launched? skip to step 3.
 
 # 3. runtime config (leave CORS_ORIGIN unset for the hackathon: the server defaults to "*").

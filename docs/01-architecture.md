@@ -15,7 +15,7 @@ One Bun server owns the timeline and the room. One Next.js app renders host and 
 | Contract + planner | `packages/protocol` | backend (v1 written before the agents start) | `constants`, `messages`, `room`, `mode`, `pattern`, `health`, `scene`, `rest`, `planner`, `mock-server` + `__tests__/` |
 | Audio fixtures | `fixtures/` | backend | `gen-synthetic.ts` → `fixtures/tracks/synthetic-60s/{drums,bass,vocals,other}.wav` + `meta.json` (`energy[60]`, `clickTimesSec`, `dropSec`, `bpm`); demo tracks in the same layout |
 | Vibe service | `apps/server/src/vibe/` | backend | One `messages.parse` call with `zodOutputFormat(ScenePlanCoreSchema)`; `rules.ts` fallback; scene timer |
-| Infra | `infra/` | backend | `fly.toml` (app `hivemusic-server`, `bos`, always-on, `/health` checks), `Dockerfile` |
+| Infra | `infra/` | backend | `fly.toml` (app `hivemusic-server`, `ewr` (Newark; Fly retired `bos`), always-on, `/health` checks), `Dockerfile` |
 
 ## Package graph
 
@@ -169,4 +169,4 @@ Server-only state (never on the wire): `hostKey`; per-client health record (`Hea
                                               └───────────────────────────────┘
 ```
 
-Phone-to-`bos` RTT of 10–40 ms over Wi-Fi is fine: NTP cancels symmetric latency. What breaks the ≤10 ms target is asymmetric latency (cellular), hence one Wi-Fi/hotspot for every phone in the demo. CORS allows the Vercel origin (`CORS_ORIGIN`). Configuration is in [07-tech-stack.md](07-tech-stack.md); rooms live in memory, so exactly one machine runs.
+Phone-to-`ewr` (Newark; Fly retired `bos`) RTT of 10–40 ms over Wi-Fi is fine: NTP cancels symmetric latency. What breaks the ≤10 ms target is asymmetric latency (cellular), hence one Wi-Fi/hotspot for every phone in the demo. CORS allows the Vercel origin (`CORS_ORIGIN`). Configuration is in [07-tech-stack.md](07-tech-stack.md); rooms live in memory, so exactly one machine runs.

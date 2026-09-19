@@ -20,7 +20,7 @@ A fresh Turborepo in Beatsync's shape: Bun on the server side, Next.js on Vercel
 | QR | `qrcode` | Host · Lobby renders `joinUrl` from `POST /rooms` to a canvas/SVG |
 | Screen | Wake Lock API | requested inside `audio.unlock()` by the engine; `/diag` shows its state; HTTPS required |
 | Audio | Web Audio API | one `AudioContext` per page, owned by `@hive/sync-client`; `navigator.audioSession.type = 'playback'` when available |
-| Hosting | Fly.io (server) + Vercel (web) | one always-on machine in `bos` |
+| Hosting | Fly.io (server) + Vercel (web) | one always-on machine in `ewr` (Newark; Fly retired `bos`) |
 
 ## Repository layout
 

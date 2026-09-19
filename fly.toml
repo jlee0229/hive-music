@@ -3,7 +3,7 @@
 # The Docker build context is the repo root (the Dockerfile copies the whole workspace and runs apps/server/src/index.ts).
 
 app = "hivemusic-server"
-primary_region = "bos"
+primary_region = "ewr"
 
 [build]
   dockerfile = "infra/Dockerfile"
