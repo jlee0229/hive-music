@@ -11,7 +11,10 @@
  * music should be right now and starts there. Late join, reconnect, a resumed tab and a seek are all
  * the same code path.
  */
-import { evaluatePattern, RESYNC_THRESHOLD_MS, type Assignment, type Pattern, type Transport } from "@hive/protocol";
+import {
+  evaluatePattern, RESYNC_CROSSFADE_MS, RESYNC_THRESHOLD_MS,
+  type Assignment, type Pattern, type Transport,
+} from "@hive/protocol";
 import type { ClockModel, CtxMapper } from "./clock";
 
 // ---- the slice of Web Audio this file needs ---------------------------------
@@ -68,6 +71,10 @@ export const PATTERN_LOOKAHEAD_MS = 200;
 export const PATTERN_CURVE_HZ = 200;
 /** Fade applied when stopping so a pause never clicks. */
 export const STOP_FADE_SEC = 0.01;
+/** How often the playhead is compared with the timeline while playing. */
+export const DRIFT_CHECK_INTERVAL_MS = 1000;
+/** A hard resync starts this far ahead, leaving room to build the new branch. */
+export const RESYNC_START_MARGIN_SEC = 0.05;
 
 export const gainFromDb = (db: number): number => (db <= -60 ? 0 : 10 ** (db / 20));
 
@@ -125,6 +132,11 @@ interface Branch {
   sources: Map<string, SourceLike>;
   stemGains: Map<string, GainLike>;
   patternGain: GainLike;
+  /**
+   * Crossfade only. It has to be its own node: during WAVE or STROBE the pattern gain is under
+   * automation, and fading on the same param would fight the curve (or be erased by it).
+   */
+  fadeGain: GainLike;
   /** Ctx time of track position 0 for this branch (what the drift check compares against). */
   startCtxForZero: number;
   startedAtCtx: number;
@@ -163,7 +175,13 @@ export class Scheduler {
   private muted = false;
 
   lastDecision: StartDecision | null = null;
+  /** Last hard resync applied, ms. Feeds `syncErrMs`; keeps its value between resyncs. */
   lastCorrectionMs = 0;
+  /** Most recent drift measurement, ms, corrected or not (diagnostics). */
+  lastDriftErrorMs = 0;
+  resyncCount = 0;
+  private driftTimer: ReturnType<typeof setInterval> | null = null;
+  private useOutputLatency = false;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.master = deps.ctx.createGain();
@@ -221,6 +239,7 @@ export class Scheduler {
     opts: { trackId: string | null; useOutputLatency: boolean; force?: boolean },
   ): ApplyResult {
     this.assignment = assignment;
+    this.useOutputLatency = opts.useOutputLatency;
 
     if (transport.state !== "playing" || !opts.trackId || opts.trackId !== this.trackId || this.buffers.size === 0) {
       const wasPlaying = this.playing;
@@ -247,9 +266,23 @@ export class Scheduler {
       this.applied.serverTimeAtTrackZero === key.serverTimeAtTrackZero &&
       Math.abs(this.applied.timingShiftMs - key.timingShiftMs) <= RESYNC_THRESHOLD_MS;
 
-    if (same && this.playing && !opts.force) {
+    if (same && this.playing) {
       // Gains and patterns may still have changed — that is a ramp, never a restart (B5e).
       this.applyAssignmentGains(assignment);
+      if (opts.force) {
+        /*
+         * A resumed tab or a context that came back from 'interrupted' lands here. Drift-check rather
+         * than restart: the check will crossfade if the playhead really moved, and a tab that was
+         * hidden for two seconds needs no interruption at all. Restarting on every visibilitychange
+         * would put an audible gap into the most common recovery path there is.
+         */
+        const drift = this.checkDrift(assignment, opts.useOutputLatency);
+        return {
+          action: drift?.resynced ? "restarted" : "unchanged",
+          decision: this.lastDecision,
+          reason: drift ? `drift ${drift.errorMs.toFixed(2)} ms` : "forced re-check",
+        };
+      }
       return { action: "unchanged", decision: this.lastDecision, reason: "same transport" };
     }
 
@@ -264,8 +297,9 @@ export class Scheduler {
 
     const restarted = this.playing;
     if (restarted) this.stopAll("rescheduling");
+    this.applied = key; // set before startBranch: the drift check reads it
     this.startBranch(decision, assignment);
-    this.applied = key;
+    this.startDriftCheck();
     this.lastDecision = decision;
     return {
       action: restarted ? "restarted" : "started",
@@ -275,16 +309,20 @@ export class Scheduler {
   }
 
   /** Builds one branch of the graph and starts every stem at the identical ctx time and offset. */
-  private startBranch(decision: StartDecision, assignment: Assignment | null): Branch {
+  private startBranch(decision: StartDecision, assignment: Assignment | null, fadeInFrom = 1): Branch {
     const { ctx } = this.deps;
+    const fadeGain = ctx.createGain();
+    fadeGain.gain.value = fadeInFrom;
+    fadeGain.connect(this.master as never);
     const patternGain = ctx.createGain();
     patternGain.gain.value = 1;
-    patternGain.connect(this.master as never);
+    patternGain.connect(fadeGain as never);
 
     const branch: Branch = {
       sources: new Map(),
       stemGains: new Map(),
       patternGain,
+      fadeGain,
       startCtxForZero: decision.startCtxForZero,
       startedAtCtx: decision.whenCtx,
       startOffsetSec: decision.offsetSec,
@@ -315,22 +353,99 @@ export class Scheduler {
   stopAll(_reason = "stop"): void {
     this.patternKey = null;
     const at = this.deps.ctx.currentTime;
-    for (const branch of this.branches) {
-      if (branch.stopped) continue;
-      branch.stopped = true;
-      branch.patternGain.gain.cancelScheduledValues(at);
-      branch.patternGain.gain.setValueAtTime(branch.patternGain.gain.value, at);
-      branch.patternGain.gain.linearRampToValueAtTime(0, at + STOP_FADE_SEC);
-      for (const source of branch.sources.values()) {
-        try {
-          source.stop(at + STOP_FADE_SEC);
-        } catch {
-          /* a source that never started throws on stop in some engines */
-        }
-      }
-    }
+    for (const branch of this.branches) this.fadeOutAndStop(branch, at, STOP_FADE_SEC);
     this.branches = [];
     this.stopPatternAutomation();
+    this.stopDriftCheck();
+  }
+
+  /** Ramps a branch's fade node to 0 and stops its sources after the fade. */
+  private fadeOutAndStop(branch: Branch, at: number, fadeSec: number): void {
+    if (branch.stopped) return;
+    branch.stopped = true;
+    branch.fadeGain.gain.cancelScheduledValues(at);
+    branch.fadeGain.gain.setValueAtTime(branch.fadeGain.gain.value, at);
+    branch.fadeGain.gain.linearRampToValueAtTime(0, at + fadeSec);
+    for (const source of branch.sources.values()) {
+      try {
+        source.stop(at + fadeSec);
+      } catch {
+        /* a source that never started throws on stop in some engines */
+      }
+    }
+  }
+
+  // ---- drift check and hard resync (B4) -------------------------------------
+  /**
+   * Playhead error, ms. Positive = this phone is ahead of the timeline.
+   *
+   * The whole check is one subtraction, and that is the point: the ideal ctx time for track position 0
+   * *computed now* minus the one we actually scheduled with. Because it reuses
+   * `ctxTimeForTrackPosition`, the drift check cannot disagree with the scheduler about the formula —
+   * a separate derivation is exactly how a sign error survives in one path and not the other.
+   *
+   * It catches every source of error at once: the clock offset moving (the mapping moves), a nudge or a
+   * mode change (compensation and delay are inputs), and the audio clock drifting against the system
+   * clock (`ctx.currentTime` advances faster than real time, so the ideal start slides later).
+   */
+  driftErrorMs(assignment: Assignment | null, useOutputLatency: boolean): number | null {
+    const branch = this.branches.find((b) => !b.stopped);
+    if (!branch || this.applied === null) return null;
+    const ideal = this.ctxTimeForTrackPosition(this.applied.serverTimeAtTrackZero, 0, assignment, useOutputLatency);
+    return (ideal - branch.startCtxForZero) * 1000;
+  }
+
+  /**
+   * Runs the drift check and, past RESYNC_THRESHOLD_MS, hard-resyncs: a new branch at the corrected
+   * position fades in over RESYNC_CROSSFADE_MS while the old one fades out. A crossfade rather than a
+   * stop-and-start because the two branches are the same audio a few ms apart — the artifact is a brief
+   * phasiness instead of a hole.
+   */
+  checkDrift(assignment: Assignment | null, useOutputLatency: boolean): { errorMs: number; resynced: boolean } | null {
+    const errorMs = this.driftErrorMs(assignment, useOutputLatency);
+    if (errorMs === null) return null;
+    this.lastDriftErrorMs = errorMs;
+    if (Math.abs(errorMs) <= RESYNC_THRESHOLD_MS) return { errorMs, resynced: false };
+
+    const ctxNow = this.deps.ctx.currentTime;
+    const startCtxForZero = this.ctxTimeForTrackPosition(
+      this.applied!.serverTimeAtTrackZero,
+      0,
+      assignment,
+      useOutputLatency,
+    );
+    const whenCtx = ctxNow + RESYNC_START_MARGIN_SEC;
+    const offsetSec = whenCtx - startCtxForZero;
+    if (offsetSec < 0 || offsetSec >= this.durationSec) {
+      // The correction would land outside the track: nothing useful to fade to.
+      return { errorMs, resynced: false };
+    }
+    const decision: StartDecision = { whenCtx, offsetSec, startCtxForZero, mode: "immediate" };
+    const fadeSec = RESYNC_CROSSFADE_MS / 1000;
+    const old = this.branches.filter((b) => !b.stopped);
+
+    const fresh = this.startBranch(decision, assignment, 0);
+    fresh.fadeGain.gain.setValueAtTime(0, whenCtx);
+    fresh.fadeGain.gain.linearRampToValueAtTime(1, whenCtx + fadeSec);
+    for (const branch of old) this.fadeOutAndStop(branch, whenCtx, fadeSec);
+    this.branches = this.branches.filter((b) => !b.stopped);
+
+    this.lastDecision = decision;
+    this.lastCorrectionMs = errorMs;
+    this.resyncCount++;
+    return { errorMs, resynced: true };
+  }
+
+  private startDriftCheck(): void {
+    if (this.driftTimer) return;
+    this.driftTimer = setInterval(() => {
+      if (!this.playing) return this.stopDriftCheck();
+      this.checkDrift(this.assignment, this.useOutputLatency);
+    }, DRIFT_CHECK_INTERVAL_MS);
+  }
+  private stopDriftCheck(): void {
+    if (this.driftTimer) clearInterval(this.driftTimer);
+    this.driftTimer = null;
   }
 
   // ---- gains and patterns (B5e) ---------------------------------------------
@@ -426,6 +541,7 @@ export class Scheduler {
   dispose(): void {
     this.stopAll("dispose");
     this.stopPatternAutomation();
+    this.stopDriftCheck();
     this.master.disconnect();
   }
 }

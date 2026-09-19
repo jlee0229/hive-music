@@ -58,7 +58,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B1 | server | todo | |
 | B2 | engine | done | `evidence/backend/B2-clock-test.txt` |
 | B3 | engine | done | `evidence/backend/B3-scheduler-test.txt` (phone-only half 🟡 for INT) |
-| B4 | engine | todo | INT handover: `evidence/backend/INT-first-test.md` (needs human) |
+| B4 | engine | done (table 🟡) | `evidence/backend/B4-drift.md` · INT handover `evidence/backend/INT-first-test.md` |
 | B5 | engine (B5e) + server (B5s) | B5e done | `evidence/backend/B5-engine.md` (B5s is the server agent's) |
 | B6 | server | todo | |
 | B7 | server | todo | |

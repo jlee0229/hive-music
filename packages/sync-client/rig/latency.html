@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HiveMusic · device latency probe</title>
+<!--
+  Gate B4, the half that needs hardware: STARTER_LATENCY_TABLE_MS is guesses (60/45/25/30 ms) and only
+  the DIFFERENCES between rows matter, because a value common to every phone shifts them all equally and
+  is inaudible.
+
+  Open this page on each phone, tap Measure, and paste the result line back. No build step, no server,
+  no dependencies: `bun --cwd packages/sync-client x serve rig` or any static server, or just open the
+  file. It must be served over HTTPS (or localhost) for audioSession/wakeLock to be reported honestly.
+
+  What it measures, and what each number is worth:
+    baseLatency    - the render quantum the browser admits to. Reliable; small.
+    outputLatency  - the browser's own estimate of speaker latency. This is the number the engine falls
+                     back to when the table has no row. Chromium reports something plausible; WebKit's
+                     is known-unreliable, which is exactly why the table exists.
+    latencyHint    - "interactive" vs "playback" is a real choice: on Chromium 141 (Linux, dummy audio
+                     device) outputLatency was 32 ms interactive and 72 ms playback. The engine uses
+                     "interactive" for that reason. If your phone shows a similar gap, that confirms it.
+
+  None of these is the truth about the speaker. The truth comes from B8e's acoustic calibration; this
+  page is how we get the Tier-1 table close enough that the nudge slider has a small job.
+-->
+<style>
+  :root { color-scheme: dark; --bg:#0B1120; --fg:#F1F5F9; --dim:#94A3B8; --line:#1E293B; --accent:#F59E0B; --ok:#22C55E; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
+         font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.sub { margin:0 0 16px; color:var(--dim); font-size:13px; }
+  button { width:100%; padding:16px; font-size:17px; font-weight:600; border:0; border-radius:12px;
+           background:var(--accent); color:#1F1300; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; font-variant-numeric:tabular-nums; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:500; }
+  td.n { text-align:right; }
+  pre { margin-top:16px; padding:12px; background:#020617; border:1px solid var(--line); border-radius:10px;
+        white-space:pre-wrap; word-break:break-all; font-size:12px; color:var(--ok); }
+  .note { margin-top:12px; color:var(--dim); font-size:12px; }
+  code { color:var(--fg); }
+</style>
+</head>
+<body>
+<h1>Device latency probe</h1>
+<p class="sub">Tap Measure, then send the green line back. One run per phone. Sound is one silent sample; nothing audible plays.</p>
+
+<button id="go">Measure</button>
+
+<table id="out" hidden>
+  <thead><tr><th>latencyHint</th><th class="n">baseLatency</th><th class="n">outputLatency</th><th class="n">sampleRate</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<div id="env" class="note"></div>
+<pre id="line" hidden></pre>
+<div class="note">
+  <code>outputLatency</code> of 0 or missing means this browser will not tell us — the Tier-1 table row is
+  then the only estimate, and that row has to come from B8e's acoustic calibration or from the nudge slider.
+</div>
+
+<script>
+const HINTS = ["interactive", "playback"];
+const ms = (s) => (typeof s === "number" && s > 0 ? (s * 1000).toFixed(1) : "—");
+
+/** Every iOS browser is WebKit, so Chrome-on-iOS behaves like Safari for audio. Mirrors detectDevice(). */
+function browserFamily() {
+  const ua = navigator.userAgent;
+  const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(ua);
+  const isChrome = /Chrome\/|CriOS\//.test(ua) && !/Edg\//.test(ua);
+  const isSafari = /Safari\//.test(ua) && !isChrome && !/Chromium|Android/.test(ua);
+  if (isIOS) return "ios-safari";
+  if (isAndroid && isChrome) return "android-chrome";
+  if (isChrome) return "desktop-chrome";
+  if (isSafari) return "desktop-safari";
+  return "other";
+}
+
+async function probe(hint) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx({ latencyHint: hint });
+  // The unlock sequence the engine uses, so the numbers come from a context in the same state.
+  try { if ("audioSession" in navigator) navigator.audioSession.type = "playback"; } catch {}
+  const src = ctx.createBufferSource();
+  src.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+  src.connect(ctx.destination);
+  src.start(0);
+  await ctx.resume();
+  // outputLatency is only populated once the render thread has actually run.
+  await new Promise((r) => setTimeout(r, 400));
+  const row = {
+    hint,
+    sampleRate: ctx.sampleRate,
+    baseLatency: ctx.baseLatency,
+    outputLatency: ctx.outputLatency,
+    state: ctx.state,
+  };
+  try { await ctx.close(); } catch {}
+  return row;
+}
+
+document.getElementById("go").addEventListener("click", async (ev) => {
+  ev.target.disabled = true;
+  ev.target.textContent = "measuring…";
+  const rows = [];
+  for (const hint of HINTS) {
+    try { rows.push(await probe(hint)); } catch (err) { rows.push({ hint, error: String(err) }); }
+  }
+
+  const table = document.getElementById("out");
+  const body = table.querySelector("tbody");
+  body.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.hint}</td><td class="n">${ms(r.baseLatency)} ms</td>` +
+                   `<td class="n">${ms(r.outputLatency)} ms</td><td class="n">${r.sampleRate ?? "—"}</td>`;
+    body.appendChild(tr);
+  }
+  table.hidden = false;
+
+  let lock = "not requested";
+  try {
+    if (navigator.wakeLock) { const s = await navigator.wakeLock.request("screen"); lock = "granted"; await s.release(); }
+    else lock = "unsupported";
+  } catch (err) { lock = "refused: " + (err && err.name ? err.name : err); }
+
+  document.getElementById("env").textContent =
+    `family ${browserFamily()} · audioSession ${"audioSession" in navigator ? navigator.audioSession.type : "unsupported"}` +
+    ` · wakeLock ${lock} · secure ${isSecureContext}`;
+
+  const interactive = rows.find((r) => r.hint === "interactive") || {};
+  const playback = rows.find((r) => r.hint === "playback") || {};
+  const out = document.getElementById("line");
+  out.hidden = false;
+  out.textContent =
+    `B4 | ${browserFamily()} | outputLatency(interactive)=${ms(interactive.outputLatency)}ms | ` +
+    `base=${ms(interactive.baseLatency)}ms | outputLatency(playback)=${ms(playback.outputLatency)}ms | ` +
+    `rate=${interactive.sampleRate ?? "?"} | audioSession=${"audioSession" in navigator} | ` +
+    `ua=${navigator.userAgent}`;
+  ev.target.textContent = "Measure again";
+  ev.target.disabled = false;
+});
+</script>
+</body>
+</html>
