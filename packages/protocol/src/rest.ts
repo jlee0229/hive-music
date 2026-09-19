@@ -17,6 +17,13 @@ export const TrackLibraryEntrySchema = TrackInfoSchema.extend({
   /** Per-second loudness 0..1 (fixtures/gen-synthetic.ts writes it; ffmpeg for real tracks). */
   energy: z.array(z.number().min(0).max(1)).optional(),
   clickTimesSec: z.array(z.number()).optional(),
+  /**
+   * Track time of the drop, seconds, when the track metadata knows it. The Vibe Director prefers it
+   * over the energy-spike heuristic (docs/05-effect-modes.md). Added for the server agent's R-1:
+   * `meta.json` already carried it beside `energy` and `clickTimesSec`, so its absence here was an
+   * omission rather than a decision.
+   */
+  dropSec: z.number().nonnegative().optional(),
   generated: z.boolean().optional(),
 });
 export type TrackLibraryEntry = z.infer<typeof TrackLibraryEntrySchema>;

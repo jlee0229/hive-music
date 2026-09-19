@@ -55,7 +55,7 @@ async function loadLibrary(fixturesDir: string, origin: string): Promise<TrackLi
       const meta = await Bun.file(`${fixturesDir}/tracks/${rel}`).json();
       const urls: Record<string, string> = {};
       for (const s of meta.stems as string[]) urls[s] = `${origin}/audio/${meta.id}/${s}.wav`;
-      out.push({ id: meta.id, title: meta.title, durationSec: meta.durationSec, stems: meta.stems, bpm: meta.bpm, urls, energy: meta.energy, clickTimesSec: meta.clickTimesSec, generated: meta.generated });
+      out.push({ id: meta.id, title: meta.title, durationSec: meta.durationSec, stems: meta.stems, bpm: meta.bpm, urls, energy: meta.energy, clickTimesSec: meta.clickTimesSec, dropSec: meta.dropSec, generated: meta.generated });
     }
   } catch {
     /* no fixtures dir: fall through */

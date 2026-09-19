@@ -107,7 +107,7 @@ Discriminated on `type`. Host-only messages return `ERROR NOT_HOST` from a playe
 | `GET /health` | `{ok, protocolVersion, serverTime}` |
 | `POST /rooms` | `{code?}` → `{code, hostKey, joinUrl}` — a fixed code (`ROOM_FIXED_CODE`) survives a restart |
 | `GET /rooms/:code` | `{code, exists, players}` |
-| `GET /tracks?q=` | `{tracks: TrackLibraryEntry[]}` — library search over `fixtures/tracks/*/meta.json`; each entry carries `urls{stem→wav}`, `energy[]`, `clickTimesSec[]` |
+| `GET /tracks?q=` | `{tracks: TrackLibraryEntry[]}` — library search over `fixtures/tracks/*/meta.json`; each entry carries `urls{stem→wav}`, `energy[]`, `clickTimesSec[]`, `dropSec?` |
 | `GET /audio/:trackId/:stem.wav` | 16-bit mono 44.1 kHz WAV, `Cache-Control: public` |
 | `POST /rooms/:code/vibe` | `{prompt}` → `{scenePlan}` (LLM or rules fallback; see [05-effect-modes.md](05-effect-modes.md)) |
 | `POST /tracks` | upload → Replicate Demucs — **stretch**, not on the demo path |
