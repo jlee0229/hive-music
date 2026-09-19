@@ -8,6 +8,7 @@ import {
   type HealthLevel,
   type HealthSnapshot,
   type Pattern,
+  type Role,
   type RoomState,
 } from "@hive/protocol";
 import type { SyncStatus } from "@hive/sync-client";
@@ -37,6 +38,11 @@ export function beatPhase(trackTimeSecNow: number, bpm: number | undefined | nul
 
 export function patternGain(pattern: Pattern | null | undefined, trackTimeSecNow: number): number {
   return evaluatePattern(pattern, trackTimeSecNow * 1000);
+}
+
+/** Full-screen role colors span light and dark; pick readable ink per role (bass is the one dark fill). */
+export function inkForRole(role: Role): string {
+  return role === "bass" ? "#F8FAFC" : "#0B0F14";
 }
 
 export function stems(room: RoomState | null): string[] {

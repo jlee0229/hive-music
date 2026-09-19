@@ -73,7 +73,18 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   }
 
   if (view === "playing") {
-    return <PlayerPlayingScreen client={client} room={room!} me={me} status={status} connection={connection} roomCode={roomCode} name={name} />;
+    return (
+      <PlayerPlayingScreen
+        client={client}
+        room={room!}
+        me={me}
+        status={status}
+        connection={connection}
+        muted={audio.muted}
+        roomCode={roomCode}
+        name={name}
+      />
+    );
   }
 
   if (view === "calibrating") {
@@ -160,7 +171,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--muted)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--faint)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--border)" }} />
-            Waiting for the host to start
+            {room?.transport.state === "paused" ? "Paused — waiting for the host" : "Waiting for the host to start"}
           </span>
           <span className="text-[13px]" style={{ color: "var(--faint)" }}>
             Keep your screen on. Don&apos;t lock your phone.

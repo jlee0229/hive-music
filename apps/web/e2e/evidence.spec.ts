@@ -46,3 +46,16 @@ test.describe("F2 evidence", () => {
     await page.screenshot({ path: path.join(OUT, "F2-stage.png") });
   });
 });
+
+test.describe("F3 evidence", () => {
+  test.use({ mockScenario: "party-12.json" });
+
+  test("F3 evidence: Playing screenshot", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/j/BZQ7");
+    await page.getByPlaceholder("Your name").fill("Maya");
+    await page.getByRole("button", { name: "Tap to join" }).click();
+    await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F3-playing.png") });
+  });
+});
