@@ -1,0 +1,7 @@
+$ bun test src/__tests__/scene-timer.test.ts
+bun test v1.3.11 (af24e281)
+
+ 7 pass
+ 0 fail
+ 23 expect() calls
+Ran 7 tests across 1 file. [4.24s]

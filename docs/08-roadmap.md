@@ -59,7 +59,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B2 | engine | todo | |
 | B3 | engine | todo | |
 | B4 | engine | todo | |
-| B5 | engine (B5e) + server (B5s) | todo | |
+| B5 | engine (B5e) + server (B5s) | server half done | `evidence/server/B5-scenes.txt` |
 | B6 | server | todo | |
 | B7 | server | todo | |
 | B8 | engine (B8e) + server (B8s) | todo | |
