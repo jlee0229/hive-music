@@ -33,6 +33,7 @@ export function PlayerPlayingScreen({
 
   const [trackTimeSec, setTrackTimeSec] = useState(0);
   const [pulse, setPulse] = useState(0);
+  const [gain, setGain] = useState(1);
   const ringRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -41,10 +42,11 @@ export function PlayerPlayingScreen({
       const t = client.clock.trackTimeSec();
       setTrackTimeSec(t);
       const phase = beatPhase(t, room.track?.bpm);
-      const gain = patternGain(assignment?.pattern, t);
+      const g = patternGain(assignment?.pattern, t);
+      setGain(g);
       // a short decaying pulse right on the downbeat, scaled by the pattern's current gain
       const attack = Math.max(0, 1 - phase * 3);
-      setPulse(attack * gain);
+      setPulse(attack * g);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -56,6 +58,13 @@ export function PlayerPlayingScreen({
       className="relative flex min-h-dvh flex-col justify-between overflow-hidden"
       style={{ background: roleColor, color: ink, padding: "52px 24px 28px" }}
     >
+      {assignment?.pattern ? (
+        <div
+          className="pointer-events-none absolute inset-0"
+          aria-hidden="true"
+          style={{ background: "#0B0F14", opacity: (1 - gain) * 0.85 }}
+        />
+      ) : null}
       <svg
         className="pointer-events-none absolute"
         style={{ left: -105, top: 122, transform: `scale(${1 + pulse * 0.06})`, transformOrigin: "center", transition: "transform 60ms linear" }}

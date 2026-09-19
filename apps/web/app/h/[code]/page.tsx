@@ -9,6 +9,7 @@ import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
 import { HiveMap } from "@/components/HiveMap";
+import { ModeChips } from "@/components/ModeChips";
 import { Legend } from "@/components/Legend";
 import { PlayerSheet } from "@/components/PlayerSheet";
 import { PlayersDrawer } from "@/components/PlayersDrawer";
@@ -134,12 +135,14 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
         <TransportBar room={room} clock={client.clock} host={client.host} />
 
+        <ModeChips current={room.mode.kind} host={client.host} />
+
         <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
-          Mode chips and the vibe box are built in gates F5–F6; tuning in F7.
+          The vibe box is built in gate F6; tuning in F7.
         </div>
 
         <div className="flex justify-center">
-          <HiveMap room={room} health={health} healthServerTime={healthServerTime} host={client.host} onOpenSheet={setSheetClientId} />
+          <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} host={client.host} onOpenSheet={setSheetClientId} />
         </div>
 
         <Legend />

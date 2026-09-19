@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { HEALTH_COLORS, HOST_RING_COLOR, ROLE_COLORS, STEMS, healthLevel, type ClientRecord, type HealthSnapshot, type RoomState, type StemRole } from "@hive/protocol";
-import type { HiveHostControls } from "@hive/sync-client";
+import type { HiveClock, HiveHostControls } from "@hive/sync-client";
+import { patternGain } from "@/lib/hive/derive";
 
 const SIZE = 350;
 const LONG_PRESS_MS = 500;
@@ -30,18 +31,22 @@ export function HiveMap({
   room,
   health,
   healthServerTime,
+  clock,
   host,
   onOpenSheet,
 }: {
   room: RoomState;
   health: Record<string, HealthSnapshot>;
   healthServerTime: number | null;
+  clock: HiveClock;
   host: HiveHostControls;
   onOpenSheet: (clientId: string) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [livePositions, setLivePositions] = useState<Record<string, { x: number; y: number }>>({});
+  // WAVE sweeps and STROBE blinks: evaluatePattern on the shared clock, no per-tick messages.
+  const [gains, setGains] = useState<Record<string, number>>({});
   const gesture = useRef<{
     id: string;
     startX: number;
@@ -50,6 +55,26 @@ export function HiveMap({
     longPressTimer: ReturnType<typeof setTimeout> | null;
     longPressed: boolean;
   } | null>(null);
+
+  const roomRef = useRef(room);
+  useEffect(() => {
+    roomRef.current = room;
+  }, [room]);
+
+  useEffect(() => {
+    let raf: number;
+    const tick = () => {
+      const t = clock.trackTimeSec();
+      const next: Record<string, number> = {};
+      for (const c of Object.values(roomRef.current.clients)) {
+        if (c.assignment?.pattern) next[c.id] = patternGain(c.assignment.pattern, t);
+      }
+      setGains(next);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [clock]);
 
   const roles = cyclableRoles(room);
 
@@ -174,6 +199,7 @@ export function HiveMap({
       {dots.map(({ client, x, y, isHost }) => {
         const level = healthLevel(health[client.id] ?? null, healthServerTime ?? 0);
         const fill = client.assignment ? ROLE_COLORS[client.assignment.role] : ROLE_COLORS.unison;
+        const gain = client.assignment?.pattern ? (gains[client.id] ?? 1) : 1;
         const cx = x * SIZE;
         const cy = y * SIZE;
         return (
@@ -188,7 +214,16 @@ export function HiveMap({
             style={{ cursor: "pointer" }}
           >
             <circle cx={cx} cy={cy} r="24" fill="none" stroke={HEALTH_COLORS[level]} strokeWidth="3" />
-            <circle cx={cx} cy={cy} r="17" fill={fill} stroke={isHost ? HOST_RING_COLOR : "none"} strokeDasharray={isHost ? "3 2" : undefined} strokeWidth={isHost ? 2 : 0} />
+            <circle
+              cx={cx}
+              cy={cy}
+              r="17"
+              fill={fill}
+              fillOpacity={0.3 + 0.7 * gain}
+              stroke={isHost ? HOST_RING_COLOR : "none"}
+              strokeDasharray={isHost ? "3 2" : undefined}
+              strokeWidth={isHost ? 2 : 0}
+            />
             <text x={cx} y={cy + 40} textAnchor="middle" fontSize="11" fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
               {client.name}
             </text>

@@ -15,6 +15,7 @@ next-env.d.ts
 
 # generated / large media (regenerate with `bun run fixtures`)
 evidence/**/*.mp4
+evidence/**/*.webm
 evidence/**/*.wav
 fixtures/tracks/**/*.wav
 
