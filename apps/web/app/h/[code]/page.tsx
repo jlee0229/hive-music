@@ -12,6 +12,7 @@ import { HiveMap } from "@/components/HiveMap";
 import { ModeChips } from "@/components/ModeChips";
 import { VibeBox } from "@/components/VibeBox";
 import { SceneStrip } from "@/components/SceneStrip";
+import { HostCalibrate } from "@/components/HostCalibrate";
 import { Legend } from "@/components/Legend";
 import { PlayerSheet } from "@/components/PlayerSheet";
 import { PlayersDrawer } from "@/components/PlayersDrawer";
@@ -29,6 +30,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const [startAnywayReady, setStartAnywayReady] = useState(false);
   const [sheetClientId, setSheetClientId] = useState<string | null>(null);
   const [showPlayers, setShowPlayers] = useState(false);
+  const [calibrateDismissed, setCalibrateDismissed] = useState(false);
 
   useEffect(() => {
     if (hostKeyState) return;
@@ -108,12 +110,22 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const allReady = !!room?.track && connectedPlayers.every((c) => c.audioReadyTrackId === room.track!.id);
   const canStart = !!room?.track && (allReady || startAnywayReady || connectedPlayers.length === 0);
   const showStage = !!room?.track && room.transport.state !== "stopped";
+  const calibrationActive = room ? room.calibration.state === "countdown" || room.calibration.state === "running" || room.calibration.state === "failed" : false;
+  const showCalibrate = calibrationActive && !calibrateDismissed;
 
   if (roomError) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
         <h1 className="font-display text-2xl font-bold">Couldn&apos;t start the hive</h1>
         <p style={{ color: "var(--muted)" }}>{roomError}</p>
+      </main>
+    );
+  }
+
+  if (showCalibrate && room) {
+    return (
+      <main className="mx-auto min-h-dvh max-w-md">
+        <HostCalibrate room={room} clock={client.clock} onClose={() => setCalibrateDismissed(true)} />
       </main>
     );
   }
@@ -154,8 +166,11 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
         <div className="flex gap-2.5">
           <button
-            disabled
-            className="flex h-13 grow items-center justify-center rounded-2xl border font-semibold opacity-50"
+            onClick={() => {
+              setCalibrateDismissed(false);
+              client.host.startCalibration().catch(() => {});
+            }}
+            className="flex h-13 grow items-center justify-center rounded-2xl border font-semibold"
             style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
           >
             Tune the hive

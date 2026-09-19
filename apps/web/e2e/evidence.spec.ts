@@ -86,6 +86,17 @@ test.describe("F9 evidence", () => {
   });
 });
 
+test.describe("F7 evidence", () => {
+  test.use({ mockScenario: "calibrating.json" });
+
+  test("F7 evidence: Host Calibrate screenshot", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/h/BZQ7");
+    await expect(page.getByText("Tuning moment")).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F7-calibrate.png") });
+  });
+});
+
 test.describe("F6 evidence", () => {
   test.use({ mockScenario: "party-12.json" });
 

@@ -53,6 +53,16 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     }
   }
 
+  const [flash, setFlash] = useState(false);
+  useEffect(() => {
+    // Registered here (not inside the Calibrating screen) so a click that arrives before the
+    // coalesced ROOM_STATE switches us into "calibrating" still flashes.
+    return client.on("calibrationClick", () => {
+      setFlash(true);
+      setTimeout(() => setFlash(false), 300);
+    });
+  }, [client]);
+
   let view: View = "join";
   if (removed) view = "removed";
   else if (joinRequested && audio.state !== "locked") {
@@ -61,8 +71,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     else view = "ready";
   }
 
+  const flashOverlay = flash ? (
+    <div data-testid="calibration-flash" className="pointer-events-none fixed inset-0 z-50" style={{ background: "#FFFFFF" }} aria-hidden="true" />
+  ) : null;
+
+  let body: React.ReactNode;
   if (view === "removed") {
-    return (
+    body = (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
         <h1 className="font-display text-3xl font-bold">{removed!.heading}</h1>
         <p style={{ color: "var(--muted)" }}>{removed!.detail}</p>
@@ -74,7 +89,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   }
 
   if (view === "playing") {
-    return (
+    body = (
       <PlayerPlayingScreen
         client={client}
         room={room!}
@@ -89,7 +104,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   }
 
   if (view === "calibrating") {
-    return <PlayerCalibratingScreen room={room!} me={me} name={name} />;
+    body = <PlayerCalibratingScreen client={client} room={room!} me={me} name={name} />;
   }
 
   if (view === "ready") {
@@ -99,7 +114,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const ringColor = HEALTH_COLORS[level];
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
 
-    return (
+    body = (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-6" style={{ padding: "56px 24px 32px" }}>
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-2 text-[15px] font-semibold">
@@ -182,8 +197,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     );
   }
 
-  // view === "join"
-  return (
+  if (view === "join") {
+    body = (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-6" style={{ padding: "56px 24px 32px" }}>
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Joining a hive</span>
@@ -236,5 +251,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </p>
       </div>
     </main>
+    );
+  }
+
+  return (
+    <>
+      {body}
+      {flashOverlay}
+    </>
   );
 }
