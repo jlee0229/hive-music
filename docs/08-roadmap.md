@@ -70,7 +70,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | F3 | frontend | 🟡 needs human (phones) | `evidence/frontend/F3-playing.png`, `F3-phone.md` |
 | F4 | frontend | done | `evidence/frontend/F4-map.png` |
 | F5 | frontend | done | `evidence/frontend/F5-modes.md` (+webm, gitignored) |
-| F6 | frontend | todo | |
+| F6 | frontend | done | `evidence/frontend/F6-vibe.png` |
 | F7 | frontend | todo | |
 | F8 | frontend | todo | |
 | F9 | frontend | todo | |

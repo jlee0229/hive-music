@@ -70,3 +70,14 @@ test.describe("F4 evidence", () => {
     await page.screenshot({ path: path.join(OUT, "F4-map.png") });
   });
 });
+
+test.describe("F6 evidence", () => {
+  test.use({ mockScenario: "party-12.json" });
+
+  test("F6 evidence: vibe box + scene strip screenshot", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 980 });
+    await page.goto("/h/BZQ7");
+    await expect(page.locator('[data-testid="scene-strip"] > div')).toHaveCount(3, { timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F6-vibe.png") });
+  });
+});

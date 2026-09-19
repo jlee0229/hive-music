@@ -10,6 +10,8 @@ import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
 import { HiveMap } from "@/components/HiveMap";
 import { ModeChips } from "@/components/ModeChips";
+import { VibeBox } from "@/components/VibeBox";
+import { SceneStrip } from "@/components/SceneStrip";
 import { Legend } from "@/components/Legend";
 import { PlayerSheet } from "@/components/PlayerSheet";
 import { PlayersDrawer } from "@/components/PlayersDrawer";
@@ -137,8 +139,11 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
         <ModeChips current={room.mode.kind} host={client.host} />
 
+        <VibeBox host={client.host} />
+        <SceneStrip room={room} clock={client.clock} />
+
         <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
-          The vibe box is built in gate F6; tuning in F7.
+          Tuning is built in gate F7.
         </div>
 
         <div className="flex justify-center">
