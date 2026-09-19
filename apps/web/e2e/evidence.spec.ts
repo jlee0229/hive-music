@@ -17,3 +17,17 @@ test("F0 evidence: /diag screenshot", async ({ page }) => {
   await expect(page.getByText("ready", { exact: true })).toBeVisible({ timeout: 10_000 });
   await page.screenshot({ path: path.join(OUT, "F0-diag.png") });
 });
+
+test.describe("F1 evidence", () => {
+  test.use({ mockScenario: "join.json" });
+
+  test("F1 evidence: Ready screenshot", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/j/BZQ7");
+    await page.getByPlaceholder("Your name").fill("Maya");
+    await page.getByRole("button", { name: "Tap to join" }).click();
+    await expect(page.getByText("Synced", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUT, "F1-ready.png") });
+  });
+});

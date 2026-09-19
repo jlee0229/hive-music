@@ -45,7 +45,16 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
   );
 
   const clientRef = useRef<HiveClient | null>(null);
-  if (!clientRef.current) clientRef.current = createClient(clientOpts);
+  const optsRef = useRef<HiveClientOptions | null>(null);
+  const everConnectedRef = useRef(false);
+  if (!clientRef.current) {
+    clientRef.current = createClient(clientOpts);
+    optsRef.current = clientOpts;
+  } else if (!everConnectedRef.current && optsRef.current?.name !== clientOpts.name) {
+    // Join screen: the name can change while the user is still typing, before the tap that connects.
+    clientRef.current = createClient(clientOpts);
+    optsRef.current = clientOpts;
+  }
   const client = clientRef.current;
 
   const [room, setRoom] = useState<RoomState | null>(client.room);
@@ -74,7 +83,10 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
       setHealth(clients);
       setHealthServerTime(serverTime);
     });
-    if (opts.autoConnect) client.connect().catch(() => {});
+    if (opts.autoConnect) {
+      everConnectedRef.current = true;
+      client.connect().catch(() => {});
+    }
     return () => {
       offState();
       offStatus();
@@ -94,6 +106,9 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
     audio: { state: audioState, loadProgress, muted },
     health,
     healthServerTime,
-    connect: () => client.connect(),
+    connect: () => {
+      everConnectedRef.current = true;
+      return client.connect();
+    },
   };
 }

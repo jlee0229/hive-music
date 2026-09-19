@@ -3,15 +3,25 @@ import {
   activeSceneIndex,
   evaluatePattern,
   healthLevel,
+  type AudioState,
   type ClientRecord,
   type HealthLevel,
   type HealthSnapshot,
   type Pattern,
   type RoomState,
 } from "@hive/protocol";
+import type { SyncStatus } from "@hive/sync-client";
 
 export function healthFor(health: Record<string, HealthSnapshot>, id: string, nowServerTime: number): HealthLevel {
   return healthLevel(health[id] ?? null, nowServerTime);
+}
+
+/** A player has no HEALTH broadcast of its own (hosts-only); build the same shape from its live status instead. */
+export function selfHealthLevel(status: SyncStatus, audioState: AudioState, nowServerTime: number): HealthLevel {
+  return healthLevel(
+    { rttMs: status.rttMs, syncErrMs: status.syncErrMs, outputLatencyMs: status.outputLatencyMs, audioState, lastSeenServerTime: nowServerTime },
+    nowServerTime,
+  );
 }
 
 export function sceneNowIndex(room: RoomState | null, trackTimeSecNow: number): number {

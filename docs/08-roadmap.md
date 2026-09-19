@@ -65,7 +65,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B8 | engine (B8e) + server (B8s) | server half done | `evidence/server/B8-calibration.txt` |
 | B9 (stretch) | server | todo | |
 | F0 | frontend | done | `evidence/frontend/F0-diag.png` |
-| F1 | frontend | todo | |
+| F1 | frontend | 🟡 needs human (phones) | `evidence/frontend/F1-ready.png`, `F1-phones.md` |
 | F2 | frontend | todo | |
 | F3 | frontend | todo | |
 | F4 | frontend | todo | |
