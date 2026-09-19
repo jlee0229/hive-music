@@ -2,95 +2,116 @@
 
 Owner: backend agent
 
-`@hive/sync-client` is the headless browser engine: WebSocket + reconnect, clock model, AudioContext, stem preload, scheduling, drift correction, pattern gain automation, calibration click emit/listen, device detection. `apps/web` never creates its own AudioContext or WebSocket; it calls this API through the `useHiveClient` hook it owns. The public API is frozen at IC0; the stub on `main` (`packages/sync-client/src/index.ts`) throws "not implemented" until B2–B4 fill it in. Wire contract: [02-protocol.md](02-protocol.md). Calibration internals: [04-calibration.md](04-calibration.md).
+`@hive/sync-client` is the headless browser engine: WebSocket + reconnect, clock model, AudioContext, stem preload, scheduling, drift correction, pattern gain automation, calibration click emit/listen, wake lock, device detection. `apps/web` never creates its own AudioContext or WebSocket; it calls this API through the `useHiveClient` hook it owns. The public surface is frozen at IC0 in `packages/sync-client/src/index.ts`; `createHiveClient` throws "not implemented" until B2–B4 fill it in, and `createStubClient` (`src/stub.ts`) speaks the full protocol with no audio so the frontend can build against the mock. Wire contract: [02-protocol.md](02-protocol.md). Calibration internals: [04-calibration.md](04-calibration.md).
 
 ## Public API (frozen at IC0)
 
+The plan's shorthand — `createHiveClient({wsUrl, apiUrl, roomCode, kind, plays, hostKey?, name?})` → `connect()/disconnect()`, `on(...)`, `room`, `me`, `connection`, `audio`, `loadProgress`, `audio.unlock()`, `clock.serverNow()`, `clock.trackTimeSec()`, `status {…}`, `host.{…}`, `calibration.runAsReference({onProgress})`, `detectDevice()` — is realised by these types (`index.ts` wins over any prose):
+
 ```ts
-createHiveClient({ wsUrl, apiUrl, roomCode, kind, plays, hostKey?, name? })
-  → connect() / disconnect()
-  → on('state' | 'health' | 'status' | 'error' | 'connection' | 'audio', handler)
-  → room                       // latest RoomState from ROOM_STATE
-  → me                         // room.clients[myClientId]
-  → connection: 'connecting' | 'open' | 'reconnecting' | 'closed'
-  → audio: 'locked' | 'unlocked' | 'loading' | 'ready'
-  → loadProgress               // 0..1 across all stems of room.track
-  → audio.unlock()             // must be called inside a user gesture
-  → clock.serverNow()          // ms on the server clock
-  → clock.trackTimeSec()       // derived from room.transport
-  → status { clockOffsetMs, rttMs, syncErrMs, outputLatencyMs, compensationMs }
-  → host.{ play, pause, seek, setMode, assign, setPosition, nudge, setPlays, startCalibration, vibe }
-  → calibration.runAsReference({ onProgress })
-  → detectDevice()
+createHiveClient(opts: HiveClientOptions): HiveClient
+  HiveClientOptions { wsUrl, apiUrl, roomCode, kind: 'host'|'player', plays, hostKey?, name?, clientId? }
+
+HiveClient
+  clientId                       // UUID persisted in localStorage as hive:clientId:<roomCode>
+  room: RoomState | null         // latest ROOM_STATE
+  me: ClientRecord | null        // room.clients[clientId]
+  assignment: Assignment | null  // me.assignment
+  connection: 'connecting' | 'open' | 'reconnecting' | 'closed'
+  status: SyncStatus             // { clockOffsetMs, rttMs, syncErrMs, outputLatencyMs, compensationMs, lastCorrectionMs, playing }
+  clock: { serverNow(), trackTimeSec(), ctxTimeFor(serverTime) }
+  audio: { unlock(): Promise<void>, state: AudioState, loadProgress, setMuted(m), muted }
+  host:  { setTrack, play(trackTimeSec?), pause(), seek(t), setMode(mode, params?), assign(id, role|null),
+           setPosition(id, x, y), nudge(id, ms), setPlays(plays), kick(id), startCalibration(): Promise<void>, vibe(prompt): Promise<ScenePlan> }
+  calibration: { runAsReference({onProgress?}): Promise<CalibrationResult>, renderClick(spec, sampleRate): Float32Array }
+  nudgeSelf(ms)                  // players nudge themselves; hosts nudge anyone via host.nudge
+  connect(): Promise<void>       // resolves on WELCOME
+  disconnect()
+  on(event, handler): () => void // returns the unsubscribe
+  off(event, handler)
+
+HiveEvents
+  state(room)                    // full snapshot, ≤2 Hz; render from it, never diff
+  health(clients, serverTime)    // hosts only, 1 Hz
+  status(status)                 // after every probe
+  connection(state)
+  audio(state, loadProgress)
+  assignment(assignment | null)  // own assignment changed (derived from state)
+  calibrationClick(clickAtServerTime)   // player screens flash; the engine plays the click
+  error(code, message)
+
+detectDevice(userAgent?) → DeviceInfo { userAgent, platform, browserFamily, model? }
+  browserFamily ∈ 'ios-safari' | 'android-chrome' | 'desktop-chrome' | 'desktop-safari' | 'other'
+  (every iOS browser is WebKit → 'ios-safari')
 ```
 
-Events: `state` (new `room`), `health` (hosts only, from `HEALTH`), `status` (any `status` field changed), `error` (`ERROR` message or local failure), `connection` (connection state changed), `audio` (audio state or `loadProgress` changed).
+Semantics the implementation must keep:
 
-Notes on the shape:
-
-- The plan lists both `audio` (a state string) and `audio.unlock()`. (assumption) The stub implements `audio` as `{ state, unlock() }` where `state` is the string above, and the `audio` event carries `{ state, loadProgress }`. If the stub on `main` differs, the stub wins and this doc is corrected.
-- `host.*` methods send the corresponding message: `play(trackId?, trackTimeSec?)`, `pause()`, `seek(trackTimeSec)` → `TRANSPORT`; `setMode(mode, params)` → `SET_MODE`; `assign(clientId, role|null)` → `ASSIGN`; `setPosition(clientId, x, y)` → `SET_POSITION` (the UI throttles to 10 Hz); `nudge(clientId, nudgeMs)` → `NUDGE`; `setPlays(plays)` → `SET_PLAYS`; `startCalibration()` → `CALIBRATION_START {referenceClientId: me.id}`; `vibe(prompt)` → `POST /rooms/:code/vibe`.
-- (assumption) The player's own nudge slider calls `host.nudge(me.id, ms)`; the server accepts `NUDGE` from a non-host only for its own `clientId`. See PR-000 in [PROTOCOL-REQUESTS.md](PROTOCOL-REQUESTS.md).
-- `detectDevice()` → `{userAgent, platform, browserFamily, model?}` with `browserFamily ∈ 'ios-safari' | 'android-chrome' | 'desktop-chrome' | 'desktop-safari' | 'other'` (these are the keys of `STARTER_LATENCY_TABLE_MS`).
-- `calibration.runAsReference` resolves when the `CALIBRATION_REPORT` has been sent and the mic released; `onProgress({done, total, clientId})` fires per click.
+- `audio.state` is the string the plan calls `audio`; `audio.loadProgress` is the plan's `loadProgress`.
+- `host.setPosition` is throttled to `SET_POSITION_MAX_HZ = 10` **inside the engine** (the UI may call it every frame; the last value on release still gets through because the stub sends when the interval has elapsed — the real engine also flushes the final value, assumption).
+- `host.startCalibration()` sends `CALIBRATION_START {referenceClientId: clientId}` and resolves when `room.calibration.state` becomes `done` or `failed`.
+- `host.vibe(prompt)` POSTs `/rooms/:code/vibe` and resolves with `scenePlan` (LLM or rules).
+- `clock.ctxTimeFor(S)` = the AudioContext time at which server time `S` reaches this device's speaker, i.e. the plain clock mapping below without compensation or delay (the engine applies those when it schedules sources). The UI uses it to time flashes; the stub returns seconds-from-now.
+- `nudgeSelf(ms)` sends `NUDGE {clientId: me, nudgeMs}`; the server accepts `NUDGE` from a player only for its own id.
+- Reconnect: `connection` → `reconnecting`, backoff `min(5000, 300·2^min(attempt,4))` ms (300, 600, 1200, 2400, 4800), re-`JOIN` with the same `clientId`, `WELCOME` resets the counter. `ERROR KICKED` closes for good (`room = null`).
 
 ## Sign conventions
 
 | Quantity | Definition | Positive means |
 |---|---|---|
-| `clockOffsetMs` | `serverTime − performance.now()` | server clock reads ahead of the local monotonic clock |
-| `estServerNow` | `performance.now() + clockOffsetMs` | — |
-| `compensationMs` | `nudgeMs + (calibratedOffsetMs ?? tableLatencyMs ?? 0)`, computed server-side | device is late → start it earlier |
-| `nudgeMs` | slider; "I sound late" → positive | advance this phone |
-| `delayMs` | from the assignment (WAVE) | play this phone later |
+| `localNow` | `performance.timeOrigin + performance.now()` (epoch ms, monotonic within a page) | — |
+| `clockOffsetMs` | `serverTime − localNow` | server clock reads ahead of this phone |
+| `estServerNow` | `localNow + clockOffsetMs` | — |
+| `compensationMs` | `nudgeMs + (calibratedOffsetMs ?? tableLatencyMs ?? 0)`, computed server-side, delivered in the assignment | device is late → start it earlier |
+| `nudgeMs` | slider, ±`NUDGE_RANGE_MS` = ±100; "sounds late" → positive | advance this phone |
+| `delayMs` | from the assignment (WAVE), 0..1000 | play this phone later |
 | `residualMs` | calibration ([04](04-calibration.md)) | click arrived late → add to compensation |
 
-All wire times are ms floats on the server clock. AudioContext times are seconds. Never use `Date.now()` for timing; use `performance.now()`.
+All wire times are ms floats on the server clock. AudioContext times are seconds. Never use `Date.now()` for timing.
 
 ## Clock model (NTP client)
 
-Per probe: `t0` client send (`performance.now()`), `t1` server receive, `t2` server send, `t3` client receive.
+Per probe: `t0` client send, `t1` server receive, `t2` server send, `t3` client receive (Beatsync `ntp.ts` math, re-typed in `ClockModel`):
 
 ```
 offset = ((t1 − t0) + (t2 − t3)) / 2      // serverTime − clientTime
 rtt    = (t3 − t0) − (t2 − t1)
 ```
 
-Probe schedule and selection:
-
-| Aspect | Rule |
+| Aspect | Rule (constants in `constants.ts`) |
 |---|---|
-| Burst | 20 probes in the first 4 s after `WELCOME` (10 coded pairs, one pair every 400 ms — assumption on pairing). The burst result is applied as a step before any audio is scheduled. |
-| Steady state | 1 Hz (one coded pair per second — assumption). |
-| Coded probe pairs | Each pair shares `probeGroupId`; `probeGroupIndex ∈ {0,1}`; departures spaced by a known gap `g` (assumption: 10 ms). The server returns `t1`/`t2` per probe. If `\|(t1[1] − t1[0]) − (t0[1] − t0[0])\| > 2 ms` (assumption on tolerance) the pair was queued on the path and both measurements are rejected. |
-| Window | Sliding window of the last 30 accepted probes. |
-| Selection | The probe with minimum `rtt` in the window: its `offset` is the estimate, its `rtt` is `minRttMs`. |
-| Application | If `\|estimate − applied\| > 10 ms`: step immediately (the drift check then resyncs the audio). Else slew `clockOffsetMs` toward the estimate at ≤2 ms/s (assumption). A +50 ppm local-clock drift is 0.05 ms/s, far inside the slew rate, so `estServerNow` stays within the ±2–5 ms budget indefinitely (B4). |
-| Reconnect | Keep the applied offset; restart the burst; keep the old window until 10 new probes are accepted (assumption). |
+| Burst | `NTP_BURST_COUNT = 20` coded pairs over `NTP_BURST_WINDOW_MS = 4000` — one pair every 200 ms, as the stub does — right after `WELCOME`; the first estimate is adopted directly (there is nothing to slew from). |
+| Steady state | one coded pair every `NTP_STEADY_INTERVAL_MS = 1000`. |
+| Coded probe pairs | A pair shares `probeGroupId`; `probeGroupIndex` 0 then 1, departing `NTP_PROBE_PAIR_GAP_MS = 10` ms apart. The server echoes both ids with `t1`/`t2`. If `\|(t1[1] − t1[0]) − (t0[1] − t0[0])\| > NTP_PROBE_PAIR_TOLERANCE_MS = 2`, the pair was queued on the path and both samples are rejected. |
+| Window | sliding window of the last `NTP_WINDOW = 30` accepted samples. |
+| Selection | the sample with minimum `rtt` in the window: its `offset` is the estimate, its `rtt` is `status.rttMs`. |
+| Application | **slewed, never stepped** after the first estimate: `clockOffsetMs` moves toward the estimate at ≤2 ms/s (assumption on rate). A +50 ppm local-clock drift is 0.05 ms/s, far inside the slew rate, so `estServerNow` stays within the ±2–5 ms budget indefinitely (B4). A real jump (route change) shows up as audio error and is handled by the hard resync below, not by the clock. |
+| Reconnect | keep the applied offset; restart the burst; keep the old window until 10 new samples are accepted (assumption). |
 
-B2 acceptance: fake transport with +137 ms offset, ±30 ms jitter, 20 % spikes → estimate within 2 ms after 30 probes.
+B2 acceptance: fake transport with +137 ms offset, ±30 ms jitter, 20 % spikes → estimate within 2 ms after 30 probes. `ClockModel` takes `addProbe(t0, t1, t2, t3)` so the test needs no network.
 
 ## serverTime ↔ AudioContext mapping
 
-In the same synchronous tick as every probe send, sample `(performance.now(), ctx.currentTime)` and keep the last 10 pairs:
+In the same synchronous tick as every probe send, sample `(localNow, ctx.currentTime)` and keep the last 10 pairs:
 
 ```
-perfToCtx = median(ctx.currentTime − performance.now() / 1000)          // seconds
-ctxAt(S)  = perfToCtx + (S − clockOffsetMs) / 1000                       // any server time S → ctx seconds
-          ≈ ctx.currentTime + (S − estServerNow) / 1000                   // identical when read in one tick
+localToCtx = median(ctx.currentTime − localNow / 1000)                 // seconds
+ctxAt(S)   = localToCtx + (S − clockOffsetMs) / 1000                    // any server time S → ctx seconds
+           ≈ ctx.currentTime + (S − estServerNow) / 1000                // identical when read in one tick
+clock.ctxTimeFor(S) = ctxAt(S)
 ```
 
-The one-tick form is the plan's scheduling formula; the sampled form is used by the drift check and by calibration timestamps. Unit test (B3): a synthetic `(perf, ctx)` series with +50 ppm drift and 5 ms jitter maps a server time to within 2 ms.
+The one-tick form is the plan's scheduling formula; the sampled form is used by the drift check and by calibration timestamps. Unit test (B3): a synthetic `(local, ctx)` series with +50 ppm drift and 5 ms jitter maps a server time to within 2 ms.
 
 ## Transport-derived scheduling
 
-The server sets on PLAY:
+The server sets on PLAY/SEEK (`from = trackTimeSec ?? (paused ? trackTimeAtPause : 0)`):
 
 ```
-serverTimeAtTrackZero = now + LEAD_MS − trackTimeSec · 1000      // LEAD_MS = 600
+serverTimeAtTrackZero = now + LEAD_MS − from · 1000      // LEAD_MS = 600
 ```
 
-Every phone must emit track position `p` (seconds) from its speaker at server time `S(p) = serverTimeAtTrackZero + p·1000 + delayMs`. Sound leaves the speaker `compensationMs` after the ctx time we schedule, so (the plan's formula, with `serverTime = serverTimeAtTrackZero + p·1000`):
+Every speaker must emit track position `p` (seconds) at server time `S(p) = serverTimeAtTrackZero + p·1000 + delayMs`. Sound leaves the speaker `compensationMs` after the ctx time we schedule, so (the plan's formula from [02](02-protocol.md) §1, with `serverTime = serverTimeAtTrackZero + p·1000`):
 
 ```
 ctxTime = ctx.currentTime
@@ -100,41 +121,35 @@ ctxTime = ctx.currentTime
         − (tableLatencyMs == null && calibratedOffsetMs == null ? (ctx.outputLatency || 0) : 0)
 ```
 
-**Start from zero (worked example).** `estServerNow = 1 000 000.0`, `ctx.currentTime = 12.000`. PLAY was issued at `999 850` with `trackTimeSec = 0` → `serverTimeAtTrackZero = 999 850 + 600 = 1 000 450`. UNISON (`delayMs = 0`), iOS Safari with no calibration → `compensationMs = 0 + 45 = 45`.
+**Start from zero (worked example).** `estServerNow = 1 000 000.0`, `ctx.currentTime = 12.000`. PLAY was issued at `999 850` with `from = 0` → `serverTimeAtTrackZero = 999 850 + 600 = 1 000 450`. UNISON (`delayMs = 0`), iOS Safari with no calibration and no nudge → `compensationMs = 0 + 60 = 60` (starter table).
 
 ```
-ctxTime = 12.000 + (1 000 450 − 1 000 000) / 1000 + 0 − 0.045 = 12.405
-for each stem: source.start(12.405, 0)
+ctxTime = 12.000 + (1 000 450 − 1 000 000) / 1000 + 0 − 0.060 = 12.390
+for each stem: source.start(12.390, 0)
 ```
 
 **Late join / resume (worked example).** Same room, `estServerNow = 1 030 000` (the start is 29.55 s in the past), `ctx.currentTime = 42.000`. Pick `ctxStart = ctx.currentTime + 0.050` (50 ms safety margin, assumption) and solve for the offset into the track:
 
 ```
 p = (estServerNow + 50 − serverTimeAtTrackZero − delayMs + compensationMs) / 1000
-  = (1 030 000 + 50 − 1 000 450 − 0 + 45) / 1000 = 29.645
-for each stem: source.start(42.050, 29.645)
-check: position 29.645 leaves the speaker at ctx 42.050 + 0.045 = 42.095
-       → server time 1 030 095 = S(29.645) = 1 000 450 + 29 645 ✓
+  = (1 030 000 + 50 − 1 000 450 − 0 + 60) / 1000 = 29.660
+for each stem: source.start(42.050, 29.660)
+check: position 29.660 leaves the speaker at ctx 42.050 + 0.060 = 42.110
+       → server time 1 030 110 = S(29.660) = 1 000 450 + 29 660 ✓
 ```
 
-`clock.trackTimeSec()`:
-
-```
-playing: (estServerNow − serverTimeAtTrackZero) / 1000
-paused:  trackTimeAtPause
-stopped: 0                     // (assumption: 'stopped' is the initial transport state)
-```
+`clock.trackTimeSec()` = `trackTimeSec(room.transport, clock.serverNow())` from `@hive/protocol`: `playing → max(0, (estServerNow − serverTimeAtTrackZero)/1000)`, `paused → trackTimeAtPause`, `stopped → 0`.
 
 Rules:
 
-- All stems start in one synchronous sequence with the identical `when`; each stem has its own `GainNode` (dB → linear `10^(dB/20)`), summed into a pattern `GainNode`, then a master `GainNode` → `ctx.destination`. Mute = master gain 0.
-- A `ROOM_STATE` whose `(track.id, transport.state, serverTimeAtTrackZero, trackTimeAtPause)` tuple differs from the last applied one is a transport change: `paused`/`stopped` → stop sources with a 10 ms fade (assumption); `playing` → schedule as above (immediately if the start is already past).
-- A change in `compensationMs` or `delayMs` while playing changes the target position; the drift check picks it up and resyncs if the change exceeds 10 ms, otherwise the residual is carried until the next resync (v1 accepts this; slewing is stretch).
-- New `gainsDb` ramp with `linearRampToValueAtTime` over 50 ms (assumption), starting at `ctxAt(applyAtServerTime)` when present and in the future, else now.
+- All stems start in one synchronous sequence with the identical `when`; each stem has its own `GainNode` (dB → linear `10^(dB/20)`; `−60 dB` is silence), summed into a pattern `GainNode`, then a master `GainNode` → `ctx.destination`. `audio.setMuted(true)` = master gain 0 (local only).
+- A `ROOM_STATE` whose `(track.id, transport)` differs from the last applied one is a transport change: `paused`/`stopped` → stop sources with a 10 ms fade (assumption; [02](02-protocol.md) allows a 100 ms ragged pause edge); `playing` → schedule as above, immediately if the start is already past.
+- A change in `compensationMs` or `delayMs` while playing changes the target position; the drift check picks it up and resyncs if the change exceeds `RESYNC_THRESHOLD_MS`, otherwise the residual is carried until the next resync (v1 accepts this; slewing is stretch).
+- New `gainsDb` ramp with `linearRampToValueAtTime` over 50 ms (assumption), starting at `ctxAt(applyAtServerTime)` when set and in the future, else now. A new `pattern` takes effect at the same instant.
 
 ## Drift check and hard resync
 
-Every 1 s while playing — and immediately on a transport change, a clock step, `visibilitychange` → visible, or `statechange` → running — once `ctx.currentTime ≥ startCtxTime`:
+Every 1 s while playing — and immediately on a transport change, `visibilitychange` → visible, or `statechange` → running — once `ctx.currentTime ≥ startCtxTime`:
 
 ```
 emittedNow = startOffsetSec + (ctx.currentTime − startCtxTime) − compensationMs / 1000
@@ -143,41 +158,42 @@ targetNow  = (estServerNow − serverTimeAtTrackZero − delayMs) / 1000   // po
 errorMs    = (emittedNow − targetNow) · 1000                            // positive = this phone is ahead
 ```
 
-If `|errorMs| > 10 ms`: create new sources at the corrected position starting at `ctx.currentTime + 0.05`, crossfade **20 ms** (old branch gain 1→0, new branch 0→1, linear), stop the old sources after the fade. Record `lastAppliedCorrectionMs = errorMs`. If `|errorMs| ≤ 10 ms`: no audio change, but `lastAppliedCorrectionMs = errorMs` is still recorded (assumption) so the health number reports the real residual rather than 0.
+If `|errorMs| > RESYNC_THRESHOLD_MS = 10`: create new sources at the corrected position starting at `ctx.currentTime + 0.05`, crossfade `RESYNC_CROSSFADE_MS = 20` (old branch gain 1→0, new branch 0→1, linear), stop the old sources after the fade, and set `status.lastCorrectionMs = errorMs`. If `|errorMs| ≤ 10`: no audio change and `lastCorrectionMs` keeps its previous value (the `SyncStatus` doc says "last hard resync applied, 0 when none").
 
 ```
-syncErrMs := minRttMs / 2 + |lastAppliedCorrectionMs|
+syncErrMs := rttMs / 2 + |lastCorrectionMs|          // computeSyncErrMs() in @hive/protocol
 ```
 
-An upper bound on how far this phone may be from the server timeline. It drives `healthLevel`: good ≤5 ms, warn ≤20 ms, bad >20 ms; unknown when `lastSeen` >5 s. The phone reports it in `CLIENT_STATUS` every 2 s; hosts see it in `HEALTH` at 1 Hz.
+An upper bound on how far this phone may be from the server timeline. `healthLevel(h, now)` colours it: `good ≤ 5`, `warn ≤ 20`, `bad` above **or when `lastSeenServerTime` is older than 5 s**, `unknown` when `syncErrMs` is null. The phone reports it in `CLIENT_STATUS` every 2 s; hosts see it in `HEALTH` at 1 Hz. The stub reports `rttMs / 2`.
 
 B4 acceptance: rig at t=0 and t=5 min both <10 ms device-to-device; a +40 ms nudge shifts the measured click by 40±3 ms; simulated +50 ppm clock drift keeps the clock estimate within 5 ms.
 
 ## Audio state machine, unlock sequence, iOS
 
 ```
-locked ──audio.unlock() in a gesture──▶ unlocked ──track known──▶ loading ──all stems decoded──▶ ready
-   ▲                                                                                          │
-   └────── ctx.state became 'interrupted'/'suspended' and resume() was refused (no gesture) ──┘
+locked ──audio.unlock() in a gesture──▶ unlocked ──room.track known──▶ loading ──all stems decoded──▶ ready
+   ▲                                                                                              │
+   └────── ctx.state became 'interrupted'/'suspended' and resume() was refused (no gesture) ──────┘
 ```
 
-`audio.unlock()` runs inside the tap handler, synchronously before any `await`:
+`audio.unlock()` runs inside the tap handler, synchronously before any `await` (its doc comment is the contract):
 
 1. Create the `AudioContext` once (`{ latencyHint: 'interactive' }`, default sample rate).
 2. `if ('audioSession' in navigator) navigator.audioSession.type = 'playback'` — Safari 17+, feature-guarded; without it the iOS silent switch mutes Web Audio.
 3. `await ctx.resume()`.
 4. Start a one-sample silent buffer (`source.start(0)`) to satisfy WebKit's gesture requirement.
 5. Read `ctx.outputLatency` (may be `undefined` → `status.outputLatencyMs = null`).
+6. `navigator.wakeLock.request('screen')` (HTTPS; failures are logged, never thrown); re-request on `visibilitychange` → visible (assumption).
 
-Stems: when `room.track` is known and the state is `unlocked`, fetch every `GET /audio/:trackId/:stem.wav` in parallel, `decodeAudioData` each, keep the `AudioBuffer`s (≤4 × 60 s mono ≈ 42 MB as Float32). `loadProgress` = bytes received / total, with decode counted as the final 5 % (assumption). When **every stem is decoded** send `AUDIO_READY {trackId}` and set `ready`. `AUDIO_READY` never means "first stem playable". The server records it in the client's health record (assumption); it never blocks `PLAY` — a phone that becomes ready after `PLAY` late-joins through the normal path.
+Stems: when `room.track` is known and the state is `unlocked` (or the track id changes after `SET_TRACK`), fetch every `${apiUrl}/audio/${track.id}/${stem}.wav` in parallel, `decodeAudioData` each, keep the `AudioBuffer`s (≤4 × 60 s mono 44.1 kHz ≈ 42 MB as Float32). `audio.loadProgress` = bytes received / total, with decode counted as the final 5 % (assumption). When **every stem is decoded** send `AUDIO_READY {trackId}` and set `ready`. `AUDIO_READY` never means "first stem playable". The server stores it as `clients[id].audioReadyTrackId`; the Lobby's Start button waits for it ([06](06-hive-map-ui.md)) but the server never blocks `PLAY` — a phone that becomes ready after `PLAY` late-joins through the normal path.
 
-Interruptions: iOS moves the context to `'interrupted'` on lock screen or call; Android to `'suspended'` on backgrounding. On `statechange` → running or `visibilitychange` → visible, run the drift check immediately (it will resync). If `ctx.resume()` rejects outside a gesture, set `audio` to `locked` with buffers retained; the UI shows "Tap to resume" and the next `audio.unlock()` returns straight to `ready`. Wake Lock (`navigator.wakeLock.request('screen')`, HTTPS) is requested by `apps/web` after unlock (F3) and re-requested on `visibilitychange` → visible. Never call `getUserMedia` on a playing phone: it switches iOS into play-and-record and changes volume and latency — calibration listening runs only on the non-playing host phone.
+Interruptions: iOS moves the context to `'interrupted'` on lock screen or call; Android to `'suspended'` on backgrounding. On `statechange` → running or `visibilitychange` → visible, run the drift check immediately (it will resync). If `ctx.resume()` rejects outside a gesture, set `audio.state` to `locked` with buffers retained; the UI shows "Tap to resume" and the next `audio.unlock()` returns straight to `ready`. Never call `getUserMedia` on a playing phone: it switches iOS into play-and-record and changes volume and latency — calibration listening runs only on the non-playing host phone.
 
-Reconnect: on close, `connection = 'reconnecting'`, backoff 0.5 → 4 s (assumption); re-`JOIN` with the same `clientId`; the next `ROOM_STATE` re-derives everything from `transport`. Server-restart recovery within 5 s is a B3 check. Heartbeat: answer every `PING` with `PONG`.
+Heartbeat: answer every `PING {serverTime}` with `PONG` (the server stamps `lastSeenServerTime`). Server-restart recovery within 5 s is a B3 check.
 
 ## Latency table (Tier 1)
 
-`tableLatencyMs` by `browserFamily`, applied server-side when `calibratedOffsetMs` is null. Only the **differences** between rows matter — a common offset shifts every phone equally. Starter guesses; measure with the rig ([04](04-calibration.md)) and replace before B4 is signed off:
+`STARTER_LATENCY_TABLE_MS` in `constants.ts`, applied server-side as `tableLatencyMs` on `JOIN` from `device.browserFamily`, used when `calibratedOffsetMs` is null. Only the **differences** between rows matter — a common offset shifts every phone equally. Starter guesses; measure with the rig ([04](04-calibration.md)) and replace before B4 is signed off:
 
 | browserFamily | tableLatencyMs | Note |
 |---|---|---|
@@ -187,17 +203,17 @@ Reconnect: on close, `connection = 'reconnecting'`, backoff 0.5 → 4 s (assumpt
 | `desktop-safari` | 30 | starter guess; calibrate |
 | `other` | null | client subtracts `ctx.outputLatency \|\| 0` instead |
 
-Nudge semantics: `NUDGE {clientId, nudgeMs}`, whole ms, clamped to ±100 (`NUDGE_RANGE_MS`). The server recomputes `compensationMs` and broadcasts; the phone applies it through the drift check. The player slider reads "I sound early ↔ late"; late → positive → advance. The host's tap-a-dot sheet has the same slider for any player.
+Nudge semantics: `NUDGE {clientId, nudgeMs}` with `nudgeMs ∈ [−100, 100]` (`NUDGE_RANGE_MS`), whole ms. The server recomputes `compensationMs` and broadcasts; the phone applies it through the drift check. The player slider ("sounds early / sounds late", debounced 150 ms on release) calls `nudgeSelf`; the host's player sheet calls `host.nudge(id, ms)`. Late → positive → advance.
 
 ## Pattern evaluation on the shared clock
 
-For an assignment with `pattern`, the engine evaluates `evaluatePattern(pattern, trackTimeMs)` from `@hive/protocol` and schedules gain automation one period ahead on the pattern `GainNode` (5 ms edge ramps — assumption), keyed off `clock.trackTimeSec()`. No per-tick messages; the UI evaluates the same function per frame for the screen. The audio multiplier applies for `kind:'strobe'`; for `kind:'wave'` it is used by the screen only (assumption — see [05-effect-modes.md](05-effect-modes.md)).
+For an assignment with a non-null `pattern`, the engine evaluates `evaluatePattern(pattern, trackTimeMs)` from `@hive/protocol` and schedules gain automation on the pattern `GainNode` one period ahead, keyed off `clock.trackTimeSec()`: `strobe` is a square gate with `rampMs` (10 ms) linear edges and `duty` (0.5); `wave` is a raised-cosine swell `0.5 − 0.5·cos(2π·t/periodMs)` (0 at the phase origin, 1 half a period later). Both are gain multipliers in `[0, 1]` and both are applied to the audio; the UI evaluates the same function per frame for the screen. No per-tick messages. Details and the planner's phases are in [05-effect-modes.md](05-effect-modes.md).
 
 ## Error budget (mechanism view)
 
 | Term | Mechanism | Budget |
 |---|---|---|
-| Clock | min-RTT over 30 probes, coded pairs, slewed application | ±2–5 ms |
+| Clock | min-RTT over 30 samples, coded pairs, slewed application | ±2–5 ms |
 | Output latency | table → nudge → Tier 2 | ±10–20 → ±5 → ±2–3 ms |
 | Scheduling | `source.start(when)` at a computed ctx time; 128-sample render quantum | ≤3 ms |
 | Drift | hard resync at >10 ms, 20 ms crossfade | ≤10 ms transient, ~0 after |
@@ -207,9 +223,11 @@ Full table with per-mode needs: [00-context.md](00-context.md#error-budget).
 
 ## Testing hooks
 
-- The clock model takes an injectable transport (`send(t0) → Promise<{t1,t2}>`) so B2 runs under `bun test` with a fake network.
-- The scheduler takes an injectable `ctx`-like object (`currentTime`, `createBufferSource`, `createGain`) for the B3 mapping test.
-- `/diag` in `apps/web` shows `ctx.state`, `sampleRate`, `outputLatency`, `clockOffsetMs`, `rttMs`, `syncErrMs`, unlock state, wake lock, `audioSession` — the F1 checklist reads from `status` and the `audio` event.
+- `ClockModel.addProbe(t0, t1, t2, t3)` is pure; B2 runs under `bun test` with a fake transport.
+- The scheduler takes an injectable `ctx`-like object (`currentTime`, `createBufferSource`, `createGain`) for the B3 mapping test (assumption on the seam).
+- `calibration.renderClick(spec, sampleRate)` is exposed so the rig and the xcorr tests use the exact waveform the phones play.
+- `/diag` in `apps/web` shows `ctx.state`, `sampleRate`, `outputLatencyMs`, `clockOffsetMs`, `rttMs`, `syncErrMs`, `audio.state`, wake-lock state and `navigator.audioSession?.type` — the F1/F3 checklist reads from `status` and the `audio` event.
+- `createStubClient` must keep working: Playwright depends on it.
 
 ## Stretch (after B8)
 
