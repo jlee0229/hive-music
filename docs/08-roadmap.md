@@ -54,7 +54,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 
 | Gate | Owner | Status | Evidence |
 |---|---|---|---|
-| B0 | server | todo | |
+| B0 | server | done | `evidence/server/B0-routes.txt` |
 | B1 | server | todo | |
 | B2 | engine | todo | |
 | B3 | engine | todo | |

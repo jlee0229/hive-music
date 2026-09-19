@@ -30,3 +30,7 @@ Numbers are sequential from R-1. Status moves `open → accepted | declined → 
 **Answer (backend):** accepted — `ERROR.code` is an open string set, so no `PROTOCOL_VERSION` bump; `ROOM_FULL` added to §5 and to the mock's `JOIN` handler behind a scenario knob. (commit: example)
 
 Real entries start at R-1 below this line.
+
+### R-1 · 2026-09-19 · from server · status: open
+**Need:** `dropSec` on `TrackLibraryEntrySchema` (`packages/protocol/src/rest.ts`). **Why:** gate B6 (Vibe Director) — `fixtures/tracks/<id>/meta.json` writes `dropSec` (see `fixtures/gen-synthetic.ts`) and docs/05-effect-modes.md says "`meta.dropSec` wins when present" for the energy-spike heuristic, but the wire schema for `/tracks` only carries `id, title, durationSec, stems, bpm, urls, energy, clickTimesSec, generated` — no `dropSec`. **Proposal:** add `dropSec: z.number().nonnegative().optional()` to `TrackLibraryEntrySchema`, populate it in the mock's `loadLibrary`, bump `PROTOCOL_VERSION`.
+**Workaround (server):** `apps/server/src/vibe/track-meta.ts` reads `fixtures/tracks/<id>/meta.json` directly for `dropSec` server-side (never over the wire), so the rules fallback and the LLM prompt both get it without touching the contract. No frontend impact — the scene strip doesn't need `dropSec`.
