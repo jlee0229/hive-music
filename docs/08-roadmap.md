@@ -60,7 +60,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B3 | engine | todo | |
 | B4 | engine | todo | |
 | B5 | engine (B5e) + server (B5s) | server half done | `evidence/server/B5-scenes.txt` |
-| B6 | server | todo | |
+| B6 | server | needs human | `evidence/server/B6-vibe.md` (rules path done; LLM path untested, no `ANTHROPIC_API_KEY`) |
 | B7 | server | todo | |
 | B8 | engine (B8e) + server (B8s) | todo | |
 | B9 (stretch) | server | todo | |
