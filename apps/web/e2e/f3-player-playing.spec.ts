@@ -1,4 +1,3 @@
-import type { WebSocket as PWWebSocket } from "@playwright/test";
 import { test, expect } from "./fixtures";
 import { connectAsHost } from "./helpers/host-driver";
 
@@ -30,29 +29,12 @@ test("F3: ASSIGN from a host client changes the role and color", async ({ page }
   expect(bg).not.toBe("rgba(0, 0, 0, 0)");
 });
 
-test("F3: releasing the nudge slider sends exactly one NUDGE", async ({ page }) => {
-  const sent: string[] = [];
-  page.on("websocket", (ws: PWWebSocket) => {
-    ws.on("framesent", (frame) => {
-      const text = typeof frame.payload === "string" ? frame.payload : frame.payload.toString("utf-8");
-      if (text.includes('"NUDGE"')) sent.push(text);
-    });
-  });
-
+// The player-facing nudge slider is gone (timing is automatic; the host keeps a per-player nudge
+// in the player sheet), so the playing screen must NOT render one.
+test("F3: the playing screen has no nudge slider", async ({ page }) => {
   await page.goto("/j/BZQ7");
   await page.getByPlaceholder("Your name").fill("E2E Nudge");
   await page.getByRole("button", { name: "Tap to join" }).click();
   await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
-
-  const slider = page.getByLabel("Sound early or late?");
-  await slider.evaluate((el: HTMLInputElement) => {
-    el.value = "40";
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    el.dispatchEvent(new Event("mouseup", { bubbles: true }));
-  });
-
-  await expect.poll(() => sent.length, { timeout: 3000 }).toBeGreaterThan(0);
-  await page.waitForTimeout(300); // debounce window; confirm no double-send
-  expect(sent.length).toBe(1);
-  expect(sent[0]).toContain('"nudgeMs":40');
+  await expect(page.getByLabel("Sound early or late?")).toHaveCount(0);
 });

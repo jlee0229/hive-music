@@ -7,7 +7,6 @@ import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client"
 import { beatPhase, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
-import { NudgeSlider } from "@/components/NudgeSlider";
 import { AdSlot } from "@/components/AdSlot";
 import { Creators } from "@/components/Creators";
 
@@ -102,9 +101,11 @@ export function PlayerPlayingScreen({
         </span>
       </div>
 
+      {/* No nudge slider here anymore: timing is automatic (live latency + the tuning moment), and
+          a visible correction control read as "this app needs fixing". The host still has a
+          per-player nudge in the player sheet for emergencies. */}
       <div className="relative flex flex-col gap-3 rounded-[20px] p-4" style={{ background: "rgba(11,15,20,0.6)", color: "#F1F5F9" }}>
         <ReconnectBanner connection={connection} />
-        <NudgeSlider value={me?.nudgeMs ?? 0} onCommit={(ms) => client.nudgeSelf(ms)} label="Sound early or late?" dark />
         <button
           onClick={() => client.audio.setMuted(!muted)}
           className="flex h-12 items-center justify-center rounded-xl border font-semibold"

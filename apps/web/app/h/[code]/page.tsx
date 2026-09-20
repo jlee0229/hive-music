@@ -449,6 +449,18 @@ function HostRoom({
 
         <Legend />
 
+        {/* Lives on the stage, not the lobby: a per-party choice, not a per-song one. */}
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <input
+            type="checkbox"
+            checked={speakerOn}
+            onChange={(e) => toggleSpeaker(e.target.checked)}
+            className="h-6 w-6 shrink-0"
+            style={{ accentColor: "var(--primary-fill)" }}
+          />
+          <span className="text-[15px] font-semibold">This phone plays music too</span>
+        </label>
+
         <div className="flex gap-2.5">
           <button
             onClick={startTuning}
@@ -559,22 +571,6 @@ function HostRoom({
           ))}
         </div>
       </div>
-
-      <label className="flex cursor-pointer items-start gap-3.5 rounded-2xl border p-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-        <input
-          type="checkbox"
-          checked={speakerOn}
-          onChange={(e) => toggleSpeaker(e.target.checked)}
-          className="mt-0.5 h-6 w-6 shrink-0"
-          style={{ accentColor: "var(--primary-fill)" }}
-        />
-        <span className="flex flex-col gap-1">
-          <span className="text-[15px] font-semibold">Use this phone as a speaker too</span>
-          <span className="text-[13px] leading-snug" style={{ color: "var(--muted)" }}>
-            Off: this phone only runs the show and listens during tuning.
-          </span>
-        </span>
-      </label>
 
       <div className="flex flex-col gap-2.5">
         <label className="flex h-12 items-center gap-2.5 rounded-2xl border px-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>

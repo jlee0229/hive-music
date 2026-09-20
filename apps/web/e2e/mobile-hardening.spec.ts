@@ -44,11 +44,11 @@ test.describe("mobile hardening: meta tags + CSS", () => {
     expect(style).toContain("overscroll-behavior: none");
   });
 
-  test("no text-selection callout on the Hive Map or the nudge slider", async ({ page }) => {
-    await page.goto("/j/BZQ7");
-    await page.getByPlaceholder("Your name").fill("Callout Test");
-    await page.getByRole("button", { name: "Tap to join" }).click();
-    await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
+  test("no text-selection callout on the Hive Map", async ({ page }) => {
+    // The player nudge slider (the other .no-callout) is gone, so the map on the host stage is
+    // the element under test now; party-12 has the transport playing, landing hosts on the stage.
+    await page.goto("/h/BZQ7");
+    await expect(page.locator('svg[aria-label^="Hive map"]')).toBeVisible({ timeout: 10_000 });
     const userSelect = await page.evaluate(() => {
       const el = document.querySelector(".no-callout");
       return el ? getComputedStyle(el).userSelect : null;
