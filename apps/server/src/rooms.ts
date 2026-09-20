@@ -247,6 +247,27 @@ export class Room {
     this.flush();
   }
 
+  /**
+   * CALIBRATION_RESET (v3): throw away measured offsets, for one client or the whole room.
+   * Cleared to `null`, never `0` — null falls back through `tableLatencyMs` and then the phone's own
+   * `ctx.outputLatency`; zero is a positive claim that the phone has no output latency, which is never
+   * true. Refused while a run is in flight (state !== "idle"): a residual is measured against whatever
+   * compensation the phone was applying when its click sounded, so clearing the base between the click
+   * and the report would add that residual to a *different* base — baking in exactly the error the
+   * reset was meant to undo. Cancel first, then reset.
+   */
+  private resetCalibration(ws: WS, clientId?: string) {
+    if (this.room.calibration.state !== "idle") {
+      return send(ws, { type: "ERROR", code: "CALIBRATION_BUSY", message: `cannot reset while calibration is ${this.room.calibration.state}: cancel first` });
+    }
+    if (clientId && !this.room.clients[clientId]) {
+      return send(ws, { type: "ERROR", code: "NO_CLIENT", message: `no client ${clientId}` });
+    }
+    const targets = clientId ? [this.room.clients[clientId]!] : Object.values(this.room.clients);
+    for (const c of targets) c.calibratedOffsetMs = null;
+    this.replan(); // compensationMs is derived from what was just cleared; replan() flushes directly
+  }
+
   private startCalibration(referenceClientId: string) {
     this.clearCalibrationTimers();
 
@@ -510,6 +531,9 @@ export class Room {
       case "CALIBRATION_CANCEL":
         if (!hostOnly()) return;
         return this.cancelCalibration();
+      case "CALIBRATION_RESET":
+        if (!hostOnly()) return;
+        return this.resetCalibration(ws, msg.clientId);
       case "CALIBRATION_REPORT":
         return this.handleCalibrationReport(me, msg);
     }
