@@ -4,53 +4,54 @@ Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 62
 
-{"ok":true,"protocolVersion":1,"serverTime":1789859678558.557}
+{"ok":true,"protocolVersion":2,"serverTime":1789870653192.687}
 
 === OPTIONS /health (CORS preflight) ===
 HTTP/1.1 204 No Content
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 0
 
 
 
-=== POST /rooms (fixed code) ===
+=== POST /rooms (bare, no code — what the host UI actually sends) ===
+    fixes docs/PROTOCOL-REQUESTS.md R-5 finding #1: this used to ignore ROOM_FIXED_CODE
 HTTP/1.1 200 OK
 Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 105
 
-{"code":"BZQ7","hostKey":"e724de1c-9ed8-4602-adbf-0b736830795b","joinUrl":"http://localhost:3000/j/BZQ7"}
+{"code":"BZQ7","hostKey":"8a0a633f-19c0-4656-8bd1-29689878dd2d","joinUrl":"http://localhost:3000/j/BZQ7"}
 
-=== POST /rooms (fixed code again, idempotent hostKey) ===
+=== POST /rooms (bare again — idempotent: same code, same hostKey) ===
 HTTP/1.1 200 OK
 Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 105
 
-{"code":"BZQ7","hostKey":"e724de1c-9ed8-4602-adbf-0b736830795b","joinUrl":"http://localhost:3000/j/BZQ7"}
+{"code":"BZQ7","hostKey":"8a0a633f-19c0-4656-8bd1-29689878dd2d","joinUrl":"http://localhost:3000/j/BZQ7"}
 
-=== POST /rooms (no code, random) ===
+=== POST /rooms (explicit fixed code — resolves to the same room as the bare calls) ===
 HTTP/1.1 200 OK
 Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 105
 
-{"code":"SWKS","hostKey":"fc023eb7-c03c-4a75-a77d-3e964053ad51","joinUrl":"http://localhost:3000/j/SWKS"}
+{"code":"BZQ7","hostKey":"8a0a633f-19c0-4656-8bd1-29689878dd2d","joinUrl":"http://localhost:3000/j/BZQ7"}
 
 === POST /rooms (bad code) ===
 HTTP/1.1 400 Bad Request
@@ -58,7 +59,7 @@ Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 29
 
 {"error":"unknown room code"}
@@ -69,7 +70,7 @@ Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 41
 
 {"code":"BZQ7","exists":true,"players":0}
@@ -80,7 +81,7 @@ Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 42
 
 {"code":"NOPE","exists":false,"players":0}
@@ -91,10 +92,10 @@ Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
-Content-Length: 1304
+Date: Sun, 20 Sep 2026 02:17:33 GMT
+Content-Length: 1317
 
-{"tracks":[{"id":"synthetic-60s","title":"Synthetic 60","durationSec":60,"stems":["drums","bass","vocals","other"],"bpm":120,"urls":{"drums":"http://localhost:18099/audio/synthetic-60s/drums.wav","bass":"http://localhost:18099/audio/synthetic-60s/bass.wav","vocals":"http://localhost:18099/audio/synthetic-60s/vocals.wav","other":"http://localhost:18099/audio/synthetic-60s/other.wav"},"energy":[0.8016,0.7837,0.7987,0.7869,0.7962,0.788,0.7966,0.7852,0.8001,0.7824,0.8013,0.784,0.7988,0.7867,0.7959,0.7883,0.7972,0.7853,0.8002,0.7823,0.8015,0.7833,0.7985,0.7867,0.7956,0.7882,0.7969,0.7853,0.8003,0.7825,0.9964,0.9223,0.9591,0.9731,0.919,0.9897,0.934,0.9481,0.9824,0.9078,0.9994,0.9213,0.9595,0.9718,0.9194,0.9889,0.9335,0.9483,0.9834,0.9083,1,0.9222,0.9588,0.9725,0.9189,0.989,0.9322,0.9489,0.9829,0.9077],"clickTimesSec":[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,10.5,11,11.5,12,12.5,13,13.5,14,14.5,15,15.5,16,16.5,17,17.5,18,18.5,19,19.5,20,20.5,21,21.5,22,22.5,23,23.5,24,24.5,25,25.5,26,26.5,27,27.5,28,28.5,29,29.5,30,30.5,31,31.5,32,32.5,33,33.5,34,34.5,35,35.5,36,36.5,37,37.5,38,38.5,39,39.5,40,40.5,41,41.5,42,42.5,43,43.5,44,44.5,45,45.5,46,46.5,47,47.5,48,48.5,49,49.5,50,50.5,51,51.5,52,52.5,53,53.5,54,54.5,55,55.5,56,56.5,57,57.5,58,58.5,59,59.5],"generated":true}]}
+{"tracks":[{"id":"synthetic-60s","title":"Synthetic 60","durationSec":60,"stems":["drums","bass","vocals","other"],"bpm":120,"energy":[0.8016,0.7837,0.7987,0.7869,0.7962,0.788,0.7966,0.7852,0.8001,0.7824,0.8013,0.784,0.7988,0.7867,0.7959,0.7883,0.7972,0.7853,0.8002,0.7823,0.8015,0.7833,0.7985,0.7867,0.7956,0.7882,0.7969,0.7853,0.8003,0.7825,0.9964,0.9223,0.9591,0.9731,0.919,0.9897,0.934,0.9481,0.9824,0.9078,0.9994,0.9213,0.9595,0.9718,0.9194,0.9889,0.9335,0.9483,0.9834,0.9083,1,0.9222,0.9588,0.9725,0.9189,0.989,0.9322,0.9489,0.9829,0.9077],"clickTimesSec":[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,10.5,11,11.5,12,12.5,13,13.5,14,14.5,15,15.5,16,16.5,17,17.5,18,18.5,19,19.5,20,20.5,21,21.5,22,22.5,23,23.5,24,24.5,25,25.5,26,26.5,27,27.5,28,28.5,29,29.5,30,30.5,31,31.5,32,32.5,33,33.5,34,34.5,35,35.5,36,36.5,37,37.5,38,38.5,39,39.5,40,40.5,41,41.5,42,42.5,43,43.5,44,44.5,45,45.5,46,46.5,47,47.5,48,48.5,49,49.5,50,50.5,51,51.5,52,52.5,53,53.5,54,54.5,55,55.5,56,56.5,57,57.5,58,58.5,59,59.5],"dropSec":30,"generated":true,"urls":{"drums":"http://localhost:18199/audio/synthetic-60s/drums.wav","bass":"http://localhost:18199/audio/synthetic-60s/bass.wav","vocals":"http://localhost:18199/audio/synthetic-60s/vocals.wav","other":"http://localhost:18199/audio/synthetic-60s/other.wav"}}]}
 
 === GET /audio/synthetic-60s/drums.wav (headers only) ===
 HTTP/1.1 200 OK
@@ -103,9 +104,24 @@ Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
 Content-Type: audio/wav
 Cache-Control: public, max-age=31536000, immutable
+Accept-Ranges: bytes
 content-length: 5292044
 
 
+
+=== GET /audio/synthetic-60s/drums.wav (Range request — iOS Safari's bytes=0-1 probe) ===
+HTTP/1.1 206 Partial Content
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Content-Type: audio/wav
+Cache-Control: public, max-age=31536000, immutable
+Accept-Ranges: bytes
+Content-Range: bytes 0-1/5292044
+content-length: 2
+Date: Sun, 20 Sep 2026 02:17:33 GMT
+
+RI
 
 === GET /audio/synthetic-60s/nope.wav (404) ===
 HTTP/1.1 404 Not Found
@@ -113,7 +129,7 @@ Content-Type: application/json
 Access-Control-Allow-Origin: http://localhost:3000
 Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization
-Date: Sat, 19 Sep 2026 23:14:38 GMT
+Date: Sun, 20 Sep 2026 02:17:33 GMT
 Content-Length: 45
 
 {"error":"not found; run `bun run fixtures`"}

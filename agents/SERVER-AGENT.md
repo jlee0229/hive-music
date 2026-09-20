@@ -62,7 +62,7 @@ original numbers so the roadmap stays readable; the order below is the order you
 | **B6** | `POST /rooms/:code/vibe`: rules fallback first, then the LLM path behind `ANTHROPIC_API_KEY` | key unset: schema-valid plan, calm first, WAVE/STROBE at `dropSec`; key set (if the human provides one): 10/10 valid on "calm, then explode at the drop" | `evidence/server/B6-vibe.md` | 🟡 needs human (LLM path untested — no `ANTHROPIC_API_KEY`) |
 | **B7** | deployable: Dockerfile + `.dockerignore` + root `fly.toml` verified, `docs/09-deploy.md` accurate, `deploy-fly.yml` green on `main`; after the human's first `fly launch`, every merge deploys | `curl https://<app>.fly.dev/health` (human) → 200; you: the workflow file is valid and `bun apps/server/src/index.ts` boots from a clean checkout | `evidence/server/B7-deploy.md` | 🟡 needs human (no Fly credentials, no Docker daemon here) |
 | **B8s** | calibration server side (START/PLAN/CLICK/REPORT, accumulation, failed timeout) | test with fake clients: reference gets PLAN, players get one CLICK each on the 400 ms grid, REPORT updates `calibratedOffsetMs`, low-confidence ignored | `evidence/server/B8-calibration.txt` | ✅ |
-| **B9** (stretch) | `POST /tracks` upload → Replicate Demucs → `fixtures/meta-from-wavs.ts`; crowd-sourced latency table | after B8s | – | ⬜ |
+| **B9** (stretch) | `POST /tracks` bring-your-own-stems upload (pure-TS WAV convert + meta computation, host-only, Replicate out of scope per the phase-2 orchestrator); crowd-sourced latency table | after B8s | `evidence/server/B9-upload.md` | 🟨 upload done, latency table not started |
 
 Merge order: open a PR to `main` as soon as **B1** passes (that is IC1 for the server; the human deploys it), again after B6, again after B8s.
 

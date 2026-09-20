@@ -63,7 +63,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B6 | server | needs human | `evidence/server/B6-vibe.md` (rules path done; LLM path untested, no `ANTHROPIC_API_KEY`) |
 | B7 | server | needs human | `evidence/server/B7-deploy.md` (Dockerfile/workflow verified logically + clean-checkout boot; no Fly/Docker here) |
 | B8 | engine (B8e) + server (B8s) | both halves done (real run 🟡) | `evidence/backend/B8-calibration.md` · `evidence/server/B8-calibration.txt` |
-| B9 (stretch) | server | todo | |
+| B9 (stretch) | server | upload done, latency table not started | `evidence/server/B9-upload.md` |
 | F0 | frontend | done | `evidence/frontend/F0-diag.png` |
 | F1 | frontend | 🟡 needs human (phones) | `evidence/frontend/F1-ready.png`, `F1-phones.md` |
 | F2 | frontend | done | `evidence/frontend/F2-lobby.png`, `F2-stage.png` |

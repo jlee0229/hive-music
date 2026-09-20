@@ -2,8 +2,9 @@
 // multi-room state: Bun.serve with WS + REST, the shared planner, and the vibe director.
 import { PROTOCOL_VERSION, VibeRequestSchema, type ScenePlan } from "@hive/protocol";
 import { directScene } from "./vibe/director";
-import { readDropSec } from "./vibe/track-meta";
+import { withUrls } from "./library";
 import { RoomManager, type Conn } from "./rooms";
+import { handleUploadTracks } from "./upload/route";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
@@ -60,7 +61,9 @@ const server = Bun.serve<Conn>({
       const track = room.room.track;
       const durationSec = track?.durationSec ?? 60;
       const entry = manager.getLibrary().find((t) => t.id === track?.id);
-      const dropSec = track ? await readDropSec(FIXTURES_DIR, track.id) : undefined;
+      // Snapshot before the (up to 5s) LLM call: a SET_MODE tapped while this request is in flight must
+      // not be clobbered when the plan lands late (docs/PROTOCOL-REQUESTS.md P2-11).
+      const requestModeVersion = room.getModeVersion();
       const scenePlan: ScenePlan = await directScene(
         parsed.data.prompt,
         {
@@ -68,30 +71,53 @@ const server = Bun.serve<Conn>({
           durationSec,
           stems: track?.stems ?? ["mix"],
           bpm: track?.bpm,
-          dropSec,
+          dropSec: entry?.dropSec,
           energy: entry?.energy,
         },
         Object.values(room.room.clients).filter((c) => c.plays && c.connected).length,
         room.room.mode.kind,
         performance.timeOrigin + performance.now(),
       );
-      room.acceptScenePlan(scenePlan);
+      room.acceptScenePlan(scenePlan, requestModeVersion);
       return json({ scenePlan });
     }
 
-    if (url.pathname === "/tracks") {
+    if (url.pathname === "/tracks" && req.method === "GET") {
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
-      const tracks = manager.getLibrary().filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q));
+      const tracks = manager
+        .getLibrary()
+        .filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q))
+        .map((t) => withUrls(t, url.origin));
       return json({ tracks });
+    }
+
+    if (url.pathname === "/tracks" && req.method === "POST") {
+      return handleUploadTracks(req, manager, FIXTURES_DIR, url.origin, corsHeaders);
     }
 
     const audio = url.pathname.match(/^\/audio\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\.wav$/);
     if (audio) {
       const f = Bun.file(`${FIXTURES_DIR}/tracks/${audio[1]}/${audio[2]}.wav`);
-      if (await f.exists()) {
-        return new Response(f, { headers: { ...corsHeaders, "Content-Type": "audio/wav", "Cache-Control": "public, max-age=31536000, immutable" } });
+      if (!(await f.exists())) return json({ error: "not found; run `bun run fixtures`" }, 404);
+      const audioHeaders = { ...corsHeaders, "Content-Type": "audio/wav", "Cache-Control": "public, max-age=31536000, immutable", "Accept-Ranges": "bytes" };
+      // iOS Safari probes media with a Range request (often bytes=0-1); a 200 to it makes it retry or
+      // give up instead of playing, so a single-range request gets a real 206 (engine's R-1 review).
+      const range = req.headers.get("range");
+      const match = range?.match(/^bytes=(\d*)-(\d*)$/);
+      if (match) {
+        const total = f.size;
+        const start = match[1] ? Number(match[1]) : 0;
+        const end = match[2] ? Number(match[2]) : total - 1;
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= total) {
+          return new Response(null, { status: 416, headers: { ...audioHeaders, "Content-Range": `bytes */${total}` } });
+        }
+        const clampedEnd = Math.min(end, total - 1);
+        return new Response(f.slice(start, clampedEnd + 1), {
+          status: 206,
+          headers: { ...audioHeaders, "Content-Range": `bytes ${start}-${clampedEnd}/${total}`, "Content-Length": String(clampedEnd - start + 1) },
+        });
       }
-      return json({ error: "not found; run `bun run fixtures`" }, 404);
+      return new Response(f, { headers: audioHeaders });
     }
 
     return json({ error: "not_found", path: url.pathname }, 404);
@@ -110,6 +136,6 @@ const server = Bun.serve<Conn>({
 });
 
 manager.attachServer(server);
-await manager.loadLibrary(`http://localhost:${server.port}`);
+await manager.loadLibrary();
 
 console.log(`[hive-server] listening on http://localhost:${server.port} (protocol v${PROTOCOL_VERSION}, cors ${CORS_ORIGIN})`);
