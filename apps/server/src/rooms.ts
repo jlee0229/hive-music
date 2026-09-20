@@ -216,10 +216,27 @@ export class Room {
     this.flush();
   }
 
-  // ---- calibration (B8s) -------------------------------------------------------
-  private startCalibration(referenceClientId: string) {
+  // ---- calibration (B8s, CALIBRATION_CANCEL) ------------------------------------
+  private clearCalibrationTimers() {
     for (const t of this.calibrationTimers) clearTimeout(t);
     this.calibrationTimers = [];
+  }
+
+  /**
+   * CALIBRATION_CANCEL: back to idle at once. The SCHEDULED_ACTIONs already sent to players are on
+   * the wire — the server cannot un-send them — so each client drops its own pending clicks once it
+   * sees `idle` (docs/04). Flushed directly rather than left to the coalescer: every millisecond of
+   * delay is another click the room hears after someone pressed Cancel.
+   */
+  private cancelCalibration() {
+    this.clearCalibrationTimers();
+    this.room.calibration = IDLE_CALIBRATION;
+    this.dirty = true;
+    this.flush();
+  }
+
+  private startCalibration(referenceClientId: string) {
+    this.clearCalibrationTimers();
 
     const order = Object.values(this.room.clients)
       .filter((c) => c.plays && c.id !== referenceClientId)
@@ -452,6 +469,9 @@ export class Room {
       case "CALIBRATION_START":
         if (!hostOnly()) return;
         return this.startCalibration(msg.referenceClientId);
+      case "CALIBRATION_CANCEL":
+        if (!hostOnly()) return;
+        return this.cancelCalibration();
       case "CALIBRATION_REPORT":
         return this.handleCalibrationReport(me, msg);
     }
@@ -512,7 +532,12 @@ export class RoomManager {
     return room;
   }
 
-  /** POST /rooms {code?} — a fixed code always resolves to the same room; a mismatched requested code is rejected. */
+  /**
+   * POST /rooms {code?} — a fixed code always resolves to the same room (including a *bare* call with
+   * no code, per docs/02-protocol.md §6: "a fixed code survives a restart" — a restart issuing a fresh
+   * hostKey is fine, since the host re-creates and presents it, but the code the printed QR encodes
+   * must not change). A requested code that is neither an existing room nor the fixed code is rejected.
+   */
   createRoom(requestedCode?: string): { code: string; hostKey: string } | { error: string } {
     if (requestedCode) {
       const upper = requestedCode.toUpperCase();
@@ -523,6 +548,12 @@ export class RoomManager {
         return { code: upper, hostKey: room.hostKey };
       }
       return { error: "unknown room code" };
+    }
+    if (this.opts.fixedCode) {
+      const existing = this.rooms.get(this.opts.fixedCode);
+      if (existing) return { code: this.opts.fixedCode, hostKey: existing.hostKey };
+      const room = this.spawn(this.opts.fixedCode);
+      return { code: this.opts.fixedCode, hostKey: room.hostKey };
     }
     const code = this.randomCode();
     const room = this.spawn(code);

@@ -125,3 +125,66 @@ describe("calibration (B8s)", () => {
     room.destroy();
   }, 12000);
 });
+
+describe("CALIBRATION_CANCEL (protocol v2)", () => {
+  test("returns the room to idle, stops the countdown, and refuses a late report", async () => {
+    const { server } = fakeServer();
+    const room = new Room("CANCEL1", server, () => {}, () => []);
+    const ref = fakeWs();
+    room.join(ref.ws, { type: "JOIN", clientId: "host-cancel-01", roomCode: "CANCEL1", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const p1 = fakeWs();
+    room.join(p1.ws, { type: "JOIN", clientId: "play-cancel-01", roomCode: "CANCEL1", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+
+    room.handle(ref.ws, { type: "CALIBRATION_START", referenceClientId: "host-cancel-01" });
+    expect(room.room.calibration.state).toBe("countdown");
+    expect(room.room.calibration.order).toEqual(["play-cancel-01"]);
+    // the player really was told to click, which is why cancelling has to be client-side too
+    expect(p1.sent.some((m) => m.type === "SCHEDULED_ACTION" && m.action.kind === "CALIBRATION_CLICK")).toBe(true);
+
+    room.handle(ref.ws, { type: "CALIBRATION_CANCEL" });
+    expect(room.room.calibration.state).toBe("idle");
+    expect(room.room.calibration.referenceClientId).toBeNull();
+    expect(room.room.calibration.order).toEqual([]);
+    expect(room.room.calibration.results).toEqual({});
+
+    // a report that was already in flight must not write calibratedOffsetMs
+    room.handle(ref.ws, { type: "CALIBRATION_REPORT", measurements: [{ clientId: "play-cancel-01", residualMs: 25, confidence: 0.95 }] });
+    expect(room.room.clients["play-cancel-01"]!.calibratedOffsetMs).toBeNull();
+    expect(room.room.calibration.state).toBe("idle");
+
+    // and the cancelled countdown never advances to running or failed
+    await new Promise((r) => setTimeout(r, CALIBRATION_COUNTDOWN_MS + 100));
+    expect(room.room.calibration.state).toBe("idle");
+
+    room.destroy();
+  }, 6000);
+
+  test("a player cannot cancel", () => {
+    const { server } = fakeServer();
+    const room = new Room("CANCEL2", server, () => {}, () => []);
+    const ref = fakeWs();
+    room.join(ref.ws, { type: "JOIN", clientId: "host-cancel-02", roomCode: "CANCEL2", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const p1 = fakeWs();
+    room.join(p1.ws, { type: "JOIN", clientId: "play-cancel-02", roomCode: "CANCEL2", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    room.handle(ref.ws, { type: "CALIBRATION_START", referenceClientId: "host-cancel-02" });
+
+    room.handle(p1.ws, { type: "CALIBRATION_CANCEL" });
+    expect(p1.sent.some((m) => m.type === "ERROR" && m.code === "NOT_HOST")).toBe(true);
+    expect(room.room.calibration.state).toBe("countdown"); // unaffected
+
+    room.destroy();
+  });
+
+  test("cancelling when nothing is running is harmless", () => {
+    const { server } = fakeServer();
+    const room = new Room("CANCEL3", server, () => {}, () => []);
+    const ref = fakeWs();
+    room.join(ref.ws, { type: "JOIN", clientId: "host-cancel-03", roomCode: "CANCEL3", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+
+    expect(room.room.calibration.state).toBe("idle");
+    room.handle(ref.ws, { type: "CALIBRATION_CANCEL" });
+    expect(room.room.calibration.state).toBe("idle");
+
+    room.destroy();
+  });
+});
