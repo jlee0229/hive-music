@@ -40,5 +40,26 @@ describe("healthLevel", () => {
   });
   test("syncErr = rtt/2 + |correction|", () => {
     expect(computeSyncErrMs(20, -3)).toBe(13);
+    // the two-argument call is unchanged: the third parameter defaults to 0
+    expect(computeSyncErrMs(20, -3, 0)).toBe(13);
+  });
+
+  test("syncErr takes the max of the last correction and the live playhead error, never the sum", () => {
+    /*
+     * The live term exists because B9e's rate slewing removed the only signal the two-term version had: a
+     * phone whose trim is saturated sits at real error with `lastCorrectionMs` still 0, and would report
+     * itself green until the moment it crossfades.
+     */
+    expect(computeSyncErrMs(20, 0, 9)).toBe(19); // drifting, never corrected: the live term speaks
+    expect(computeSyncErrMs(20, 9, 0)).toBe(19); // just corrected: the history term still speaks
+    expect(computeSyncErrMs(20, 9, 9)).toBe(19); // both: 19, NOT 28 — same quantity, not two errors
+    expect(computeSyncErrMs(20, -9, 4)).toBe(19); // sign-insensitive, and the larger one wins
+    expect(computeSyncErrMs(20, 4, -9)).toBe(19);
+
+    // and it crosses the health bands where it should: 0.4 ms of slewing residual is invisible…
+    const h = (syncErrMs: number) => ({ rttMs: 20, syncErrMs, outputLatencyMs: null, audioState: "ready" as const, lastSeenServerTime: 9000 });
+    expect(healthLevel(h(computeSyncErrMs(6, 0, 0.4)), 10_000)).toBe("good"); // 3.4 ms
+    // …while a saturated trim at 9 ms of drift is not
+    expect(healthLevel(h(computeSyncErrMs(6, 0, 9)), 10_000)).toBe("warn"); // 12 ms
   });
 });

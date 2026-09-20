@@ -193,16 +193,31 @@ export function startMockServer(opts: MockServerOptions = {}) {
       },
       close(ws) {
         const id = ws.data.clientId;
-        if (id && room.clients[id]) {
-          room.clients[id]!.connected = false;
-          sockets.delete(id);
-          dirty = true;
-        }
+        if (!id || !room.clients[id]) return;
+        /*
+         * Only the socket we currently hold for this client may demote it. A phone can briefly have two
+         * sockets — a reconnect racing a manual retry, or a "Tap to resume" during the backoff — and the
+         * orphan's close arrives *after* the new socket has already JOINed. Keyed only by clientId, that
+         * close marked the client disconnected and deleted the LIVE socket's registration: the phone
+         * stayed connected and kept playing, while the server stopped sending it anything targeted
+         * (SCHEDULED_ACTION, CALIBRATION_PLAN) and showed it as offline in the Hive Map for the rest of
+         * the set. Nothing looked broken from either end, which is why it needs a test rather than a
+         * comment.
+         */
+        if (sockets.get(id) !== ws) return;
+        room.clients[id]!.connected = false;
+        sockets.delete(id);
+        dirty = true;
       },
     },
   });
 
+  const received: Partial<Record<ClientMessage["type"], number>> = {};
+
   function handle(ws: Bun.ServerWebSocket<{ clientId: string | null }>, msg: ClientMessage) {
+    // Per-type arrival counts. Cheap, and the only way a test can assert a *negative* — that a reconnect
+    // storm did not produce two JOINs or two AUDIO_READYs per phone.
+    received[msg.type] = (received[msg.type] ?? 0) + 1;
     const me = ws.data.clientId ? room.clients[ws.data.clientId] : undefined;
     const isHost = !!me && room.hostClientIds.includes(me.id);
     const hostOnly = () => {
@@ -302,13 +317,25 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "CALIBRATION_CANCEL":
         if (!hostOnly()) return;
         return cancelCalibration();
+      case "CALIBRATION_RESET":
+        if (!hostOnly()) return;
+        return resetCalibration(ws, msg.clientId);
       case "CALIBRATION_REPORT": {
         // A cancelled run writes nothing, even if the reference's report was already in flight.
         if (room.calibration.state === "idle") return;
         for (const m of msg.measurements) {
           const c = room.clients[m.clientId];
           if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored, as index.ts promises
-          c.calibratedOffsetMs = (c.calibratedOffsetMs ?? c.tableLatencyMs ?? 0) + m.residualMs;
+          /*
+           * P0-6. The accumulation base must match what the client was ALREADY subtracting when the
+           * click was measured, or the first pass makes things worse. With no table row (browserFamily
+           * "other") the engine subtracts `ctx.outputLatency` itself, so the residual was measured with
+           * it applied — but writing `calibratedOffsetMs` makes the engine stop subtracting it. A base of
+           * 0 would leave the phone late by exactly its output latency until a second pass. The client
+           * reports that number in CLIENT_STATUS, so use it.
+           */
+          const base = c.calibratedOffsetMs ?? c.tableLatencyMs ?? health.get(m.clientId)?.outputLatencyMs ?? 0;
+          c.calibratedOffsetMs = base + m.residualMs;
           room.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
         }
         room.calibration = { ...room.calibration, state: "done" };
@@ -333,6 +360,41 @@ export function startMockServer(opts: MockServerOptions = {}) {
     clearCalibrationTimers();
     room.calibration = IDLE_CALIBRATION;
     dirty = true;
+    flush();
+  }
+
+  /**
+   * CALIBRATION_RESET: throw measured offsets away, for one client or the whole room.
+   *
+   * Two decisions worth arguing with:
+   *
+   * 1. **Cleared to `null`, not `0`.** Null falls back through `tableLatencyMs` and then the phone's own
+   *    `ctx.outputLatency`; zero is a positive claim that the phone has no output latency, which is
+   *    never true. Resetting a measurement must not be worse than never having measured.
+   * 2. **Refused mid-run.** A residual is measured against whatever compensation the phone was applying
+   *    when its click sounded. Clearing the base between the clicks and the report would add those
+   *    residuals to a *different* base — writing in exactly the error the host was trying to undo. So a
+   *    reset during `countdown`/`running`/`done` is an error, not a silent partial success: cancel, then
+   *    reset. (`done` is included because its report may still be in flight from the reference.)
+   */
+  function resetCalibration(ws: Bun.ServerWebSocket<{ clientId: string | null }>, clientId?: string) {
+    if (room.calibration.state !== "idle") {
+      return send(ws, {
+        type: "ERROR",
+        code: "CALIBRATION_BUSY",
+        message: `cannot reset while calibration is ${room.calibration.state}: cancel first`,
+      });
+    }
+    const targets = clientId ? [room.clients[clientId]] : Object.values(room.clients);
+    if (clientId && !room.clients[clientId]) {
+      return send(ws, { type: "ERROR", code: "NO_CLIENT", message: `no client ${clientId}` });
+    }
+    for (const c of targets) {
+      if (c) c.calibratedOffsetMs = null;
+    }
+    // replan(), because each client's compensationMs is derived from the offsets we just cleared; it
+    // sets `dirty` itself. Flushed rather than coalesced so the host sees the offsets go.
+    replan();
     flush();
   }
 
@@ -385,15 +447,22 @@ export function startMockServer(opts: MockServerOptions = {}) {
   }, 1000 / HEALTH_HZ);
   const pingTimer = setInterval(() => server.publish(room.code, JSON.stringify({ type: "PING", serverTime: now() } satisfies ServerMessage)), 20_000);
 
+  /**
+   * Drop every live socket with 1012 (service restart) while keeping the room. That is what a real
+   * restart behind a restored room looks like to a phone — and it is the interesting case, because the
+   * timeline survives, so every phone must come back to the *same* position rather than to a new one.
+   */
+  function simulateRestart() {
+    log("chaos: simulating server restart");
+    for (const s of sockets.values()) s.close(1012, "mock restart");
+    sockets.clear();
+    for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
+    dirty = true;
+  }
+
   let chaosTimer: ReturnType<typeof setTimeout> | null = null;
   if (scenario.chaos) {
-    chaosTimer = setTimeout(() => {
-      log(`chaos: simulating server restart (${scenario.chaos!.restartAfterSec}s)`);
-      for (const s of sockets.values()) s.close(1012, "mock restart");
-      sockets.clear();
-      for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
-      dirty = true;
-    }, scenario.chaos.restartAfterSec * 1000);
+    chaosTimer = setTimeout(simulateRestart, scenario.chaos.restartAfterSec * 1000);
   }
 
   const ready = (async () => {
@@ -416,6 +485,10 @@ export function startMockServer(opts: MockServerOptions = {}) {
   return {
     server, port, hostKey, ready,
     get room() { return room; },
+    /** How many of each client message this server has handled (diagnostics; see `handle`). */
+    get received() { return received; },
+    /** Drop every socket as a restart would, keeping the room (see `simulateRestart`). */
+    simulateRestart,
     stop() {
       clearInterval(stateTimer); clearInterval(healthTimer); clearInterval(pingTimer);
       clearCalibrationTimers();

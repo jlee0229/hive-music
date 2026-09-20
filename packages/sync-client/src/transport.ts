@@ -59,6 +59,8 @@ export class RoomTransport {
   private attempt = 0;
   private closedByUser = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The in-flight connect, so a second call joins it instead of opening a second socket. */
+  private connecting: Promise<void> | null = null;
 
   constructor(
     private readonly opts: HiveClientOptions,
@@ -75,9 +77,33 @@ export class RoomTransport {
     if (this.isOpen) this.ws!.send(JSON.stringify(msg));
   }
 
+  /**
+   * Idempotent (P0-4). The player UI calls this again from "Tap to resume" after every iOS
+   * interrupted/suspended, and without a guard each tap opened another socket: the orphan's later close
+   * reaches the server, which demotes the *live* connection's record. One socket per transport.
+   */
   connect(): Promise<void> {
     this.closedByUser = false;
-    return this.open();
+    /*
+     * Cancel a reconnect that is already scheduled. Without this, a "Tap to resume" during the backoff
+     * left the timer armed: it fired a few hundred ms later, replaced the socket that had just JOINed,
+     * and the server saw a close for a client it had just re-registered — the overlap that the mock's
+     * close handler used to resolve by demoting the live connection. One socket per transport means one
+     * *pending* connect too.
+     */
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const state = this.ws?.readyState;
+    if (state === WebSocket.OPEN) return Promise.resolve();
+    if (state === WebSocket.CONNECTING && this.connecting) return this.connecting;
+    const pending = this.open();
+    this.connecting = pending;
+    void pending.catch(() => {}).then(() => {
+      if (this.connecting === pending) this.connecting = null;
+    });
+    return pending;
   }
 
   disconnect(): void {
@@ -102,6 +128,24 @@ export class RoomTransport {
   private open(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.setConnection(this.attempt === 0 ? "connecting" : "reconnecting");
+      /*
+       * Replace, do not abandon. An abandoned socket stays open until the browser collects it, and its
+       * eventual close is indistinguishable, server-side, from the live client leaving. Detaching the
+       * handlers first means our own reconnect logic ignores this close (it is intentional), so closing
+       * it cannot start a reconnect storm.
+       */
+      const previous = this.ws;
+      if (previous) {
+        this.ws = null;
+        previous.onclose = null;
+        previous.onmessage = null;
+        previous.onerror = null;
+        try {
+          previous.close(1000, "replaced");
+        } catch {
+          /* already closing */
+        }
+      }
       const sock = new WebSocket(this.opts.wsUrl);
       this.ws = sock;
       let welcomed = false;

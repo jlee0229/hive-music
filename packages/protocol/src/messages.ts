@@ -67,6 +67,24 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
    * state — there is nothing to un-send. A cancelled run writes no `calibratedOffsetMs`.
    */
   z.object({ type: z.literal("CALIBRATION_CANCEL") }),
+  /**
+   * Throw away measured offsets (host only). `clientId` clears one client, omitting it clears every
+   * client in the room. This is the undo for a tuning moment that measured the wrong thing — a phone
+   * in a pocket, a click confidently matched to a sidelobe — and it must be a *distinct* operation
+   * from re-running calibration, because a bad `calibratedOffsetMs` is the accumulation base for the
+   * next run (see docs/04-calibration.md): re-calibrating on top of a wrong offset keeps the error.
+   *
+   * Clearing sets `calibratedOffsetMs` back to `null`, not to `0`. Null means "no measurement", which
+   * falls back through the Tier-1 table; zero would be a claim that this phone has no output latency,
+   * which is never true.
+   *
+   * **Refused while a run is in flight** (`calibration.state !== "idle"`) with `ERROR` code
+   * `CALIBRATION_BUSY`: the reference measures residuals against the compensation the phones were
+   * applying *at click time*, so clearing the base between the clicks and the report would add those
+   * residuals to a different base and bake in the error the reset was meant to remove. Cancel first,
+   * then reset. Otherwise idempotent, and it never touches `room.calibration`.
+   */
+  z.object({ type: z.literal("CALIBRATION_RESET"), clientId: z.string().optional() }),
   z.object({
     type: z.literal("CALIBRATION_REPORT"),
     measurements: z.array(CalibrationResultSchema.extend({ clientId: z.string() })).min(1),
