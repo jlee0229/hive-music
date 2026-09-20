@@ -59,7 +59,35 @@ secret `NEXT_PUBLIC_WEB_URL` (step A3) so the QR code points at it, then `fly de
 3. `/diag` on each phone: connection `open`, rtt < 60 ms on Wi-Fi, clock offset stable.
 4. If anything fails: `fly logs` for the server, the Vercel deployment log for the web, and `https://<app>.fly.dev/health` first.
 
-## D. If Fly or Vercel are not available in time
+## D. Uploading real tracks (B9, stretch)
+
+`POST /tracks` (host-only, needs the room's `hostKey`) takes real music instead of the synthetic track.
+Prepare stems on a laptop first — Replicate is out of scope, so separation happens before the demo, not on Fly:
+
+```bash
+# 1. pick a <=60s clip of a file you own, e.g. clip.wav
+# 2. separate it into 4 stems (or 2, with --two-stems=vocals)
+pip install demucs   # or: pipx install demucs
+demucs -n htdemucs clip.wav              # -> separated/htdemucs/clip/{drums,bass,vocals,other}.wav
+# 3. convert every stem to the upload spec: mono, PCM (any depth/rate — the server converts the rest)
+ffmpeg -i separated/htdemucs/clip/drums.wav -ac 1 -t 60 drums.wav   # repeat for bass/vocals/other
+# 4. upload (any of the 4 field names below, 1-4 of them, or a single "mix" field instead)
+curl -F title="My Track" -F hostKey="$HOST_KEY" \
+     -F drums=@drums.wav -F bass=@bass.wav -F vocals=@vocals.wav -F other=@other.wav \
+     https://<app>.fly.dev/tracks
+```
+
+The server re-encodes every stem to mono 16-bit PCM and resamples it to 44100 Hz with pure-TS code — no
+`ffmpeg` on Fly, so the conversion step above only needs to get the file *readable* (mono/PCM), not exact.
+
+**Uploads do not survive a redeploy.** Fly's default disk is ephemeral, and `bun run fixtures` on the
+next `Dockerfile` build starts from an empty `fixtures/tracks/`, so an uploaded track vanishes the moment
+`deploy-fly.yml` runs again (any merge touching `apps/server/**` etc. — see the workflow's `paths`). Upload
+again after each deploy, or add a persistent volume before the demo: `fly volumes create hive_tracks --size 1`,
+mount it at `/app/fixtures/tracks` in `fly.toml`'s `[[mounts]]`, and re-run `bun run fixtures` once after the
+first mount so the synthetic track still exists there too.
+
+## E. If Fly or Vercel are not available in time
 
 Quick tunnels from any laptop on the same Wi-Fi give HTTPS in five minutes, no accounts:
 

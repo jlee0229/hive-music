@@ -1,6 +1,7 @@
 // Keyword + energy-spike fallback for the Vibe Director (docs/05-effect-modes.md §Rules fallback).
 // Runs whenever ANTHROPIC_API_KEY is unset, the LLM call fails or times out, or the model refuses.
 import type { ModeKind, Scene } from "@hive/protocol";
+import { detectDropFromEnergy } from "./energy";
 
 export interface TrackMeta {
   durationSec: number;
@@ -22,34 +23,9 @@ function baseMode(prompt: string): ModeKind {
   return "UNISON";
 }
 
-/** Smooth energy[] with a 3-point moving average, then find the biggest rise (after − before) over a short window. */
 function detectDrop(meta: TrackMeta): number | null {
   if (typeof meta.dropSec === "number") return meta.dropSec;
-  const energy = meta.energy;
-  if (!energy || energy.length < 8) return null;
-  const smooth = energy.map((_, i) => {
-    const lo = Math.max(0, i - 1);
-    const hi = Math.min(energy.length - 1, i + 1);
-    let sum = 0;
-    let n = 0;
-    for (let k = lo; k <= hi; k++) {
-      sum += energy[k]!;
-      n++;
-    }
-    return sum / n;
-  });
-  let bestT = -1;
-  let bestRise = 0;
-  for (let t = 4; t < smooth.length - 2; t++) {
-    const after = (smooth[t]! + smooth[t + 1]! + smooth[t + 2]!) / 3;
-    const before = (smooth[t - 4]! + smooth[t - 3]! + smooth[t - 2]! + smooth[t - 1]!) / 4;
-    const rise = after - before;
-    if (rise > bestRise) {
-      bestRise = rise;
-      bestT = t;
-    }
-  }
-  return bestRise > 0.2 ? bestT : null;
+  return detectDropFromEnergy(meta.energy);
 }
 
 function note(s: string): string {
