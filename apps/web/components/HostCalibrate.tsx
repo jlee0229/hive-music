@@ -2,14 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { CALIBRATION_COUNTDOWN_MS, type RoomState } from "@hive/protocol";
-import type { HiveClock } from "@hive/sync-client";
+import type { HiveClock, HiveHostControls } from "@hive/sync-client";
 import { formatMs } from "@/lib/hive/derive";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 type RowStatus = "waiting" | "listening" | "clear";
 
 /** "Tuning moment": countdown, per-player rows (waiting / listening / clear), Apply/Cancel. */
-export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock: HiveClock; onClose: () => void }) {
+export function HostCalibrate({
+  room,
+  clock,
+  host,
+  onClose,
+}: {
+  room: RoomState;
+  clock: HiveClock;
+  host: HiveHostControls;
+  onClose: () => void;
+}) {
   const { state, order, results, startServerTime } = room.calibration;
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(CALIBRATION_COUNTDOWN_MS / 1000));
 
@@ -21,6 +31,11 @@ export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock
     }, 200);
     return () => clearInterval(t);
   }, [clock, state, startServerTime]);
+
+  function handleCancel() {
+    if (state === "countdown" || state === "running") host.cancelCalibration();
+    onClose();
+  }
 
   const doneCount = order.filter((id) => results[id]).length;
   const rows: Array<{ id: string; name: string; status: RowStatus }> = order.map((id, i) => {
@@ -120,7 +135,7 @@ export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock
           </button>
         ) : null}
         <button
-          onClick={onClose}
+          onClick={handleCancel}
           className="flex h-12 items-center justify-center rounded-2xl text-[15px] font-semibold"
           style={{ color: "var(--muted)" }}
         >

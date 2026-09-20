@@ -140,7 +140,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   if (showCalibrate && room) {
     return (
       <main className="mx-auto min-h-dvh max-w-md">
-        <HostCalibrate room={room} clock={client.clock} onClose={() => setCalibrateDismissed(true)} />
+        <HostCalibrate room={room} clock={client.clock} host={client.host} onClose={() => setCalibrateDismissed(true)} />
       </main>
     );
   }

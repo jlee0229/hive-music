@@ -10,6 +10,24 @@ test("F7: Host Calibrate rows render waiting/listening/clear", async ({ page }) 
   await expect(page.getByText("waiting").first()).toBeVisible();
 });
 
+test("F7: Cancel during a running tuning moment sends CALIBRATION_CANCEL and closes the sheet", async ({ page }) => {
+  const sent: string[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framesent", (frame) => {
+      const text = typeof frame.payload === "string" ? frame.payload : frame.payload.toString("utf-8");
+      const parsed = JSON.parse(text);
+      sent.push(parsed.type);
+    });
+  });
+
+  await page.goto("/h/BZQ7");
+  await expect(page.getByText("Tuning moment")).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  expect(sent).toContain("CALIBRATION_CANCEL");
+  await expect(page.getByText("Tuning moment")).not.toBeVisible();
+});
+
 test.describe("F7: Player Calibrating flashes on a real calibration run", () => {
   test.use({ mockScenario: "join.json" });
 
