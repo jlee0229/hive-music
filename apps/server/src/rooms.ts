@@ -31,6 +31,13 @@ import { loadLibrary, type LibraryEntry } from "./library";
 
 const now = () => performance.timeOrigin + performance.now();
 
+/**
+ * Gap between songs when the playlist auto-advances: long enough for most phones to download and
+ * decode the next track's stems (they arrive in the same ROOM_STATE that moves the transport), so
+ * the room comes in together instead of straggling. Slower phones still join mid-song when ready.
+ */
+const TRACK_ADVANCE_LEAD_MS = 5000;
+
 export type Conn = { clientId: string | null; roomCode: string | null };
 type WS = Bun.ServerWebSocket<Conn>;
 
@@ -212,10 +219,10 @@ export class Room {
   // ---- loop timer ----------------------------------------------------------------
   /**
    * Nothing used to fire at the end of the track: the room stayed "playing" forever with every
-   * phone silent (a 60s demo track ends and the party just… stops, while the UI still says playing).
-   * The loop timer restarts the track at its own end, seamlessly: it fires LEAD_MS before the
-   * boundary and moves serverTimeAtTrackZero to exactly the old end, so every phone gets the new
-   * transport with the standard lead and schedules the restart on the boundary instant itself.
+   * phone silent. The loop timer fires LEAD_MS before the boundary and keeps the party going:
+   * with more than one real song in the library it advances to the next one (playlist rotation,
+   * wrapping); with a single song it restarts that song seamlessly — serverTimeAtTrackZero moves
+   * to exactly the old end, so phones schedule the restart on the boundary instant itself.
    */
   private cancelLoopTimer() {
     if (this.loopTimer) {
@@ -235,14 +242,33 @@ export class Room {
   private loopBack(endServerTime: number) {
     this.loopTimer = null;
     if (this.room.transport.state !== "playing" || !this.room.track) return;
-    // Seamless when the boundary is still comfortably ahead (the normal case: this fires LEAD_MS
-    // early); a boundary too close or already past (a SEEK beyond the end, or a room found stuck
-    // from before this timer existed) restarts with the standard lead instead — a
-    // serverTimeAtTrackZero in the past would start mid-track.
-    const zero = endServerTime > now() + 100 ? endServerTime : now() + LEAD_MS;
-    this.room.transport = { state: "playing", serverTimeAtTrackZero: zero };
-    this.dirty = true;
-    this.flush();
+    // Playlist rotation: real songs only, so a party never lands on a synthetic test track unless
+    // the library holds nothing else. The library is read live — a song uploaded mid-show joins
+    // the rotation before the current one ends.
+    const lib = this.getLibrary();
+    const real = lib.filter((t) => !t.generated);
+    const pool = real.length > 0 ? real : lib;
+    const idx = pool.findIndex((t) => t.id === this.room.track!.id);
+    const next = pool.length > 0 ? pool[(idx + 1) % pool.length]! : null;
+
+    if (next && next.id !== this.room.track.id) {
+      // Advance to the next song. Phones have not downloaded it yet, so the start gets a breather
+      // (TRACK_ADVANCE_LEAD_MS) — fast phones start together on that instant, slow ones drop in
+      // mid-song the moment their stems decode, exactly like a late joiner.
+      this.setTrack(next);
+      this.room.scenePlan = null; // the vibe plan was authored for the song that just ended
+      this.room.transport = { state: "playing", serverTimeAtTrackZero: Math.max(now(), endServerTime) + TRACK_ADVANCE_LEAD_MS };
+      this.replan(); // stem choices depend on the track; assignment + snapshot go out together
+    } else {
+      // Single song: restart it seamlessly when the boundary is still comfortably ahead (this
+      // fires LEAD_MS early); a boundary too close or already past (a SEEK beyond the end, or a
+      // room found stuck from before this timer existed) restarts with the standard lead instead —
+      // a serverTimeAtTrackZero in the past would start mid-track.
+      const zero = endServerTime > now() + 100 ? endServerTime : now() + LEAD_MS;
+      this.room.transport = { state: "playing", serverTimeAtTrackZero: zero };
+      this.dirty = true;
+      this.flush();
+    }
     this.syncModeToScenePlan();
     this.rearmSceneTimer();
     this.rearmLoopTimer();

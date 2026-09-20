@@ -67,6 +67,54 @@ describe("end-of-track loop (the room used to go silent forever)", () => {
   });
 });
 
+describe("playlist auto-advance at the end of a song", () => {
+  const twoSongLibrary = () => [
+    { id: "song-a", title: "Song A", durationSec: 0.8, stems: ["mix"], urls: {} },
+    { id: "song-b", title: "Song B", durationSec: 30, stems: ["mix"], urls: {} },
+    { id: "synth", title: "Synthetic", durationSec: 60, stems: ["mix"], urls: {}, generated: true },
+  ];
+
+  test("with more real songs in the library, the room advances to the next one (skipping generated)", async () => {
+    const room = new Room("ADV1", fakeServer(), () => {}, twoSongLibrary);
+    const host = fakeWs();
+    room.join(host, { type: "JOIN", clientId: "host-adv-h001", roomCode: "ADV1", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    room.handle(host, { type: "SET_TRACK", trackId: "song-a" });
+    room.handle(host, { type: "TRANSPORT", action: "PLAY" });
+    const t0 = room.room.transport;
+    const end0 = (t0.state === "playing" ? t0.serverTimeAtTrackZero : NaN) + 0.8 * 1000;
+
+    await sleep(800); // the advance fires at end0 − LEAD_MS ≈ 200 ms in
+    expect(room.room.track?.id).toBe("song-b");
+    const t1 = room.room.transport;
+    expect(t1.state).toBe("playing");
+    if (t1.state === "playing") {
+      // the next song starts after a download breather, never before the old one ended
+      expect(t1.serverTimeAtTrackZero).toBeGreaterThanOrEqual(end0 + 4000);
+    }
+    room.destroy();
+  });
+
+  test("a single real song keeps the seamless same-track loop even when generated tracks exist", async () => {
+    const oneSongLibrary = () => [
+      { id: "only", title: "Only Song", durationSec: 0.8, stems: ["mix"], urls: {} },
+      { id: "synth", title: "Synthetic", durationSec: 60, stems: ["mix"], urls: {}, generated: true },
+    ];
+    const room = new Room("ADV2", fakeServer(), () => {}, oneSongLibrary);
+    const host = fakeWs();
+    room.join(host, { type: "JOIN", clientId: "host-adv-h002", roomCode: "ADV2", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    room.handle(host, { type: "SET_TRACK", trackId: "only" });
+    room.handle(host, { type: "TRANSPORT", action: "PLAY" });
+    const t0 = room.room.transport;
+    const end0 = (t0.state === "playing" ? t0.serverTimeAtTrackZero : NaN) + 0.8 * 1000;
+
+    await sleep(800);
+    expect(room.room.track?.id).toBe("only");
+    const t1 = room.room.transport;
+    if (t1.state === "playing") expect(Math.abs(t1.serverTimeAtTrackZero - end0)).toBeLessThanOrEqual(1);
+    room.destroy();
+  });
+});
+
 describe("viewer joins stay read-only", () => {
   test("kind viewer is stored as viewer with plays false, gets no assignment, and is not in the calibration order", () => {
     const room = new Room("VIEW", fakeServer(), () => {}, shortLibrary);
