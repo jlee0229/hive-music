@@ -174,7 +174,9 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
 
     body = (
-      <main className="mx-auto flex h-dvh max-w-md flex-col gap-4 overflow-hidden" style={{ padding: safeAreaPadding(56, 24, 24) }}>
+      // h-dvh + overflow-hidden silently clips anything that doesn't fit — so this screen stays
+      // compact enough that the footer (ad slot + creators) is always on screen.
+      <main className="mx-auto flex h-dvh max-w-md flex-col gap-3 overflow-hidden" style={{ padding: safeAreaPadding(40, 20, 14) }}>
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-2 text-[15px] font-semibold">
             <span className="h-2.5 w-2.5 rounded-full" style={{ background: roleColor }} />
@@ -188,8 +190,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         <ReconnectBanner connection={connection} />
         <ProtocolMismatchBanner show={protocolMismatch} />
 
-        <div className="flex flex-col items-center gap-3.5 pt-4 pb-2">
-          <svg width="120" height="120" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+        <div className="flex flex-col items-center gap-2.5 pt-1">
+          <svg width="96" height="96" viewBox="0 0 120 120" fill="none" aria-hidden="true">
             <circle cx="60" cy="60" r="54" stroke="var(--raised)" strokeWidth="6" />
             <circle
               cx="60"
