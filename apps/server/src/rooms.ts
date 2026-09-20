@@ -238,8 +238,11 @@ export class Room {
   private startCalibration(referenceClientId: string) {
     this.clearCalibrationTimers();
 
+    // Only a speaker that is actually connected and has this track's stems decoded can produce a
+    // click worth measuring; a disconnected-but-retained record or one still loading gets a silent
+    // slot in the schedule otherwise (dead air, and a click that never arrives for the reference to see).
     const order = Object.values(this.room.clients)
-      .filter((c) => c.plays && c.id !== referenceClientId)
+      .filter((c) => c.plays && c.id !== referenceClientId && c.connected && c.audioReadyTrackId === this.room.track?.id)
       .sort((a, b) => a.joinIndex - b.joinIndex)
       .map((c) => c.id);
     const start = now() + CALIBRATION_COUNTDOWN_MS;
@@ -282,7 +285,14 @@ export class Room {
     for (const m of msg.measurements) {
       const c = this.room.clients[m.clientId];
       if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored
-      c.calibratedOffsetMs = (c.calibratedOffsetMs ?? c.tableLatencyMs ?? 0) + m.residualMs;
+      // Before any calibration, a client with no table entry (STARTER_LATENCY_TABLE_MS.other is null)
+      // silently subtracts its own ctx.outputLatency locally (docs/02-protocol.md §1: "no table AND no
+      // calibration"). Once calibratedOffsetMs is non-null the client stops doing that — so basing the
+      // first round on tableLatencyMs ?? 0 alone would drop that compensation entirely and leave the
+      // phone late by exactly its outputLatency. Falling back to the client's own reported
+      // outputLatencyMs (CLIENT_STATUS) instead of 0 preserves it across the transition.
+      const base = c.calibratedOffsetMs ?? c.tableLatencyMs ?? this.health.get(m.clientId)?.outputLatencyMs ?? 0;
+      c.calibratedOffsetMs = base + m.residualMs;
       this.room.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
     }
     this.room.calibration = { ...this.room.calibration, state: "done" };
@@ -292,9 +302,16 @@ export class Room {
   // ---- join / disconnect --------------------------------------------------------
   join(ws: WS, msg: Extract<ClientMessage, { type: "JOIN" }>) {
     const existing = this.room.clients[msg.clientId];
-    const wantsHost = msg.kind === "host" && (msg.hostKey === this.hostKey || existing?.kind === "host");
+    // A ROOM_FIXED_CODE demo room re-spawned lazily (after ROOM_IDLE_TTL_MS, or a restart) mints a
+    // fresh hostKey (constructor above) that the host's stored key can never match, and there is no
+    // `existing` record for a brand-new room either — so without the "nobody holds the room yet"
+    // clause, the host would be silently demoted to a player forever (every host command then answers
+    // NOT_HOST). Accepting kind:"host" once hostClientIds is empty recovers that, and is also what lets
+    // an existing PLAYER record (a host demoted by this exact gap before this fix landed) be promoted
+    // back once it presents the room's real hostKey.
+    const wantsHost = msg.kind === "host" && (msg.hostKey === this.hostKey || existing?.kind === "host" || this.room.hostClientIds.length === 0);
     const rec: ClientRecord = existing
-      ? { ...existing, connected: true, name: msg.name ?? existing.name, device: msg.device }
+      ? { ...existing, connected: true, name: msg.name ?? existing.name, device: msg.device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.plays }
       : {
           id: msg.clientId,
           kind: wantsHost ? "host" : "player",
@@ -336,6 +353,10 @@ export class Room {
   disconnect(ws: WS) {
     const id = ws.data.clientId;
     if (!id) return;
+    // A duplicate/stale socket for the same clientId (e.g. a reconnect that raced the old socket's
+    // close) must not tear down the live one — join() always makes the newest socket the one
+    // registered in `this.sockets`, so if this isn't it, the client is still connected elsewhere.
+    if (this.sockets.get(id) !== ws) return;
     const c = this.room.clients[id];
     if (c) {
       c.connected = false;
