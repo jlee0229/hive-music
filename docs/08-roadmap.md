@@ -64,16 +64,16 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | B7 | server | needs human | `evidence/server/B7-deploy.md` (Dockerfile/workflow verified logically + clean-checkout boot; no Fly/Docker here) |
 | B8 | engine (B8e) + server (B8s) | both halves done (real run 🟡) | `evidence/backend/B8-calibration.md` · `evidence/server/B8-calibration.txt` |
 | B9 (stretch) | server | todo | |
-| F0 | frontend | todo | |
-| F1 | frontend | todo | |
-| F2 | frontend | todo | |
-| F3 | frontend | todo | |
-| F4 | frontend | todo | |
-| F5 | frontend | todo | |
-| F6 | frontend | todo | |
-| F7 | frontend | todo | |
-| F8 | frontend | todo | |
-| F9 | frontend | todo | |
+| F0 | frontend | done | `evidence/frontend/F0-diag.png` |
+| F1 | frontend | 🟡 needs human (phones) | `evidence/frontend/F1-ready.png`, `F1-phones.md` |
+| F2 | frontend | done | `evidence/frontend/F2-lobby.png`, `F2-stage.png` |
+| F3 | frontend | 🟡 needs human (phones) | `evidence/frontend/F3-playing.png`, `F3-phone.md` |
+| F4 | frontend | done | `evidence/frontend/F4-map.png` |
+| F5 | frontend | done | `evidence/frontend/F5-modes.md` (+webm, gitignored) |
+| F6 | frontend | done | `evidence/frontend/F6-vibe.png` |
+| F7 | frontend | done | `evidence/frontend/F7-calibrate.png` |
+| F8 | frontend | 🟡 needs human (phones) | `evidence/frontend/F8-notes.md` |
+| F9 | frontend | 🟡 needs human (Vercel/Fly creds) | `evidence/frontend/F9-restart.png`, `F9-deploy.md` |
 
 ## Cut list
 

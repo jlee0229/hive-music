@@ -1,9 +1,13 @@
 {
   "name": "HiveMusic",
   "short_name": "HiveMusic",
+  "description": "Turn a crowd's phones into one distributed speaker.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0B0F14",
   "theme_color": "#0B0F14",
-  "icons": []
+  "icons": [
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" }
+  ]
 }
