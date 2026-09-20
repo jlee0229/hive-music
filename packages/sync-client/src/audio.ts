@@ -22,6 +22,9 @@ import {
  * message is still in flight.
  */
 const READY_REANNOUNCE_MIN_MS = 1000 / ROOM_STATE_MAX_HZ;
+
+/** Web Audio's render quantum, frames. The granularity of every `start(when)` we make. */
+const RENDER_QUANTUM = 128;
 import type { AudioEngine, AudioEngineContext } from "./client";
 import { renderClick } from "./calibration/click";
 import { CalibrationCancelledError, runAsReference, type CalibrationPlan } from "./calibration/reference";
@@ -90,6 +93,8 @@ export function createBrowserAudioEngine(
   let waitingForClock = false;
   /** `performance.now()` of the last AUDIO_READY we sent, so a re-announce cannot become a loop. */
   let lastReadyAnnounceAt = -Infinity;
+  /** Calibration clicks dropped because their instant had already passed (diagnostics). */
+  let clicksSkipped = 0;
 
   /*
    * The clock arrives asynchronously, so the refused schedule has to be retried by an event rather than
@@ -462,7 +467,26 @@ export function createBrowserAudioEngine(
       const ctxNow = ctx.currentTime;
       const comp = (lastAssignment?.compensationMs ?? 0) / 1000;
       const ol = useOutputLatency() ? ctx.outputLatency || 0 : 0;
-      const at = Math.max(ctxNow, mapper.ctxTimeForNow(serverTimeToExecute, ctxNow, host.now()) - comp - ol);
+      const requested = mapper.ctxTimeForNow(serverTimeToExecute, ctxNow, host.now()) - comp - ol;
+      /*
+       * A click we cannot place on time is not played at all.
+       *
+       * The reference measures each click against the instant the plan promised, so a click fired late —
+       * because its SCHEDULED_ACTION arrived late, or the tab was throttled — produces a residual that is
+       * *wrong by that lateness*, and the server writes it into `calibratedOffsetMs` as though it were
+       * this phone's output latency. Playing it anyway trades a missing measurement for a confidently
+       * wrong one, and a wrong offset is the accumulation base for the next run (P0-6, CALIBRATION_RESET).
+       * Dropping it shows up as "not heard — run again", which is the honest outcome and one the UI
+       * already handles.
+       *
+       * The tolerance is one render quantum: inside that, Web Audio cannot place the click more precisely
+       * anyway, so refusing would only make calibration flakier without making it more accurate.
+       */
+      if (requested < ctxNow - RENDER_QUANTUM / ctx.sampleRate) {
+        clicksSkipped++;
+        return;
+      }
+      const at = Math.max(ctxNow, requested);
       source.start(at);
       pendingClicks.push({ source, gain, atCtx: at });
       source.onended = () => {
@@ -487,6 +511,7 @@ export function createBrowserAudioEngine(
         // B9e: what the rate trim is doing right now, and how much drift it is chasing. A phone parked at
         // the ppm cap is the signal that slewing is losing and a crossfade is coming.
         driftErrorMs: scheduler?.lastDriftErrorMs ?? 0,
+        clicksSkipped,
         slewPpm: scheduler?.lastSlewPpm ?? 0,
         slewEnabled: scheduler?.slewEnabled ?? false,
         resyncCount: scheduler?.resyncCount ?? 0,

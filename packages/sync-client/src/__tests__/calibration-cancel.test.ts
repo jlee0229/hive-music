@@ -98,13 +98,48 @@ describe("a cancelled run silences the clicks this phone already holds", () => {
     await h.engine.unlock();
     h.engine.applyRoom(h.withCalibration(h.running()), h.assignment);
 
-    // scheduled in the past → it starts immediately, i.e. it is audible right now
-    h.engine.scheduleClick(LOCAL - 500, DEFAULT_CLICK_SPEC);
+    // due exactly now: it starts immediately, i.e. it is audible as the cancel arrives
+    h.engine.scheduleClick(LOCAL, DEFAULT_CLICK_SPEC);
     const click = h.ctx.sources[h.ctx.sources.length - 1]!;
     expect(click.starts[0]!.when).toBeCloseTo(CTX0, 6);
 
     h.engine.applyRoom(h.withCalibration(IDLE_CALIBRATION), h.assignment);
     expect(click.stops).toHaveLength(0); // cutting a 22 ms click mid-flight would just be a click
+  });
+
+  test("a click whose instant has already passed is not played at all", async () => {
+    /*
+     * The reference measures every click against the instant the plan promised, so a click fired late —
+     * a SCHEDULED_ACTION that arrived late, a throttled tab — yields a residual wrong by that lateness,
+     * and the server writes it in as this phone's output latency. A missing measurement shows up as
+     * "not heard — run again"; a late one is indistinguishable from a slow speaker. So it is dropped.
+     */
+    const h = harness();
+    h.engine.applyRoom(h.baseRoom, h.assignment);
+    await h.engine.unlock();
+    h.engine.applyRoom(h.withCalibration(h.running()), h.assignment);
+    const sourcesBefore = h.ctx.sources.length;
+
+    h.engine.scheduleClick(LOCAL - 500, DEFAULT_CLICK_SPEC);
+    // a source may be built before the check; what matters is that nothing was started
+    for (const s of h.ctx.sources.slice(sourcesBefore)) expect(s.starts).toHaveLength(0);
+    expect((h.engine.debug as unknown as { clicksSkipped: number }).clicksSkipped).toBe(1);
+
+    // and it is not holding a pending click that a later cancel would try to stop
+    h.engine.applyRoom(h.withCalibration(IDLE_CALIBRATION), h.assignment);
+    for (const s of h.ctx.sources.slice(sourcesBefore)) expect(s.stops).toHaveLength(0);
+  });
+
+  test("a click one render quantum late is still played: that is below scheduling granularity", async () => {
+    const h = harness();
+    h.engine.applyRoom(h.baseRoom, h.assignment);
+    await h.engine.unlock();
+    h.engine.applyRoom(h.withCalibration(h.running()), h.assignment);
+    // 128 frames at the fake's 44.1 kHz is ~2.9 ms; 1 ms late is inside the tolerance
+    h.engine.scheduleClick(LOCAL - 1, DEFAULT_CLICK_SPEC);
+    const click = h.ctx.sources[h.ctx.sources.length - 1]!;
+    expect(click.starts).toHaveLength(1);
+    expect(click.starts[0]!.when).toBeCloseTo(CTX0, 6); // clamped to now, not scheduled in the past
   });
 
   test("a phone joining an already-idle room cancels nothing", async () => {
