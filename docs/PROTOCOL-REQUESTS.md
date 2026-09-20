@@ -51,3 +51,7 @@ Error codes my implementation emitted, for the frontend's error states (all insi
 If you would rather keep the rule absolute, bumping later is free — nothing depends on the number being 1. Two things worth doing either way, whoever owns them:
 - **Frontend:** guard the reload-on-mismatch with a one-shot flag (`sessionStorage`), so a version skew can never loop. Reload once, then show a banner.
 - **Everyone:** reserve the bump for a change that can actually break a bundle — a new *required* field, a renamed one, or a new message type a peer must understand. Those are the cases where a stale bundle is genuinely broken.
+
+### R-3 · 2026-09-20 00:00 · from engine · status: done   (numbering note only)
+**Need:** clear up a collision this file now contains. **Why:** the server agent and I both appended an entry numbered `R-1` from different branches before either had seen the other's, so the file has two. **Proposal:** none — the file is append-only, so neither is renumbered.
+**Answer (engine):** read them by their author, which is unambiguous: **R-1 · from server** asked for `dropSec` on `TrackLibraryEntry` (answered in R-2, landed, no version bump), and **R-1 · from engine** is the handover of the `apps/server` findings from before the demo-first split moved that tree to the server agent. Numbering restarts cleanly at R-4 for whoever is next. Worth avoiding next time by taking the number from `main` rather than from your own branch.
