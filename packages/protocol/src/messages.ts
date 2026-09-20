@@ -25,7 +25,14 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     /** Client-generated UUID kept in localStorage; the same id on reconnect restores the slot. */
     clientId: z.string().min(8).max(64),
     roomCode: z.string().min(3).max(8),
-    kind: z.enum(["host", "player"]),
+    /**
+     * `viewer` (v4) is a read-only join for `/screen`: no speaker role, not counted as a player, no
+     * `hostKey`, and no control messages — but it receives `ROOM_STATE` *and* `HEALTH`, which is the whole
+     * point (a projector display shows the room's median sync). The server forces `plays: false` for it
+     * whatever the field says, and never adds it to `hostClientIds`, so the credential a venue display
+     * would otherwise need — and a leaked `hostKey` is full control, including `KICK` — is not required.
+     */
+    kind: z.enum(["host", "player", "viewer"]),
     /** Hosts: false unless "use this phone as a speaker too". Players: must be true. */
     plays: z.boolean(),
     hostKey: z.string().max(64).optional(),

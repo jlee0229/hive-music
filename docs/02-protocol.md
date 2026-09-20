@@ -4,8 +4,9 @@ Owner: backend agent (edits), frontend agent (reads; requests changes in [PROTOC
 
 This document mirrors `packages/protocol/src/*.ts`. **The code is the source of truth**; a test
 (`packages/protocol/src/__tests__/schemas.test.ts`) fails if the message tables below drift from the
-zod unions. Frozen at IC0; after that, changes are additive and bump the version. **`PROTOCOL_VERSION = 3`**: v2 added `CALIBRATION_CANCEL` (v1 had no way back from a started tuning moment), v3 adds
-`CALIBRATION_RESET` (v2 had no way to throw away a bad measurement, and a bad one is the base for the next).
+zod unions. Frozen at IC0; after that, changes are additive and bump the version. **`PROTOCOL_VERSION = 4`**: v2 added `CALIBRATION_CANCEL` (v1 had no way back from a started tuning moment), v3 added
+`CALIBRATION_RESET` (v2 had no way to throw away a bad measurement, and a bad one is the base for the next), v4 adds
+`kind: "viewer"` on `JOIN` (v3 had no way to show a room's state without a `hostKey`, and a leaked `hostKey` is full control).
 
 ## 1. Timeline model
 
@@ -50,7 +51,7 @@ inside the assignment, so the UI never adds these numbers itself.
   `syncErrMs := minRttMs/2 + |lastAppliedCorrectionMs|`.
 - Identity: the client generates a UUID once, keeps it in `localStorage`, and sends it in `JOIN`; the server keeps a
   disconnected record for `DISCONNECT_RETENTION_MS = 120 000` so a reconnect restores the same `joinIndex`, position and assignment.
-- Rates: `ROOM_STATE` ≤ 2 Hz (coalesced, always a full snapshot); `HEALTH` 1 Hz to hosts only; `CLIENT_STATUS` every 2 s;
+- Rates: `ROOM_STATE` ≤ 2 Hz (coalesced, always a full snapshot); `HEALTH` 1 Hz to hosts **and viewers**; `CLIENT_STATUS` every 2 s;
   `SET_POSITION` throttled to 10 Hz inside the engine (the UI may call it on every pointer move); `PING` every 20 s.
 
 ## 3. Clock sync (NTP-style over the room WebSocket)
@@ -72,7 +73,7 @@ Discriminated on `type`. Host-only messages return `ERROR NOT_HOST` from a playe
 
 | `type` | fields | who | notes |
 |---|---|---|---|
-| `JOIN` | `clientId, roomCode, kind: host\|player, plays, hostKey?, name?, device{userAgent, platform, browserFamily, model?}, protocolVersion` | any | first message on the socket; `kind: host` needs a valid `hostKey` unless the id is already a host |
+| `JOIN` | `clientId, roomCode, kind: host\|player\|viewer, plays, hostKey?, name?, device{userAgent, platform, browserFamily, model?}, protocolVersion` | any | first message on the socket; `kind: host` needs a valid `hostKey` unless the id is already a host. `kind: viewer` (v4) needs no key: the server forces `plays: false`, never adds it to `hostClientIds`, does not count it as a player, and sends it `HEALTH` as well as `ROOM_STATE` |
 | `NTP_REQUEST` | `t0, probeGroupId?, probeGroupIndex?` | any | answered immediately with `NTP_RESPONSE` |
 | `SET_TRACK` | `trackId` | host | loads the track into the room; phones preload **all stems** and answer `AUDIO_READY` |
 | `TRANSPORT` | `action: PLAY\|PAUSE\|SEEK, trackTimeSec?` | host | see §1 |
@@ -97,7 +98,7 @@ Discriminated on `type`. Host-only messages return `ERROR NOT_HOST` from a playe
 | `WELCOME` | `clientId, roomCode, serverTime, protocolVersion, isHost` | joiner | a stale cached bundle compares `protocolVersion` and reloads |
 | `NTP_RESPONSE` | `t0, t1, t2, probeGroupId?, probeGroupIndex?` | prober | |
 | `ROOM_STATE` | `room` (full `RoomState`) | room | on any change, coalesced to ≤2 Hz; the joiner gets one immediately |
-| `HEALTH` | `serverTime, clients{[id]: {rttMs, syncErrMs, outputLatencyMs, audioState, lastSeenServerTime}}` | hosts | 1 Hz |
+| `HEALTH` | `serverTime, clients{[id]: {rttMs, syncErrMs, outputLatencyMs, audioState, lastSeenServerTime}}` | hosts + viewers | 1 Hz (v4 adds viewers: a `/screen` display's median-sync tile is a median over exactly these numbers) |
 | `SCHEDULED_ACTION` | `serverTimeToExecute, action{kind: CALIBRATION_CLICK, clickId, clickSpec}` | one player | the only scheduled action left; phones synthesize the click |
 | `CALIBRATION_PLAN` | `startServerTime, intervalMs, order[], clickSpec` | reference | which phone clicks when |
 | `PING` | `serverTime` | room | every 20 s |

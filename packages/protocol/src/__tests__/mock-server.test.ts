@@ -396,3 +396,64 @@ describe("a phone with two sockets (a reconnect racing a retry)", () => {
     expect(mock.room.clients["dup-client-02"]!.connected).toBe(false);
   }, 15_000);
 });
+
+describe("a viewer joins read-only (protocol v4, answers frontend R-13)", () => {
+  /*
+   * `/screen` is a projector display on a laptop at the venue, shown to a room full of people. It must
+   * not need a `hostKey`, because a leaked one is full control — track, transport, KICK. Before `viewer`
+   * existed, a no-key join could only land as `kind: "player", plays: true`, which inflated the player
+   * count, consumed a stem in ORCHESTRA's rotation (the room loses an instrument to a laptop), and still
+   * never received HEALTH — so the one number the display exists to show was unavailable.
+   */
+  test("no hostKey, never a speaker, not a player, and it still gets HEALTH", async () => {
+    const viewer = new Fake();
+    await viewer.open();
+    viewer.send({
+      type: "JOIN", clientId: "screen-000001", roomCode: "BZQ7", kind: "viewer", plays: true, // asks to play…
+      device, protocolVersion: PROTOCOL_VERSION,
+    });
+    const welcome = await viewer.next("WELCOME");
+    expect(welcome.isHost).toBe(false);
+
+    const state = await viewer.next("ROOM_STATE", (m) => !!m.room.clients["screen-000001"]);
+    const rec = state.room.clients["screen-000001"]!;
+    expect(rec.kind).toBe("viewer");
+    expect(rec.plays).toBe(false); // …and is refused: the field is a request, not a fact
+    expect(rec.assignment).toBeNull(); // plan() gives a non-speaker nothing, so it cannot play audio
+    expect(state.room.hostClientIds).not.toContain("screen-000001");
+
+    // HEALTH is the whole point: the "Synced ±N ms" tile is a median over these numbers
+    const h = await viewer.next("HEALTH", () => true, 2500);
+    expect(typeof h.serverTime).toBe("number");
+    expect(h.clients["screen-000001"]).toBeDefined();
+
+    viewer.ws.close();
+  }, 15_000);
+
+  test("a viewer cannot drive the room", async () => {
+    const viewer = new Fake();
+    await viewer.open();
+    viewer.send({ type: "JOIN", clientId: "screen-000002", roomCode: "BZQ7", kind: "viewer", plays: false, device, protocolVersion: PROTOCOL_VERSION });
+    await viewer.next("WELCOME");
+    viewer.forget();
+    // every host-only handler gates on hostClientIds, which a viewer is never added to
+    viewer.send({ type: "TRANSPORT", action: "PAUSE" });
+    expect((await viewer.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+    viewer.send({ type: "KICK", clientId: "screen-000002" });
+    expect((await viewer.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+    viewer.ws.close();
+  }, 15_000);
+
+  test("a viewer that claims to be a host without the key is not one", async () => {
+    // the existing guard, re-asserted here because `viewer` adds a third branch to it
+    const faker = new Fake();
+    await faker.open();
+    faker.send({ type: "JOIN", clientId: "screen-000003", roomCode: "BZQ7", kind: "host", plays: false, device, protocolVersion: PROTOCOL_VERSION });
+    const welcome = await faker.next("WELCOME");
+    expect(welcome.isHost).toBe(false);
+    const state = await faker.next("ROOM_STATE", (m) => !!m.room.clients["screen-000003"]);
+    expect(state.room.clients["screen-000003"]!.kind).toBe("player"); // no key, no viewer claim → player
+    expect(state.room.clients["screen-000003"]!.plays).toBe(true);
+    faker.ws.close();
+  }, 15_000);
+});

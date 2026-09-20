@@ -3,7 +3,7 @@
  * Every number here is quoted in docs/02-protocol.md; change both or neither.
  */
 
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 
 // ---- timeline & scheduling --------------------------------------------------
 /** PLAY is scheduled this far ahead so every phone can line up on the same instant. */

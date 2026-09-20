@@ -81,6 +81,8 @@ export function nullAudioEngine(): AudioEngine {
     get muted() {
       return muted;
     },
+    ctxState: null,
+    sampleRate: null,
     ctxNow: () => null,
     applyRoom: () => {},
     lastCorrectionMs: 0,

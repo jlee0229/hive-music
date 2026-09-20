@@ -64,7 +64,8 @@ export type Assignment = z.infer<typeof AssignmentSchema>;
 
 export const ClientRecordSchema = z.object({
   id: z.string().min(8).max(64),
-  kind: z.enum(["host", "player"]),
+  /** `viewer` is a read-only display (v4): never a speaker, never counted as a player. */
+  kind: z.enum(["host", "player", "viewer"]),
   /** Whether this client is a speaker. Hosts default false; players always true. */
   plays: z.boolean(),
   name: z.string().max(32),

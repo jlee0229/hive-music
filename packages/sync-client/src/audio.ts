@@ -466,6 +466,13 @@ export function createBrowserAudioEngine(
       // 0 when nothing is playing: there is no playhead to be wrong about.
       return scheduler?.playing ? scheduler.lastDriftErrorMs : 0;
     },
+    get ctxState() {
+      // The cast keeps iOS's 'interrupted' honest; it is a real value the DOM union omits.
+      return ctx ? (ctx.state as AudioContextState | "interrupted") : null;
+    },
+    get sampleRate() {
+      return ctx?.sampleRate ?? null;
+    },
     get outputLatencyMs() {
       return readOutputLatencyMs();
     },

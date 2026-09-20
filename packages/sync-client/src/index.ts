@@ -23,8 +23,12 @@ export interface HiveClientOptions {
   /** e.g. https://hivemusic-server.fly.dev (REST: /tracks, /rooms, /audio, /vibe) */
   apiUrl: string;
   roomCode: string;
-  kind: "host" | "player";
-  /** Hosts: "use this phone as a speaker too". Players: always true. */
+  /**
+   * `viewer` (v4) is a read-only display — `/screen` on a laptop at the venue. It needs no `hostKey`,
+   * is never a speaker, is not counted as a player, and receives `HEALTH` as well as `ROOM_STATE`.
+   */
+  kind: "host" | "player" | "viewer";
+  /** Hosts: "use this phone as a speaker too". Players: always true. Viewers: forced false by the server. */
   plays: boolean;
   hostKey?: string;
   name?: string;
@@ -112,6 +116,18 @@ export interface HiveAudio {
   /** Local mute (does not change the assignment). */
   setMuted(muted: boolean): void;
   readonly muted: boolean;
+  /**
+   * `AudioContext.state` — `null` before a context exists (R-12). Distinct from `state` above, which is
+   * the engine's view: a `suspended` context with `state === "ready"` is precisely the "sounds fine to the
+   * engine, nothing will come out of the speaker" case, and it is invisible in every other field.
+   * `"interrupted"` is iOS-only and absent from the DOM union, so it is included here explicitly.
+   */
+  readonly ctxState: AudioContextState | "interrupted" | null;
+  /**
+   * `AudioContext.sampleRate`, or `null` before a context exists (R-12). Worth surfacing because a device
+   * that silently opened at 44.1 kHz where its neighbours are at 48 kHz has bitten stem math before.
+   */
+  readonly sampleRate: number | null;
 }
 
 export interface HiveHostControls {

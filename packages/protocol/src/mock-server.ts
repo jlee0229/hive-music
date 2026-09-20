@@ -229,10 +229,19 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (msg.roomCode.toUpperCase() !== room.code) return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
         const existing = room.clients[msg.clientId];
         const wantsHost = msg.kind === "host" && (msg.hostKey === hostKey || existing?.kind === "host");
+        /*
+         * A viewer (v4, R-13) needs no credential and must not become a speaker. `plays` is forced false
+         * rather than trusted: the field is what a client *asked* for, and a display that inflated the
+         * player count would consume a stem in ORCHESTRA's `joinIndex % roles.length` rotation — the room
+         * would lose a whole instrument to a laptop on a table.
+         */
+        const isViewer = !wantsHost && msg.kind === "viewer";
         const rec: ClientRecord = existing
           ? { ...existing, connected: true, name: msg.name ?? existing.name, device: msg.device }
           : {
-              id: msg.clientId, kind: wantsHost ? "host" : "player", plays: wantsHost ? msg.plays : true,
+              id: msg.clientId,
+              kind: wantsHost ? "host" : isViewer ? "viewer" : "player",
+              plays: wantsHost ? msg.plays : isViewer ? false : true,
               name: msg.name ?? `Phone ${joinCounter + 1}`, device: msg.device,
               joinIndex: joinCounter++, joinedAtServerTime: now(), position: null, pinnedRole: null, nudgeMs: 0,
               tableLatencyMs: STARTER_LATENCY_TABLE_MS[msg.device.browserFamily], calibratedOffsetMs: null,
@@ -440,7 +449,10 @@ export function startMockServer(opts: MockServerOptions = {}) {
     const t = now();
     const clients: Record<string, NonNullable<ReturnType<typeof health.get>>> = {};
     for (const [id, h] of health) if (room.clients[id]) clients[id] = h;
-    for (const id of room.hostClientIds) {
+    // Hosts and viewers both get HEALTH: a projector display's "Synced ±N ms" tile is a median over
+    // exactly these numbers, and it is the one thing a viewer cannot derive from ROOM_STATE.
+    const watchers = new Set([...room.hostClientIds, ...Object.values(room.clients).filter((c) => c.kind === "viewer").map((c) => c.id)]);
+    for (const id of watchers) {
       const s = sockets.get(id);
       if (s) send(s, { type: "HEALTH", serverTime: t, clients });
     }

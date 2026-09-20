@@ -226,6 +226,28 @@ describe("audio engine lifecycle", () => {
     expect((h.engine.debug as unknown as { loadAttempts: string[] }).loadAttempts).toEqual([]);
   }, 10_000);
 
+  test("ctxState and sampleRate are the context's own, and null before it exists (R-12)", async () => {
+    /*
+     * `audio.state` is the engine's view; `ctxState` is the hardware's. The pair that matters is
+     * `ctxState: "suspended"` with `state: "ready"` — sounds fine to the engine, nothing comes out of the
+     * speaker — which /diag's copy-report needs to show a human on the other end of a text message.
+     */
+    const h = engineHarness();
+    expect(h.engine.ctxState).toBeNull();
+    expect(h.engine.sampleRate).toBeNull();
+
+    await h.engine.unlock();
+    expect(h.engine.ctxState).toBe("running");
+    expect(h.engine.sampleRate).toBe(h.ctx.sampleRate);
+
+    // the context is interrupted (a call, the lock screen) while the engine still holds its buffers
+    h.ctx.state = "suspended";
+    h.ctx.onstatechange?.();
+    expect(h.engine.ctxState).toBe("suspended");
+    expect(h.engine.state).toBe("locked"); // the engine noticed too, and they agree here
+    expect(h.engine.sampleRate).toBe(h.ctx.sampleRate); // a suspended context still has a rate
+  });
+
   test("outputLatency is reported once a context exists, and null before that", async () => {
     const h = engineHarness();
     expect(h.engine.outputLatencyMs).toBeNull();
