@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AudioState, HealthSnapshot, RoomState } from "@hive/protocol";
 import type { ClientRecord, ConnectionState, HiveClient, HiveClientOptions } from "@hive/sync-client";
 import { apiUrl, createClient, wsUrl } from "./client";
+import { guardProtocolVersion } from "./protocolVersionGuard";
 
 export interface UseHiveClientOptions {
   roomCode: string;
@@ -24,6 +25,8 @@ export interface UseHiveClientResult {
   audio: { state: AudioState; loadProgress: number; muted: boolean };
   health: Record<string, HealthSnapshot>;
   healthServerTime: number | null;
+  /** True once a one-shot reload has already failed to clear a PROTOCOL_VERSION mismatch. */
+  protocolMismatch: boolean;
   /** Call inside a user gesture (tap), then connect(). Safe to call multiple times. */
   connect: () => Promise<void>;
 }
@@ -66,6 +69,16 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
   const [muted, setMuted] = useState(client.audio.muted);
   const [health, setHealth] = useState<Record<string, HealthSnapshot>>({});
   const [healthServerTime, setHealthServerTime] = useState<number | null>(null);
+  const [protocolMismatch, setProtocolMismatch] = useState(false);
+
+  useEffect(() => {
+    guardProtocolVersion(clientOpts.apiUrl).then((result) => {
+      if (result === "banner") setProtocolMismatch(true);
+    });
+    // Runs once per mount, independent of the client/connect lifecycle below: a mismatch that
+    // survives the one-shot reload should show the banner even if connect() never resolves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const offState = client.on("state", (r) => {
@@ -106,6 +119,7 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
     audio: { state: audioState, loadProgress, muted },
     health,
     healthServerTime,
+    protocolMismatch,
     connect: () => {
       everConnectedRef.current = true;
       return client.connect();

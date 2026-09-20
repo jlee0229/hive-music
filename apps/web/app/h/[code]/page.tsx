@@ -7,6 +7,7 @@ import { apiUrl } from "@/lib/hive/client";
 import { getHostKey, setHostKey } from "@/lib/hive/storage";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
+import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
 import { HiveMap } from "@/components/HiveMap";
@@ -57,7 +58,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     };
   }, [roomCode, hostKeyState]);
 
-  const { client, room, connection, audio, health, healthServerTime } = useHiveClient({
+  const { client, room, connection, audio, health, healthServerTime, protocolMismatch } = useHiveClient({
     roomCode,
     kind: "host",
     plays: speakerOn,
@@ -161,6 +162,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
         </div>
 
         <ReconnectBanner connection={connection} />
+        <ProtocolMismatchBanner show={protocolMismatch} />
 
         <TransportBar room={room} clock={client.clock} host={client.host} />
 
@@ -229,6 +231,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
       </div>
 
       <ReconnectBanner connection={connection} />
+      <ProtocolMismatchBanner show={protocolMismatch} />
 
       <div className="flex flex-col items-center gap-3">
         <span className="font-display text-[60px] leading-none font-extrabold tracking-[0.14em]">{roomCode}</span>

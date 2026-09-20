@@ -10,6 +10,7 @@ import { getPlayerName, setPlayerName } from "@/lib/hive/storage";
 import { formatMs, selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
 import { RingerBanner } from "@/components/RingerBanner";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
+import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { PlayerPlayingScreen } from "@/components/PlayerPlayingScreen";
 import { PlayerCalibratingScreen } from "@/components/PlayerCalibratingScreen";
 
@@ -25,7 +26,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const [removed, setRemoved] = useState<{ heading: string; detail: string } | null>(null);
   const device = detectDevice();
 
-  const { client, room, me, connection, status, audio, connect } = useHiveClient({
+  const { client, room, me, connection, status, audio, connect, protocolMismatch } = useHiveClient({
     roomCode,
     kind: "player",
     plays: true,
@@ -136,6 +137,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </div>
 
         <ReconnectBanner connection={connection} />
+        <ProtocolMismatchBanner show={protocolMismatch} />
 
         <div className="flex flex-col items-center gap-3.5 pt-4 pb-2">
           <svg width="120" height="120" viewBox="0 0 120 120" fill="none" aria-hidden="true">
@@ -219,6 +221,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
           {roomCode}
         </span>
       </div>
+
+      <ProtocolMismatchBanner show={protocolMismatch} />
 
       <label className="flex flex-col gap-2 text-[13px]" style={{ color: "var(--muted)" }} onClick={(e) => e.stopPropagation()}>
         Your name
