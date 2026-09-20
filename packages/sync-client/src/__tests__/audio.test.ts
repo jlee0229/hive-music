@@ -56,7 +56,7 @@ describe("renderClick", () => {
 // ---- engine harness ---------------------------------------------------------
 const STEMS = ["drums", "bass", "vocals", "other"];
 
-function engineHarness(opts: { compensationMs?: number; delayMs?: number } = {}) {
+function engineHarness(opts: { compensationMs?: number; delayMs?: number; loadStem?: (url: string) => Promise<unknown> } = {}) {
   const clock = new ClockModel();
   const local = 1_700_000_000_000;
   clock.addProbe(local, local, local, local); // offset exactly 0, so server time == local time
@@ -124,7 +124,9 @@ function engineHarness(opts: { compensationMs?: number; delayMs?: number } = {})
 
   const engine = createBrowserAudioEngine(host, {
     createContext: () => ctx as unknown as AudioContext,
-    loadStem: async () => new FakeBuffer(60, ctx.sampleRate) as unknown as AudioBuffer,
+    loadStem: opts.loadStem
+      ? (opts.loadStem as unknown as (url: string, c: AudioContext) => Promise<AudioBuffer>)
+      : async () => new FakeBuffer(60, ctx.sampleRate) as unknown as AudioBuffer,
   });
   return { engine, ctx, room, assignment, sent, events, clock, mapper, serverNow: local };
 }
@@ -169,6 +171,60 @@ describe("audio engine lifecycle", () => {
     expect(h.engine.state).toBe("ready");
     expect(h.sent.filter((m) => (m as { type: string }).type === "AUDIO_READY")).toHaveLength(1);
   });
+
+  test("a failed stem load is retried, but behind a backoff rather than on every snapshot", async () => {
+    /*
+     * ROOM_STATE arrives at 2 Hz. An unconditional retry means 12 phones × 2 Hz × 4 stems ≈ 96 requests a
+     * second at a server that is already failing — and a missing fixture answers 404 as fast as it can,
+     * so the herd never thins. Giving up instead is worse: a phone that loses one flaky download is
+     * silent for the whole set. So: retry, with a doubling backoff.
+     */
+    let attempts = 0;
+    const h = engineHarness({
+      loadStem: async () => {
+        attempts++;
+        throw new Error("404 no fixture");
+      },
+    });
+    const errors: string[] = [];
+    h.engine.applyRoom(h.room, h.assignment);
+    await h.engine.unlock();
+    expect(attempts).toBeGreaterThan(0);
+    expect(h.engine.state).toBe("unlocked"); // honest: not "ready"
+    const afterFirst = attempts;
+
+    // a burst of snapshots, as the 2 Hz stream would deliver: none of them may re-fetch
+    for (let i = 0; i < 10; i++) h.engine.applyRoom(h.room, h.assignment);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(attempts).toBe(afterFirst);
+
+    // the track is still not loaded and the engine has not lied about it
+    expect(h.engine.debug.loadedTrackId).toBeNull();
+    expect((h.engine.debug as unknown as { loadAttempts: string[] }).loadAttempts).toEqual(["synthetic-60s×1"]);
+    void errors;
+  });
+
+  test("a load that succeeds after a failure clears the backoff", async () => {
+    let attempts = 0;
+    const h = engineHarness({
+      loadStem: async () => {
+        attempts++;
+        if (attempts <= 4) throw new Error("flaky wifi");
+        return new FakeBuffer(60, 44100) as unknown as AudioBuffer;
+      },
+    });
+    h.engine.applyRoom(h.room, h.assignment);
+    await h.engine.unlock();
+    expect(h.engine.state).toBe("unlocked");
+
+    // wait out the first backoff step, then let the next snapshot through
+    await new Promise((r) => setTimeout(r, 1100));
+    h.engine.applyRoom(h.room, h.assignment);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.engine.state).toBe("ready");
+    expect(h.engine.debug.loadedTrackId).toBe("synthetic-60s");
+    expect((h.engine.debug as unknown as { loadAttempts: string[] }).loadAttempts).toEqual([]);
+  }, 10_000);
 
   test("outputLatency is reported once a context exists, and null before that", async () => {
     const h = engineHarness();

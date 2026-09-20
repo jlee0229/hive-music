@@ -25,6 +25,10 @@ const READY_REANNOUNCE_MIN_MS = 1000 / ROOM_STATE_MAX_HZ;
 
 /** Web Audio's render quantum, frames. The granularity of every `start(when)` we make. */
 const RENDER_QUANTUM = 128;
+
+/** Stem-load retry backoff: doubling from this, capped, so a 404 fixture cannot be re-fetched at 2 Hz. */
+const LOAD_RETRY_BASE_MS = 1000;
+const LOAD_RETRY_MAX_MS = 30_000;
 import type { AudioEngine, AudioEngineContext } from "./client";
 import { renderClick } from "./calibration/click";
 import { CalibrationCancelledError, runAsReference, type CalibrationPlan } from "./calibration/reference";
@@ -95,6 +99,14 @@ export function createBrowserAudioEngine(
   let lastReadyAnnounceAt = -Infinity;
   /** Calibration clicks dropped because their instant had already passed (diagnostics). */
   let clicksSkipped = 0;
+  /**
+   * Per-track load failures, for backoff. A failed load is retried — a phone that gives up on the first
+   * flaky download is a phone that is silent for the whole set — but not on every snapshot: `ROOM_STATE`
+   * arrives at 2 Hz, so an unconditional retry means 12 phones × 2 Hz × 4 stems ≈ 96 requests a second
+   * against a server that is already failing (a missing fixture answers 404 just as fast as it can).
+   * That is a thundering herd on the one code path where the server is least able to take it.
+   */
+  const loadFailures = new Map<string, { attempts: number; atMs: number }>();
 
   /*
    * The clock arrives asynchronously, so the refused schedule has to be retried by an event rather than
@@ -209,6 +221,14 @@ export function createBrowserAudioEngine(
     });
   }
 
+  /** True while a previously failed track is still inside its backoff window. */
+  function loadBackoffHolds(trackId: string): boolean {
+    const failure = loadFailures.get(trackId);
+    if (!failure) return false;
+    const waitMs = Math.min(LOAD_RETRY_MAX_MS, LOAD_RETRY_BASE_MS * 2 ** (failure.attempts - 1));
+    return performance.now() - failure.atMs < waitMs;
+  }
+
   async function loadTrack(room: RoomState): Promise<void> {
     const track = room.track;
     if (!ctx || !track || loadingTrackId === track.id || loadedTrackId === track.id) return;
@@ -240,6 +260,7 @@ export function createBrowserAudioEngine(
       const map = new Map<string, BufferLike>(buffers);
       scheduler?.setBuffers(map, track.id);
       loadedTrackId = track.id;
+      loadFailures.delete(track.id);
       loadProgress = 1;
       setState("ready");
       emit.emit("audio", state, loadProgress);
@@ -248,6 +269,8 @@ export function createBrowserAudioEngine(
       send({ type: "AUDIO_READY", trackId: track.id });
       reschedule(true, "track loaded");
     } catch (err) {
+      const previous = loadFailures.get(track.id);
+      loadFailures.set(track.id, { attempts: (previous?.attempts ?? 0) + 1, atMs: performance.now() });
       emit.emit("error", "AUDIO_LOAD_FAILED", err instanceof Error ? err.message : String(err));
       setState("unlocked");
     } finally {
@@ -425,7 +448,7 @@ export function createBrowserAudioEngine(
         }
       }
       if (!ctx) return; // still locked: nothing to schedule, the snapshot is remembered
-      if (room.track && room.track.id !== loadedTrackId && state !== "loading") {
+      if (room.track && room.track.id !== loadedTrackId && state !== "loading" && !loadBackoffHolds(room.track.id)) {
         if (loadedTrackId && room.track.id !== loadedTrackId) {
           loadedTrackId = null; // SET_TRACK to something else: drop the old buffers' claim
           scheduler?.stopAll("track changed");
@@ -512,6 +535,7 @@ export function createBrowserAudioEngine(
         // the ppm cap is the signal that slewing is losing and a crossfade is coming.
         driftErrorMs: scheduler?.lastDriftErrorMs ?? 0,
         clicksSkipped,
+        loadAttempts: [...loadFailures].map(([id, f]) => `${id}×${f.attempts}`),
         slewPpm: scheduler?.lastSlewPpm ?? 0,
         slewEnabled: scheduler?.slewEnabled ?? false,
         resyncCount: scheduler?.resyncCount ?? 0,
