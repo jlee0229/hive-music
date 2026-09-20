@@ -13,6 +13,7 @@ import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { PlayerPlayingScreen } from "@/components/PlayerPlayingScreen";
 import { PlayerCalibratingScreen } from "@/components/PlayerCalibratingScreen";
+import { AdSlot } from "@/components/AdSlot";
 
 type View = "join" | "resume" | "ready" | "playing" | "calibrating" | "removed";
 
@@ -172,7 +173,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
 
     body = (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-6" style={{ padding: safeAreaPadding(56, 24, 32) }}>
+      <main className="mx-auto flex h-dvh max-w-md flex-col gap-4 overflow-hidden" style={{ padding: safeAreaPadding(56, 24, 24) }}>
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-2 text-[15px] font-semibold">
             <span className="h-2.5 w-2.5 rounded-full" style={{ background: roleColor }} />
@@ -251,6 +252,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             Keep your screen on. Don&apos;t lock your phone.
           </span>
         </div>
+
+        <AdSlot />
       </main>
     );
   }

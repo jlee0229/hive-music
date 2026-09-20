@@ -89,11 +89,13 @@ export function HiveMap({
 
   const roles = cyclableRoles(room);
 
-  // Disconnected speakers stay on the map (their ring goes bad/unknown) until the retention window drops them.
-  const speakers = Object.values(room.clients).filter((c) => c.plays && c.id !== excludeClientId);
+  // Only what is actually in the room right now: connected speakers plus the connected host.
+  // Disconnected records linger server-side for the retention window (so a reload keeps its slot),
+  // but drawing them made the map show phones that had left the party.
+  const speakers = Object.values(room.clients).filter((c) => c.plays && c.connected && c.id !== excludeClientId);
   const placed = speakers.filter((c) => c.position !== null);
   const unplaced = speakers.filter((c) => c.position === null);
-  const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays);
+  const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays && c.connected);
 
   const dots: Dot[] = [
     ...placed.map((c) => ({ client: c, x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y, isHost: c.kind === "host" })),

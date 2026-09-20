@@ -94,6 +94,9 @@ export default function LandingPage() {
         <p className="mt-1 text-center text-sm" style={{ color: "var(--faint)" }}>
           Runs in your browser. Nothing to install.
         </p>
+        <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
+          Creators: Frank Lucci &amp; Jaeho Lee
+        </p>
       </div>
     </main>
   );
