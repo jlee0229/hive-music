@@ -61,6 +61,9 @@ const server = Bun.serve<Conn>({
       const track = room.room.track;
       const durationSec = track?.durationSec ?? 60;
       const entry = manager.getLibrary().find((t) => t.id === track?.id);
+      // Snapshot before the (up to 5s) LLM call: a SET_MODE tapped while this request is in flight must
+      // not be clobbered when the plan lands late (docs/PROTOCOL-REQUESTS.md P2-11).
+      const requestModeVersion = room.getModeVersion();
       const scenePlan: ScenePlan = await directScene(
         parsed.data.prompt,
         {
@@ -75,7 +78,7 @@ const server = Bun.serve<Conn>({
         room.room.mode.kind,
         performance.timeOrigin + performance.now(),
       );
-      room.acceptScenePlan(scenePlan);
+      room.acceptScenePlan(scenePlan, requestModeVersion);
       return json({ scenePlan });
     }
 

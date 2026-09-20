@@ -107,3 +107,47 @@ describe("P0-4: a stale socket's close must not demote the live one", () => {
     room.destroy();
   });
 });
+
+describe("P2-11: a SET_MODE tapped while a vibe request is in flight is not clobbered", () => {
+  test("acceptScenePlan drops a plan whose modeVersion is stale, and applies one that still matches", () => {
+    const { server } = fakeServer();
+    const room = new Room("P2B", server, () => {}, () => []);
+    const host = fakeWs();
+    room.join(host.ws, { type: "JOIN", clientId: "host-p2b-01", roomCode: "P2B", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+
+    const requestModeVersion = room.getModeVersion();
+    // the host taps a mode chip while a (slow) vibe request using the snapshot above is still in flight
+    room.handle(host.ws, { type: "SET_MODE", mode: "ORCHESTRA", params: {} });
+    expect(room.room.mode.kind).toBe("ORCHESTRA");
+
+    const stalePlan = { prompt: "p", source: "rules" as const, createdAtServerTime: 0, scenes: [{ atTrackSec: 0, mode: "STROBE" as const, params: {}, note: "n" }] };
+    const applied = room.acceptScenePlan(stalePlan, requestModeVersion);
+    expect(applied).toBe(false);
+    expect(room.room.mode.kind).toBe("ORCHESTRA"); // the host's manual choice survives
+    expect(room.room.scenePlan).toBeNull();
+
+    // a second request started fresh (current version) still lands normally
+    const freshPlan = { ...stalePlan, prompt: "p2" };
+    const applied2 = room.acceptScenePlan(freshPlan, room.getModeVersion());
+    expect(applied2).toBe(true);
+    expect(room.room.scenePlan?.prompt).toBe("p2");
+
+    room.destroy();
+  });
+});
+
+describe("P2-10: userAgent is never stored or broadcast", () => {
+  test("a JOIN carrying a long real userAgent string ends up empty in the room's client record", () => {
+    const { server } = fakeServer();
+    const room = new Room("P2A", server, () => {}, () => []);
+    const ws = fakeWs();
+    const realDevice = { ...device, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15" };
+    room.join(ws.ws, { type: "JOIN", clientId: "play-p2a-01", roomCode: "P2A", kind: "player", plays: true, device: realDevice, protocolVersion: PROTOCOL_VERSION });
+
+    expect(room.room.clients["play-p2a-01"]!.device.userAgent).toBe("");
+    expect(room.room.clients["play-p2a-01"]!.device.browserFamily).toBe(realDevice.browserFamily); // everything else survives
+    expect(room.room.clients["play-p2a-01"]!.tableLatencyMs).not.toBeUndefined(); // browserFamily lookup still works
+
+    room.destroy();
+  });
+});

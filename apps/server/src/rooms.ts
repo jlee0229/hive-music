@@ -207,13 +207,25 @@ export class Room {
     }
   }
 
-  /** Called by the vibe route (B6) once a plan is accepted. */
-  acceptScenePlan(plan: ScenePlan) {
+  /**
+   * Bumped on every manual SET_MODE. The vibe route snapshots this before the (up to 5s) LLM call and
+   * passes it back to acceptScenePlan; if a host tapped a mode chip while that request was in flight,
+   * the version has moved and the now-stale plan is dropped instead of clobbering their manual choice.
+   */
+  private modeVersion = 0;
+  getModeVersion(): number {
+    return this.modeVersion;
+  }
+
+  /** Called by the vibe route (B6) once a plan is accepted. Returns false if it was dropped as stale. */
+  acceptScenePlan(plan: ScenePlan, requestModeVersion?: number): boolean {
+    if (requestModeVersion !== undefined && requestModeVersion !== this.modeVersion) return false;
     this.room.scenePlan = plan;
     if (this.room.transport.state === "playing") this.syncModeToScenePlan();
     else this.dirty = true;
     this.rearmSceneTimer();
     this.flush();
+    return true;
   }
 
   // ---- calibration (B8s, CALIBRATION_CANCEL) ------------------------------------
@@ -302,6 +314,10 @@ export class Room {
   // ---- join / disconnect --------------------------------------------------------
   join(ws: WS, msg: Extract<ClientMessage, { type: "JOIN" }>) {
     const existing = this.room.clients[msg.clientId];
+    // userAgent (up to 512 chars, required by DeviceInfoSchema) is dead weight on every ROOM_STATE
+    // broadcast — nothing server-side reads it, only browserFamily/platform/model do — and it's most
+    // of a snapshot's size at scale (~26-30KB at 30 phones). Never store the real string.
+    const device = { ...msg.device, userAgent: "" };
     // A ROOM_FIXED_CODE demo room re-spawned lazily (after ROOM_IDLE_TTL_MS, or a restart) mints a
     // fresh hostKey (constructor above) that the host's stored key can never match, and there is no
     // `existing` record for a brand-new room either — so without the "nobody holds the room yet"
@@ -311,13 +327,13 @@ export class Room {
     // back once it presents the room's real hostKey.
     const wantsHost = msg.kind === "host" && (msg.hostKey === this.hostKey || existing?.kind === "host" || this.room.hostClientIds.length === 0);
     const rec: ClientRecord = existing
-      ? { ...existing, connected: true, name: msg.name ?? existing.name, device: msg.device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.plays }
+      ? { ...existing, connected: true, name: msg.name ?? existing.name, device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.plays }
       : {
           id: msg.clientId,
           kind: wantsHost ? "host" : "player",
           plays: wantsHost ? msg.plays : true,
           name: msg.name ?? `Phone ${this.joinCounter + 1}`,
-          device: msg.device,
+          device,
           joinIndex: this.joinCounter++,
           joinedAtServerTime: now(),
           position: null,
@@ -447,6 +463,7 @@ export class Room {
         if (!hostOnly()) return;
         this.room.mode = { kind: msg.mode, params: msg.params };
         this.room.scenePlan = null; // manual override wins
+        this.modeVersion++; // invalidates any vibe request already in flight
         this.cancelSceneTimer();
         this.replan();
         return;
