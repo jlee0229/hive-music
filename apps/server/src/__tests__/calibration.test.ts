@@ -219,3 +219,90 @@ describe("CALIBRATION_CANCEL (protocol v2)", () => {
     room.destroy();
   });
 });
+
+describe("CALIBRATION_RESET (protocol v3)", () => {
+  test("clears one client back to null, and its compensation falls back to the table", () => {
+    const { server } = fakeServer();
+    const room = new Room("RESET1", server, () => {}, fakeLibrary);
+    const ref = fakeWs();
+    room.join(ref.ws, { type: "JOIN", clientId: "host-reset-01", roomCode: "RESET1", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const p1 = fakeWs();
+    const iosDevice = { ...device, browserFamily: "ios-safari" as const };
+    room.join(p1.ws, { type: "JOIN", clientId: "play-reset-01", roomCode: "RESET1", kind: "player", plays: true, device: iosDevice, protocolVersion: PROTOCOL_VERSION });
+    room.handle(ref.ws, { type: "SET_TRACK", trackId: "t" });
+    markReady(room, p1.ws, "t");
+
+    // measure it badly: a sidelobe match 40ms out
+    room.handle(ref.ws, { type: "CALIBRATION_START", referenceClientId: "host-reset-01" });
+    room.handle(ref.ws, { type: "CALIBRATION_REPORT", measurements: [{ clientId: "play-reset-01", residualMs: 40, confidence: 0.9 }] });
+    expect(room.room.clients["play-reset-01"]!.calibratedOffsetMs).toBe(100); // 60 (ios-safari table) + 40
+
+    // a reset while the run is still "done" is refused: the report path and the reset would race
+    room.handle(ref.ws, { type: "CALIBRATION_RESET", clientId: "play-reset-01" });
+    expect(ref.sent.some((m) => m.type === "ERROR" && m.code === "CALIBRATION_BUSY")).toBe(true);
+    expect(room.room.clients["play-reset-01"]!.calibratedOffsetMs).toBe(100); // untouched
+
+    room.handle(ref.ws, { type: "CALIBRATION_CANCEL" });
+    expect(room.room.calibration.state).toBe("idle");
+    room.handle(ref.ws, { type: "CALIBRATION_RESET", clientId: "play-reset-01" });
+
+    const rec = room.room.clients["play-reset-01"]!;
+    expect(rec.calibratedOffsetMs).toBeNull(); // null, not 0
+    expect(rec.assignment!.compensationMs).toBe(60); // straight back to the ios-safari table row
+
+    room.destroy();
+  });
+
+  test("with no clientId clears the whole room, and is idempotent", () => {
+    const { server } = fakeServer();
+    const room = new Room("RESET2", server, () => {}, fakeLibrary);
+    const ref = fakeWs();
+    room.join(ref.ws, { type: "JOIN", clientId: "host-reset-02", roomCode: "RESET2", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const a = fakeWs();
+    room.join(a.ws, { type: "JOIN", clientId: "play-reset-a1", roomCode: "RESET2", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    const b = fakeWs();
+    room.join(b.ws, { type: "JOIN", clientId: "play-reset-b1", roomCode: "RESET2", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    room.handle(ref.ws, { type: "SET_TRACK", trackId: "t" });
+    [a, b].forEach((c) => markReady(room, c.ws, "t"));
+
+    room.handle(ref.ws, { type: "CALIBRATION_START", referenceClientId: "host-reset-02" });
+    room.handle(ref.ws, {
+      type: "CALIBRATION_REPORT",
+      measurements: [
+        { clientId: "play-reset-a1", residualMs: 7, confidence: 0.9 },
+        { clientId: "play-reset-b1", residualMs: -9, confidence: 0.9 },
+      ],
+    });
+    room.handle(ref.ws, { type: "CALIBRATION_CANCEL" });
+
+    room.handle(ref.ws, { type: "CALIBRATION_RESET" }); // no clientId: every client
+    for (const c of Object.values(room.room.clients)) expect(c.calibratedOffsetMs).toBeNull();
+
+    // idempotent: a second reset is not an error and changes nothing
+    const errorsBefore = ref.sent.filter((m) => m.type === "ERROR").length;
+    room.handle(ref.ws, { type: "CALIBRATION_RESET" });
+    expect(ref.sent.filter((m) => m.type === "ERROR").length).toBe(errorsBefore);
+    expect(room.room.clients["play-reset-a1"]!.calibratedOffsetMs).toBeNull();
+
+    room.destroy();
+  });
+
+  test("is host-only and names an unknown client", () => {
+    const { server } = fakeServer();
+    const room = new Room("RESET3", server, () => {}, () => []);
+    const ref = fakeWs();
+    room.join(ref.ws, { type: "JOIN", clientId: "host-reset-03", roomCode: "RESET3", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const p1 = fakeWs();
+    room.join(p1.ws, { type: "JOIN", clientId: "play-reset-c1", roomCode: "RESET3", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+
+    room.handle(p1.ws, { type: "CALIBRATION_RESET" });
+    expect(p1.sent.some((m) => m.type === "ERROR" && m.code === "NOT_HOST")).toBe(true);
+
+    room.handle(ref.ws, { type: "CALIBRATION_RESET", clientId: "nobody-here" });
+    const noClient = ref.sent.find((m) => m.type === "ERROR" && m.code === "NO_CLIENT");
+    expect(noClient).toBeDefined();
+    expect(noClient?.type === "ERROR" && noClient.message).toContain("nobody-here");
+
+    room.destroy();
+  });
+});
