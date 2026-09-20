@@ -1,6 +1,62 @@
 @import "tailwindcss";
 
+:root {
+  --stage: #0b0f14;
+  --surface: #151b23;
+  --raised: #1e2733;
+  --border: #2a3441;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --faint: #64748b;
+
+  --primary-fill: #f1f5f9;
+  --primary-text: #0b0f14;
+
+  --role-drums: #f59e0b;
+  --role-bass: #8b5cf6;
+  --role-vocals: #22d3ee;
+  --role-other: #34d399;
+  --role-unison: #f8fafc;
+  --host-ring: #f1f5f9;
+
+  --health-good: #22c55e;
+  --health-warn: #eab308;
+  --health-bad: #ef4444;
+  --health-unknown: #64748b;
+
+  --ringer-fg: #f5c451;
+  --ringer-bg: #1f1a0f;
+  --ringer-border: #7c5a0b;
+
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
-  background: #0b0f14;
-  color: #f1f5f9;
+  background: var(--stage);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+button,
+input,
+a {
+  font-family: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
 }
