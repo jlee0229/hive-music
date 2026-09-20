@@ -5,6 +5,7 @@ import type { ClientRecord, RoomState } from "@hive/protocol";
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
 import { beatPhase, formatMs, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { NudgeSlider } from "@/components/NudgeSlider";
 
@@ -56,7 +57,13 @@ export function PlayerPlayingScreen({
   return (
     <main
       className="relative flex min-h-dvh flex-col justify-between overflow-hidden"
-      style={{ background: roleColor, color: ink, padding: "52px 24px 28px" }}
+      style={{
+        background: roleColor,
+        color: ink,
+        padding: safeAreaPadding(52, 24, 28),
+        overscrollBehavior: "none",
+        touchAction: "manipulation",
+      }}
     >
       {assignment?.pattern ? (
         <div

@@ -28,7 +28,7 @@ export function NudgeSlider({
   const mutedColor = dark ? "#94A3B8" : "rgba(11,15,20,0.7)";
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="no-callout flex flex-col gap-1">
       <div className="flex items-center justify-between">
         <span className="text-xs" style={{ color: mutedColor }}>
           {label}

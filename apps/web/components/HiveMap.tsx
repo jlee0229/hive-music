@@ -162,6 +162,7 @@ export function HiveMap({
       viewBox={`0 0 ${SIZE} ${SIZE}`}
       role="img"
       aria-label={`Hive map: ${placed.length + unplaced.length} player phones`}
+      className="no-callout"
       style={{ touchAction: "none" }}
     >
       <defs>

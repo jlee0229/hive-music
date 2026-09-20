@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { CALIBRATION_COUNTDOWN_MS, type RoomState } from "@hive/protocol";
 import type { HiveClock } from "@hive/sync-client";
 import { formatMs } from "@/lib/hive/derive";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 type RowStatus = "waiting" | "listening" | "clear";
 
@@ -29,7 +30,7 @@ export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock
   });
 
   return (
-    <div className="fixed inset-0 z-40 mx-auto flex max-w-md flex-col gap-4.5" style={{ background: "var(--stage)", padding: "52px 24px 28px" }}>
+    <div className="fixed inset-0 z-40 mx-auto flex max-w-md flex-col gap-4.5" style={{ background: "var(--stage)", padding: safeAreaPadding(52, 24, 28) }}>
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Tuning moment</span>
         <span

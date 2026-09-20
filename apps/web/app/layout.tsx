@@ -18,7 +18,14 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // No pinch/double-tap zoom anywhere: this is an app, not a content page, and stray zoom mid-show
+  // is a phone-breaker on the full-screen Playing/Calibrating/Stage views.
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
+  // Keep the layout fixed when the iOS/Android keyboard opens (e.g. the Join screen's name field)
+  // instead of resizing the visual viewport and shifting everything above the input.
+  interactiveWidget: "overlays-content",
   themeColor: "#0B0F14",
 };
 

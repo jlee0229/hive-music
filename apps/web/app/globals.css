@@ -37,10 +37,18 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  /* No iOS/Android pull-to-refresh bounce over any screen. */
+  overscroll-behavior: none;
+}
+
 body {
   background: var(--stage);
   color: var(--text);
   font-family: var(--font-body);
+  /* No double-tap-to-zoom anywhere (pinch-zoom is also disabled via the viewport meta). */
+  touch-action: manipulation;
 }
 
 button,
@@ -51,6 +59,16 @@ a {
 
 button {
   cursor: pointer;
+}
+
+/* Buttons and drag/long-press targets never show iOS's text-selection callout or a selection
+   highlight — both fight with our own tap/drag/long-press gesture handling (Hive Map dots, the
+   nudge slider, mode chips). */
+button,
+.no-callout {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .font-display {

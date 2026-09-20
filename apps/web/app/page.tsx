@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ROOM_CODE_LENGTH } from "@hive/protocol";
 import { apiUrl } from "@/lib/hive/client";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -44,7 +45,7 @@ export default function LandingPage() {
   return (
     <main
       className="mx-auto flex min-h-dvh max-w-md flex-col justify-between gap-8"
-      style={{ padding: "56px 24px 32px" }}
+      style={{ padding: safeAreaPadding(56, 24, 32) }}
     >
       <div className="flex items-center gap-2.5">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="var(--text)" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
