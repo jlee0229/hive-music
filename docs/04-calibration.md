@@ -4,9 +4,18 @@ Owner: backend agent (engine, server, rig); frontend agent (Host · Calibrate an
 
 Output latency is the one error term we cannot read reliably from the browser, so we estimate it in two tiers: a per-browser-family table plus a human nudge (Tier 1), and a click measurement in which the host phone listens to every player (Tier 2). The same cross-correlation code is also the measuring instrument that produces the evidence for sync gates B3/B4. Scheduling terms are defined in [03-sync-engine.md](03-sync-engine.md); messages and the `room.calibration` state in [02-protocol.md](02-protocol.md).
 
-## Tier 1 — table + nudge
+Both tiers now run **without any manual input**: Tier 1's table guess is replaced by the phone's own live
+`ctx.outputLatency` the moment the phone reports one (`CLIENT_STATUS` → the server nulls `tableLatencyMs`
+and re-plans, so the engine's "no table and no calibration" rule makes the phone subtract the live value —
+one snapshot, no double count), and Tier 2 runs automatically inside "Start the hive": the host's Start tap
+doubles as the mic gesture, the tuning moment runs (countdown → clicks → apply), and the music starts the
+instant it lands — or immediately, untuned, if the mic is denied or the run fails (30 s failsafe). The
+"Tune the hive" button remains for re-runs between songs; the nudge slider remains as a manual override only.
+
+## Tier 1 — table, replaced by the live reading
 
 - On `JOIN`, the server sets `tableLatencyMs = STARTER_LATENCY_TABLE_MS[device.browserFamily]` (60 / 45 / 25 / 30, `null` for `other`, in which case the engine subtracts `ctx.outputLatency`).
+- On the first `CLIENT_STATUS` carrying `outputLatencyMs > 0` (uncalibrated phones only), the server nulls `tableLatencyMs`: a live reading beats a per-family guess. iOS never reports one, so iPhones keep the table row until Tier 2 corrects them.
 - `compensationMs = nudgeMs + (calibratedOffsetMs ?? tableLatencyMs ?? 0)`. Positive = the device is late → the engine starts it earlier.
 - **Nudge UX.** Player · Playing has a slider −100…+100 ms labelled "sounds early / sounds late" → `nudgeSelf(ms)` on release; the host's player sheet has the same slider for any player → `host.nudge(id, ms)`. The server re-plans and broadcasts; the phone applies it on the next drift check.
 - **"Tap when you hear the click"** (Tier 1 assist; assumption on the exact UX, not on the plan's critical path). The host phone plays the click train of `synthetic-60s` (`clickTimesSec`, one per beat at 120 BPM) and a player taps in time on their own phone; the median of `tapTime − clickTime` minus the player's reaction baseline (measured by tapping to their own screen flash first) becomes the initial `nudgeMs`. Resolution ≈ ±5 ms at best: it primes the slider; it is not a measurement.

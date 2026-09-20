@@ -436,7 +436,19 @@ export class Room {
         if (me) this.health.get(me.id)!.lastSeenServerTime = now();
         return;
       case "CLIENT_STATUS":
-        if (me) this.health.set(me.id, { rttMs: msg.rttMs, syncErrMs: msg.syncErrMs, outputLatencyMs: msg.outputLatencyMs, audioState: msg.audioState, lastSeenServerTime: now() });
+        if (me) {
+          this.health.set(me.id, { rttMs: msg.rttMs, syncErrMs: msg.syncErrMs, outputLatencyMs: msg.outputLatencyMs, audioState: msg.audioState, lastSeenServerTime: now() });
+          // A phone that reports a live ctx.outputLatency knows its own output path better than the
+          // starter table's per-family guess. Nulling tableLatencyMs makes the client subtract that
+          // live value itself (useOutputLatency: "no table AND no calibration"), and the replan drops
+          // the guess from compensationMs in the same ROOM_STATE snapshot — so the two sides can never
+          // double-count. One-way and self-extinguishing: table never comes back, and a later
+          // calibration still accumulates onto health.outputLatencyMs (the report handler's base).
+          if (me.calibratedOffsetMs == null && me.tableLatencyMs != null && msg.outputLatencyMs != null && msg.outputLatencyMs > 0) {
+            me.tableLatencyMs = null;
+            this.replan();
+          }
+        }
         return;
       case "AUDIO_READY":
         if (me) {

@@ -133,6 +133,14 @@ function HostRoom({
   const [screenLinkCopied, setScreenLinkCopied] = useState(false);
   const [hostToast, setHostToast] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  /**
+   * Armed by "Start the hive" when an automatic tuning moment should run first: play the moment
+   * that tuning lands (done, failed, or cancelled — the show starts either way). Refs, not state:
+   * the transitions are observed from room snapshots and must not re-render or re-arm on their own.
+   */
+  const autoStartRef = useRef(false);
+  const autoStartSawTuningRef = useRef(false);
+  const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { client, room, me, connection, audio, health, healthServerTime, protocolMismatch } = useHiveClient({
     roomCode,
@@ -225,6 +233,37 @@ function HostRoom({
     client.host.setTrack(id);
   }
 
+  const finishAutoStart = useCallback(() => {
+    if (!autoStartRef.current) return;
+    autoStartRef.current = false;
+    autoStartSawTuningRef.current = false;
+    if (autoStartTimerRef.current) {
+      clearTimeout(autoStartTimerRef.current);
+      autoStartTimerRef.current = null;
+    }
+    setCalibrateDismissed(true);
+    client.host.play(0);
+  }, [client]);
+
+  // Watches the tuning moment that startHive armed. countdown/running means it genuinely started;
+  // any exit from there (done, failed, or idle after a cancel) starts the music. `done`/`failed`
+  // also count without a witnessed run, for the race where the server finishes between snapshots.
+  const calibrationState = room?.calibration.state ?? "idle";
+  useEffect(() => {
+    if (!autoStartRef.current) return;
+    if (calibrationState === "countdown" || calibrationState === "running") {
+      autoStartSawTuningRef.current = true;
+      return;
+    }
+    if (autoStartSawTuningRef.current || calibrationState === "done" || calibrationState === "failed") finishAutoStart();
+  }, [calibrationState, finishAutoStart]);
+
+  useEffect(() => {
+    return () => {
+      if (autoStartTimerRef.current) clearTimeout(autoStartTimerRef.current);
+    };
+  }, []);
+
   function startTuning() {
     setCalibrateDismissed(false);
     setMicError(null);
@@ -243,9 +282,38 @@ function HostRoom({
           const name = err instanceof Error ? err.name : "";
           if (name === "CalibrationCancelledError") return; // the user pressed Cancel; not an error
           setMicError(err instanceof Error ? err.message : "could not start listening");
+          // An auto-started tuning with no mic (permission denied, no input device) would click to a
+          // dead room until the server's failure timeout. Cancel it and start the show untuned.
+          if (autoStartRef.current) {
+            client.host.cancelCalibration();
+            finishAutoStart();
+          }
         });
     }
     client.host.startCalibration().catch(() => {});
+  }
+
+  /**
+   * "Start the hive": when tuning can actually help — real engine (the stub has no mic), at least
+   * one ready speaker still on table/guessed compensation, calibration idle — run the tuning moment
+   * automatically and play the instant it lands. No separate tap. Everything else starts as before.
+   */
+  function startHive() {
+    if (!selectedTrackId) return;
+    const readyPlayers = room
+      ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected && c.plays && c.audioReadyTrackId === room.track?.id)
+      : [];
+    const untuned = readyPlayers.some((c) => c.calibratedOffsetMs == null);
+    if (engineKind() === "real" && untuned && room?.calibration.state === "idle") {
+      autoStartRef.current = true;
+      autoStartSawTuningRef.current = false;
+      // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
+      // the party on the countdown screen; worst case the show starts on table compensation.
+      autoStartTimerRef.current = setTimeout(finishAutoStart, 30_000);
+      startTuning();
+    } else {
+      client.host.play(0);
+    }
   }
 
   async function copyScreenLink() {
@@ -323,7 +391,7 @@ function HostRoom({
         <SceneStrip room={room} clock={client.clock} />
 
         <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
-          Tuning is built in gate F7.
+          Phones were tuned automatically at start. Re-tune anytime — best between songs, with the room quiet.
         </div>
 
         <div className="flex justify-center">
@@ -468,7 +536,7 @@ function HostRoom({
       <div className="grow" />
 
       <button
-        onClick={() => selectedTrackId && client.host.play(0)}
+        onClick={startHive}
         disabled={!selectedTrackId || !canStart}
         className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
         style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
