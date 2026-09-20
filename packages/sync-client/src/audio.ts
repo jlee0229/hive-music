@@ -12,8 +12,16 @@
  *    browser by up to ~25 ms — which is the entire error budget.
  */
 import {
-  DEFAULT_CLICK_SPEC, type Assignment, type AudioState, type ClickSpec, type RoomState,
+  DEFAULT_CLICK_SPEC, ROOM_STATE_MAX_HZ,
+  type Assignment, type AudioState, type ClickSpec, type RoomState,
 } from "@hive/protocol";
+
+/**
+ * Minimum gap between AUDIO_READY announcements: one `ROOM_STATE` period, the time it takes for a
+ * message we just sent to appear in a snapshot. Anything shorter would re-announce while our own
+ * message is still in flight.
+ */
+const READY_REANNOUNCE_MIN_MS = 1000 / ROOM_STATE_MAX_HZ;
 import type { AudioEngine, AudioEngineContext } from "./client";
 import { renderClick } from "./calibration/click";
 import { CalibrationCancelledError, runAsReference, type CalibrationPlan } from "./calibration/reference";
@@ -68,6 +76,8 @@ export function createBrowserAudioEngine(
   let sawCalibrationRun = false;
   /** Set when a schedule was refused for want of a clock; the next accepted probe retries it. */
   let waitingForClock = false;
+  /** `performance.now()` of the last AUDIO_READY we sent, so a re-announce cannot become a loop. */
+  let lastReadyAnnounceAt = -Infinity;
 
   /*
    * The clock arrives asynchronously, so the refused schedule has to be retried by an event rather than
@@ -217,6 +227,7 @@ export function createBrowserAudioEngine(
       setState("ready");
       emit.emit("audio", state, loadProgress);
       // AUDIO_READY means *every* stem is decoded, never "the first one is playable".
+      lastReadyAnnounceAt = performance.now();
       send({ type: "AUDIO_READY", trackId: track.id });
       reschedule(true, "track loaded");
     } catch (err) {
@@ -382,6 +393,22 @@ export function createBrowserAudioEngine(
         planRejecter?.(new CalibrationCancelledError());
       }
       if (calState === "done" || calState === "failed") sawCalibrationRun = false;
+      /*
+       * Re-announce readiness when the server's own snapshot says it does not know. A server restart with
+       * a fresh room loses `audioReadyTrackId`, and AUDIO_READY was only ever sent once, at the end of
+       * decoding — so the host's "9 of 12 ready" would stay wrong for the rest of the set and a
+       * readiness gate on the server would never open. Driving it off the server's view makes it
+       * self-limiting: it stops the moment the snapshot reflects it, and the rate guard covers the one
+       * snapshot period in which our message is still in flight.
+       */
+      if (ctx && loadedTrackId && room.track?.id === loadedTrackId) {
+        const known = room.clients[host.clientId]?.audioReadyTrackId;
+        const since = performance.now() - lastReadyAnnounceAt;
+        if (known !== loadedTrackId && since >= READY_REANNOUNCE_MIN_MS) {
+          lastReadyAnnounceAt = performance.now();
+          send({ type: "AUDIO_READY", trackId: loadedTrackId });
+        }
+      }
       if (!ctx) return; // still locked: nothing to schedule, the snapshot is remembered
       if (room.track && room.track.id !== loadedTrackId && state !== "loading") {
         if (loadedTrackId && room.track.id !== loadedTrackId) {

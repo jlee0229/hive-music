@@ -202,7 +202,12 @@ export function startMockServer(opts: MockServerOptions = {}) {
     },
   });
 
+  const received: Partial<Record<ClientMessage["type"], number>> = {};
+
   function handle(ws: Bun.ServerWebSocket<{ clientId: string | null }>, msg: ClientMessage) {
+    // Per-type arrival counts. Cheap, and the only way a test can assert a *negative* — that a reconnect
+    // storm did not produce two JOINs or two AUDIO_READYs per phone.
+    received[msg.type] = (received[msg.type] ?? 0) + 1;
     const me = ws.data.clientId ? room.clients[ws.data.clientId] : undefined;
     const isHost = !!me && room.hostClientIds.includes(me.id);
     const hostOnly = () => {
@@ -432,15 +437,22 @@ export function startMockServer(opts: MockServerOptions = {}) {
   }, 1000 / HEALTH_HZ);
   const pingTimer = setInterval(() => server.publish(room.code, JSON.stringify({ type: "PING", serverTime: now() } satisfies ServerMessage)), 20_000);
 
+  /**
+   * Drop every live socket with 1012 (service restart) while keeping the room. That is what a real
+   * restart behind a restored room looks like to a phone — and it is the interesting case, because the
+   * timeline survives, so every phone must come back to the *same* position rather than to a new one.
+   */
+  function simulateRestart() {
+    log("chaos: simulating server restart");
+    for (const s of sockets.values()) s.close(1012, "mock restart");
+    sockets.clear();
+    for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
+    dirty = true;
+  }
+
   let chaosTimer: ReturnType<typeof setTimeout> | null = null;
   if (scenario.chaos) {
-    chaosTimer = setTimeout(() => {
-      log(`chaos: simulating server restart (${scenario.chaos!.restartAfterSec}s)`);
-      for (const s of sockets.values()) s.close(1012, "mock restart");
-      sockets.clear();
-      for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
-      dirty = true;
-    }, scenario.chaos.restartAfterSec * 1000);
+    chaosTimer = setTimeout(simulateRestart, scenario.chaos.restartAfterSec * 1000);
   }
 
   const ready = (async () => {
@@ -463,6 +475,10 @@ export function startMockServer(opts: MockServerOptions = {}) {
   return {
     server, port, hostKey, ready,
     get room() { return room; },
+    /** How many of each client message this server has handled (diagnostics; see `handle`). */
+    get received() { return received; },
+    /** Drop every socket as a restart would, keeping the room (see `simulateRestart`). */
+    simulateRestart,
     stop() {
       clearInterval(stateTimer); clearInterval(healthTimer); clearInterval(pingTimer);
       clearCalibrationTimers();
