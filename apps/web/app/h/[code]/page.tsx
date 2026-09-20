@@ -2,6 +2,7 @@
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { TrackLibraryEntry } from "@hive/protocol";
 import type { CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
@@ -316,6 +317,16 @@ function HostRoom({
     }
   }
 
+  const router = useRouter();
+  /**
+   * Back to the landing page, ending this hosting session: pause first so the phones aren't left
+   * looping a host-less show (the socket itself is closed by the unmount cleanup above).
+   */
+  function exitHive() {
+    if (room?.transport.state === "playing") client.host.pause();
+    router.push("/");
+  }
+
   async function copyScreenLink() {
     try {
       await navigator.clipboard.writeText(`${window.location.origin}/screen/${roomCode}`);
@@ -350,9 +361,19 @@ function HostRoom({
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-3.5" style={{ padding: safeAreaPadding(52, 20, 24) }}>
         <div className="flex items-center justify-between">
-          <span className="font-mono rounded-full border px-3 py-1.5 text-[13px] tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-            {roomCode}
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={exitHive}
+              aria-label="Exit the hive"
+              className="rounded-full border px-2.5 py-1.5 text-[13px] font-semibold"
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+            >
+              ←
+            </button>
+            <span className="font-mono rounded-full border px-3 py-1.5 text-[13px] tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+              {roomCode}
+            </span>
+          </div>
           <span className="text-[13px]" style={{ color: "var(--muted)" }}>
             {playerCount} players
           </span>
@@ -441,9 +462,19 @@ function HostRoom({
     <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4.5" style={{ padding: safeAreaPadding(52, 24, 28) }}>
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Your hive</span>
-        <span className="font-mono rounded-full px-3 py-1.5 text-xs font-semibold tracking-widest" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
-          HOST
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={exitHive}
+            aria-label="Exit the hive"
+            className="rounded-full border px-3 py-1.5 text-xs font-semibold"
+            style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+          >
+            ← Exit
+          </button>
+          <span className="font-mono rounded-full px-3 py-1.5 text-xs font-semibold tracking-widest" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
+            HOST
+          </span>
+        </div>
       </div>
 
       <ReconnectBanner connection={connection} />

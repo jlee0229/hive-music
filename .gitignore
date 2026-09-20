@@ -13,6 +13,9 @@ next-env.d.ts
 .env.local
 .env.*.local
 
+# personal music dropped into the library locally: never commit copyrighted audio or its metadata
+fixtures/tracks/baby/
+
 # generated / large media (regenerate with `bun run fixtures`)
 evidence/**/*.mp4
 evidence/**/*.webm
