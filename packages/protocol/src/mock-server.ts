@@ -228,7 +228,15 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "JOIN": {
         if (msg.roomCode.toUpperCase() !== room.code) return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
         const existing = room.clients[msg.clientId];
-        const wantsHost = msg.kind === "host" && (msg.hostKey === hostKey || existing?.kind === "host");
+        /*
+         * R-16/R-15. `hostClientIds.length === 0` is ported from `apps/server/src/rooms.ts`: a fixed-code
+         * demo room re-spawned after a restart mints a fresh `hostKey`, which the host's stored key can
+         * never match, so without this clause the host is demoted forever and every host command answers
+         * NOT_HOST.
+         */
+        const wantsHost =
+          msg.kind === "host" &&
+          (msg.hostKey === hostKey || existing?.kind === "host" || room.hostClientIds.length === 0);
         /*
          * A viewer (v4, R-13) needs no credential and must not become a speaker. `plays` is forced false
          * rather than trusted: the field is what a client *asked* for, and a display that inflated the
@@ -237,7 +245,35 @@ export function startMockServer(opts: MockServerOptions = {}) {
          */
         const isViewer = !wantsHost && msg.kind === "viewer";
         const rec: ClientRecord = existing
-          ? { ...existing, connected: true, name: msg.name ?? existing.name, device: msg.device }
+          ? {
+              ...existing,
+              connected: true,
+              name: msg.name ?? existing.name,
+              device: msg.device,
+              /*
+               * R-16: re-derive `kind` and `plays` on EVERY join, not only when the record is new. The old
+               * code spread `...existing` and never consulted `wantsHost`, so a client demoted once — a
+               * host whose stored key had gone stale — could never come back, no matter how many times it
+               * re-JOINed with the room's real key: `existing.kind` was already "player" and nothing read
+               * the key again. `clientId` is persisted per room independently of `hostKey`, so that is the
+               * *normal* recovery path, not an edge case.
+               *
+               * The two viewer branches are the engine's addition (apps/server has no viewer yet — R-13
+               * asks for them there too). A record that asks to be a viewer becomes one even if it was a
+               * player: `/screen` opened in a browser that already joined as a player reuses the same
+               * persisted `clientId`, and inheriting "player" is exactly the stem-stealing bug R-13 was
+               * about. The reverse — a viewer id that later joins as a player — must get `plays: true`
+               * back, or that phone would be silently silent for the rest of the set.
+               */
+              kind: wantsHost ? "host" : isViewer ? "viewer" : existing.kind === "viewer" ? "player" : existing.kind,
+              plays: wantsHost
+                ? msg.plays
+                : isViewer
+                  ? false
+                  : existing.kind === "viewer"
+                    ? true
+                    : existing.plays,
+            }
           : {
               id: msg.clientId,
               kind: wantsHost ? "host" : isViewer ? "viewer" : "player",
@@ -249,6 +285,13 @@ export function startMockServer(opts: MockServerOptions = {}) {
             };
         room.clients[rec.id] = rec;
         if (rec.kind === "host" && !room.hostClientIds.includes(rec.id)) room.hostClientIds.push(rec.id);
+        /*
+         * And the converse, which `apps/server` does not need yet because there a host record can only
+         * ever stay a host: authority lives in `hostClientIds` (`isHost` is derived from it), so a record
+         * that just asked to become a read-only viewer must lose it in the same breath. A JOIN is allowed
+         * to *drop* privilege — that can never be an attack — and must never silently keep it.
+         */
+        if (rec.kind !== "host") room.hostClientIds = room.hostClientIds.filter((id) => id !== rec.id);
         ws.data.clientId = rec.id;
         sockets.set(rec.id, ws);
         health.set(rec.id, { rttMs: null, syncErrMs: null, outputLatencyMs: null, audioState: "locked", lastSeenServerTime: now() });
