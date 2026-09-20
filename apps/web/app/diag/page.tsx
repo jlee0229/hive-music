@@ -5,6 +5,7 @@ import { PROTOCOL_VERSION } from "@hive/protocol";
 import { detectDevice } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { formatMs } from "@/lib/hive/derive";
+import { buildDiagReport } from "@/lib/hive/diagReport";
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -20,6 +21,7 @@ export default function DiagPage() {
   const [joined, setJoined] = useState(false);
   const [wakeLockState, setWakeLockState] = useState("unknown");
   const [audioSessionType, setAudioSessionType] = useState("unavailable");
+  const [copied, setCopied] = useState(false);
 
   const { client, room, connection, status, audio } = useHiveClient({
     roomCode,
@@ -40,6 +42,17 @@ export default function DiagPage() {
     await client.audio.unlock();
     await client.connect().catch(() => {});
     setJoined(true);
+  }
+
+  async function copyReport() {
+    const report = buildDiagReport(client, device, wakeLockState, audioSessionType);
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard API can be blocked (permissions, non-HTTPS); nothing else to do from here
+    }
   }
 
   return (
@@ -86,6 +99,14 @@ export default function DiagPage() {
           <Row label="navigator.audioSession?.type" value={audioSessionType} />
           <Row label="room.code" value={room?.code ?? "—"} />
           <Row label="room.track" value={room?.track?.title ?? "—"} />
+
+          <button
+            onClick={copyReport}
+            className="mt-3 flex h-12 items-center justify-center rounded-2xl text-[15px] font-semibold"
+            style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
+          >
+            {copied ? "Copied!" : "Copy report"}
+          </button>
         </div>
       )}
     </main>

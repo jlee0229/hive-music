@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { CALIBRATION_COUNTDOWN_MS, CALIBRATION_CLICK_INTERVAL_MS, type ClientRecord, type RoomState } from "@hive/protocol";
 import type { HiveClient } from "@hive/sync-client";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 /** "Hold still, quiet please": countdown ring, N-of-M progress dots, a white flash on calibrationClick. */
 export function PlayerCalibratingScreen({ client, room, me }: { client: HiveClient; room: RoomState; me: ClientRecord | null; name: string }) {
@@ -26,7 +27,10 @@ export function PlayerCalibratingScreen({ client, room, me }: { client: HiveClie
   const secondsRemainingEstimate = Math.max(0, Math.round(((total - doneCount) * CALIBRATION_CLICK_INTERVAL_MS) / 1000));
 
   return (
-    <main className="relative mx-auto flex min-h-dvh max-w-md flex-col justify-between p-6" style={{ padding: "56px 24px 32px" }}>
+    <main
+      className="relative mx-auto flex min-h-dvh max-w-md flex-col justify-between p-6"
+      style={{ padding: safeAreaPadding(56, 24, 32), overscrollBehavior: "none", touchAction: "manipulation" }}
+    >
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-2 text-[15px] font-semibold">{me?.name ?? "You"}</span>
         <span

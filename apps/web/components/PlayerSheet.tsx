@@ -3,6 +3,7 @@
 import { ROLE_COLORS, STEMS, type ClientRecord, type StemRole } from "@hive/protocol";
 import type { HiveHostControls } from "@hive/sync-client";
 import { deviceLabel, formatMs } from "@/lib/hive/derive";
+import { safeAreaPaddingBottom } from "@/lib/hive/safe-area";
 import { NudgeSlider } from "@/components/NudgeSlider";
 
 const PILL_ROLES: StemRole[] = [...STEMS];
@@ -20,7 +21,10 @@ export function PlayerSheet({ client, host, onClose }: { client: ClientRecord; h
         className="absolute inset-0"
         style={{ background: "rgba(11,15,20,0.7)" }}
       />
-      <div className="relative flex flex-col gap-4 rounded-t-[24px] border-t p-5 pb-8" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+      <div
+        className="relative flex flex-col gap-4 rounded-t-[24px] border-t p-5"
+        style={{ background: "var(--surface)", borderColor: "var(--border)", paddingBottom: safeAreaPaddingBottom(32) }}
+      >
         <span className="mx-auto h-1 w-10 rounded-full" style={{ background: "var(--border)" }} />
         <div className="flex items-center gap-3">
           <span className="h-11 w-11 shrink-0 rounded-full" style={{ background: roleColor }} />

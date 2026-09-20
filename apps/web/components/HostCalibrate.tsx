@@ -2,13 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { CALIBRATION_COUNTDOWN_MS, type RoomState } from "@hive/protocol";
-import type { HiveClock } from "@hive/sync-client";
+import type { HiveClock, HiveHostControls } from "@hive/sync-client";
 import { formatMs } from "@/lib/hive/derive";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 type RowStatus = "waiting" | "listening" | "clear";
 
 /** "Tuning moment": countdown, per-player rows (waiting / listening / clear), Apply/Cancel. */
-export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock: HiveClock; onClose: () => void }) {
+export function HostCalibrate({
+  room,
+  clock,
+  host,
+  onClose,
+}: {
+  room: RoomState;
+  clock: HiveClock;
+  host: HiveHostControls;
+  onClose: () => void;
+}) {
   const { state, order, results, startServerTime } = room.calibration;
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(CALIBRATION_COUNTDOWN_MS / 1000));
 
@@ -21,6 +32,11 @@ export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock
     return () => clearInterval(t);
   }, [clock, state, startServerTime]);
 
+  function handleCancel() {
+    if (state === "countdown" || state === "running") host.cancelCalibration();
+    onClose();
+  }
+
   const doneCount = order.filter((id) => results[id]).length;
   const rows: Array<{ id: string; name: string; status: RowStatus }> = order.map((id, i) => {
     const client = room.clients[id];
@@ -29,7 +45,7 @@ export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock
   });
 
   return (
-    <div className="fixed inset-0 z-40 mx-auto flex max-w-md flex-col gap-4.5" style={{ background: "var(--stage)", padding: "52px 24px 28px" }}>
+    <div className="fixed inset-0 z-40 mx-auto flex max-w-md flex-col gap-4.5" style={{ background: "var(--stage)", padding: safeAreaPadding(52, 24, 28) }}>
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Tuning moment</span>
         <span
@@ -119,7 +135,7 @@ export function HostCalibrate({ room, clock, onClose }: { room: RoomState; clock
           </button>
         ) : null}
         <button
-          onClick={onClose}
+          onClick={handleCancel}
           className="flex h-12 items-center justify-center rounded-2xl text-[15px] font-semibold"
           style={{ color: "var(--muted)" }}
         >

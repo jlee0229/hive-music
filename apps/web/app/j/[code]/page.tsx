@@ -1,14 +1,16 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ROLE_COLORS, HEALTH_COLORS } from "@hive/protocol";
 import { detectDevice } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { getPlayerName, setPlayerName } from "@/lib/hive/storage";
 import { formatMs, selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
 import { RingerBanner } from "@/components/RingerBanner";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
+import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { PlayerPlayingScreen } from "@/components/PlayerPlayingScreen";
 import { PlayerCalibratingScreen } from "@/components/PlayerCalibratingScreen";
 
@@ -24,7 +26,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const [removed, setRemoved] = useState<{ heading: string; detail: string } | null>(null);
   const device = detectDevice();
 
-  const { client, room, me, connection, status, audio, connect } = useHiveClient({
+  const { client, room, me, connection, status, audio, connect, protocolMismatch } = useHiveClient({
     roomCode,
     kind: "player",
     plays: true,
@@ -39,7 +41,14 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
 
+  // Set synchronously (before any await) so a tap on the button and the bubbled tap on the
+  // full-screen container behind it — the "unlock target is the whole screen" requirement —
+  // never both run handleJoin for the same gesture.
+  const startedRef = useRef(false);
+
   async function handleJoin() {
+    if (startedRef.current) return;
+    startedRef.current = true;
     setJoining(true);
     setPlayerName(name);
     setJoinRequested(true);
@@ -48,6 +57,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
       await connect();
     } catch {
       // ERROR events / the reconnect banner surface anything that goes wrong.
+      startedRef.current = false; // let a retry tap work
     } finally {
       setJoining(false);
     }
@@ -115,7 +125,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
 
     body = (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-6" style={{ padding: "56px 24px 32px" }}>
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-6" style={{ padding: safeAreaPadding(56, 24, 32) }}>
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-2 text-[15px] font-semibold">
             <span className="h-2.5 w-2.5 rounded-full" style={{ background: roleColor }} />
@@ -127,6 +137,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </div>
 
         <ReconnectBanner connection={connection} />
+        <ProtocolMismatchBanner show={protocolMismatch} />
 
         <div className="flex flex-col items-center gap-3.5 pt-4 pb-2">
           <svg width="120" height="120" viewBox="0 0 120 120" fill="none" aria-hidden="true">
@@ -199,7 +210,11 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
 
   if (view === "join") {
     body = (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-6" style={{ padding: "56px 24px 32px" }}>
+    <main
+      className="mx-auto flex min-h-dvh max-w-md flex-col gap-6"
+      style={{ padding: safeAreaPadding(56, 24, 32) }}
+      onClick={handleJoin}
+    >
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Joining a hive</span>
         <span className="font-mono rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
@@ -207,7 +222,9 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </span>
       </div>
 
-      <label className="flex flex-col gap-2 text-[13px]" style={{ color: "var(--muted)" }}>
+      <ProtocolMismatchBanner show={protocolMismatch} />
+
+      <label className="flex flex-col gap-2 text-[13px]" style={{ color: "var(--muted)" }} onClick={(e) => e.stopPropagation()}>
         Your name
         <input
           value={name}

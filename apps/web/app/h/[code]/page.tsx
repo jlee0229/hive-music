@@ -1,11 +1,14 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import Link from "next/link";
 import type { TrackLibraryEntry } from "@hive/protocol";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl } from "@/lib/hive/client";
 import { getHostKey, setHostKey } from "@/lib/hive/storage";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
+import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
 import { HiveMap } from "@/components/HiveMap";
@@ -31,6 +34,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const [sheetClientId, setSheetClientId] = useState<string | null>(null);
   const [showPlayers, setShowPlayers] = useState(false);
   const [calibrateDismissed, setCalibrateDismissed] = useState(false);
+  const [screenLinkCopied, setScreenLinkCopied] = useState(false);
 
   useEffect(() => {
     if (hostKeyState) return;
@@ -56,7 +60,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     };
   }, [roomCode, hostKeyState]);
 
-  const { client, room, connection, audio, health, healthServerTime } = useHiveClient({
+  const { client, room, connection, audio, health, healthServerTime, protocolMismatch } = useHiveClient({
     roomCode,
     kind: "host",
     plays: speakerOn,
@@ -115,6 +119,16 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     client.host.setTrack(id);
   }
 
+  async function copyScreenLink() {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/screen/${roomCode}`);
+      setScreenLinkCopied(true);
+      setTimeout(() => setScreenLinkCopied(false), 2000);
+    } catch {
+      // clipboard API can be blocked (permissions, non-HTTPS); nothing else to do from here
+    }
+  }
+
   const [joinUrl, setJoinUrl] = useState(`/j/${roomCode}`);
   useEffect(() => {
     setJoinUrl(`${window.location.origin}/j/${roomCode}`);
@@ -139,14 +153,14 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   if (showCalibrate && room) {
     return (
       <main className="mx-auto min-h-dvh max-w-md">
-        <HostCalibrate room={room} clock={client.clock} onClose={() => setCalibrateDismissed(true)} />
+        <HostCalibrate room={room} clock={client.clock} host={client.host} onClose={() => setCalibrateDismissed(true)} />
       </main>
     );
   }
 
   if (showStage && room) {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-3.5" style={{ padding: "52px 20px 24px" }}>
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-3.5" style={{ padding: safeAreaPadding(52, 20, 24) }}>
         <div className="flex items-center justify-between">
           <span className="font-mono rounded-full border px-3 py-1.5 text-[13px] tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
             {roomCode}
@@ -160,6 +174,16 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
         </div>
 
         <ReconnectBanner connection={connection} />
+        <ProtocolMismatchBanner show={protocolMismatch} />
+
+        <div className="flex items-center justify-between rounded-2xl border px-3.5 py-2.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <Link href={`/screen/${roomCode}`} target="_blank" className="text-[13px] font-semibold underline">
+            Show on screen
+          </Link>
+          <button onClick={copyScreenLink} className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+            {screenLinkCopied ? "Copied!" : "Copy link"}
+          </button>
+        </div>
 
         <TransportBar room={room} clock={client.clock} host={client.host} />
 
@@ -219,7 +243,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
   // Lobby
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4.5" style={{ padding: "52px 24px 28px" }}>
+    <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4.5" style={{ padding: safeAreaPadding(52, 24, 28) }}>
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Your hive</span>
         <span className="font-mono rounded-full px-3 py-1.5 text-xs font-semibold tracking-widest" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
@@ -228,6 +252,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
       </div>
 
       <ReconnectBanner connection={connection} />
+      <ProtocolMismatchBanner show={protocolMismatch} />
 
       <div className="flex flex-col items-center gap-3">
         <span className="font-display text-[60px] leading-none font-extrabold tracking-[0.14em]">{roomCode}</span>

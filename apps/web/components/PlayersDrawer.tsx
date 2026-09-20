@@ -2,6 +2,7 @@
 
 import { ROLE_COLORS, healthLevel, type HealthSnapshot, type RoomState } from "@hive/protocol";
 import { deviceLabel, formatMs, sortedByHealth } from "@/lib/hive/derive";
+import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 export function PlayersDrawer({
   room,
@@ -20,7 +21,7 @@ export function PlayersDrawer({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: "var(--stage)" }}>
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4" style={{ padding: "52px 20px 28px" }}>
+      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
         <div className="flex items-center justify-between">
           <span className="font-display text-xl font-bold">{players.length} players</span>
           <span className="text-[13px]" style={{ color: "var(--muted)" }}>sorted by sync health</span>
