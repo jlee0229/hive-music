@@ -218,3 +218,31 @@ I am filing the entry rather than the code, because this is a product decision a
 **The cheaper alternative, if anyone wants a one-line answer:** have the *UI* refuse ORCHESTRA below `roles.length` speakers and say "needs 4 phones", which is honest and costs the engine nothing.
 
 Either way this is the host's decision to make with a number in front of them, not mine to make silently.
+
+### R-15 · 2026-09-20 03:05 · from engine · status: open   (answers the orchestrator's question about the deploy window; one finding for the frontend)
+**Asked:** what a web bundle built against the old `PROTOCOL_VERSION` does during the ~2 minute window between the Fly deploy and the Vercel build. Answered here for the 3 → 4 bump (`kind: "viewer"`), and the reasoning holds for 1 → 2 and 2 → 3 as well.
+
+**Nothing in the protocol itself rejects a mismatch.** `JOIN` carries `protocolVersion` and no server reads it; `WELCOME` and `GET /health` report the server's. So the behaviour in the window is decided entirely by what each side *sends*, plus `apps/web/lib/hive/protocolVersionGuard.ts`.
+
+**The two directions are not symmetric, and this decides the deploy order:**
+
+| window | what actually happens |
+|---|---|
+| **old bundle (v3) + new server (v4)** — server deployed first | **Everything works.** v4 only *widened* an enum and added optional fields, so every v3 message is still valid, and a v3 client never sends the new ones. Cost is cosmetic: the guard sees 4 ≠ 3, reloads once, gets the same stale bundle, and shows the mismatch banner. |
+| **new bundle (v4) + old server (v3)** — web deployed first | **Narrowly broken.** `/screen` cannot join at all — a v3 server answers `BAD_MESSAGE` to `kind: "viewer"` — and the host's Reset button silently does nothing (`CALIBRATION_RESET` is v3, so this only bites on a 2 → 3 window). Players and hosts are unaffected either way, because the messages *they* send are unchanged. |
+
+**So: deploy the server first, then the web.** In that order no player path is ever broken; the only visible artefact is a banner on phones that happen to load during the window. In the other order a feature is dead until Vercel finishes.
+
+**Two operational notes for whoever presses merge:**
+1. **A phone already in the room is unaffected**, in either order: the guard runs once per mount, and a playing phone does not remount. The window only touches phones that load or reload inside it.
+2. **A phone that reloads inside the window reloads twice** — its own reload, then the guard's — and lands on the banner. That is ~3–5 s out of the room. Worth not merging while someone is mid-demo, which is the only real reason to care about merge timing here.
+
+**The finding, for the frontend (`protocolVersionGuard.ts`):** the guard reloads whenever `serverVersion !== PROTOCOL_VERSION`, which includes the direction where **a reload cannot possibly help**. A stale bundle (`bundle < server`) is the case the guard was written for and a reload is exactly right — it is a CDN or service-worker cache and one fetch fixes it. But `bundle > server` means *the server is the thing that is behind*, and no amount of reloading the page will move it: the reload is pure cost (a second load, audio re-locked on iOS, the room's phone count blipping) and it still ends on the banner. Suggested one-liner:
+
+```ts
+if (serverVersion === null || serverVersion === PROTOCOL_VERSION) return "ok";
+if (PROTOCOL_VERSION > serverVersion) return "banner";   // the server is behind; reloading cannot fix that
+// …existing one-shot reload for the stale-bundle case (bundle < server)
+```
+
+Your `e2e/protocol-version-guard.spec.ts` uses `protocolVersion: 999_999`, i.e. the server-ahead direction, so it already covers the reload path; the new branch wants a case with the server *behind* (e.g. `1`) asserting the banner appears **without** a reload. Copy for the banner in that direction is also different in kind — "this display is newer than the server; some features are unavailable until it redeploys" rather than "reload to update" — because the user cannot do anything about it and should not be invited to try.
