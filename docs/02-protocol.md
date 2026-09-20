@@ -4,7 +4,7 @@ Owner: backend agent (edits), frontend agent (reads; requests changes in [PROTOC
 
 This document mirrors `packages/protocol/src/*.ts`. **The code is the source of truth**; a test
 (`packages/protocol/src/__tests__/schemas.test.ts`) fails if the message tables below drift from the
-zod unions. Frozen at IC0 (`PROTOCOL_VERSION = 1`); after that, changes are additive and bump the version.
+zod unions. Frozen at IC0; after that, changes are additive and bump the version. **`PROTOCOL_VERSION = 2`** adds `CALIBRATION_CANCEL` (v1 had no way back from a started tuning moment).
 
 ## 1. Timeline model
 
@@ -84,6 +84,7 @@ Discriminated on `type`. Host-only messages return `ERROR NOT_HOST` from a playe
 | `AUDIO_READY` | `trackId` | any | all stems decoded for that track |
 | `CLIENT_STATUS` | `rttMs, syncErrMs, outputLatencyMs, audioState` | any | every 2 s; feeds `HEALTH` |
 | `CALIBRATION_START` | `referenceClientId` | host | the host phone is the listener; see [04-calibration.md](04-calibration.md) |
+| `CALIBRATION_CANCEL` | – | host | abandons a run: `calibration` → `idle`, no offsets written; clients drop their own pending clicks (v2) |
 | `CALIBRATION_REPORT` | `measurements[{clientId, residualMs, confidence}]` | reference | server accumulates `calibratedOffsetMs` |
 | `PONG` | – | any | liveness reply to `PING` |
 

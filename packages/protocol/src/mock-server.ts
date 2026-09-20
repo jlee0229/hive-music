@@ -100,6 +100,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
   const health = new Map<string, { rttMs: number | null; syncErrMs: number | null; outputLatencyMs: number | null; audioState: AudioState; lastSeenServerTime: number }>();
   const sockets = new Map<string, Bun.ServerWebSocket<{ clientId: string | null }>>();
   let dirty = false;
+  let calibrationTimers: ReturnType<typeof setTimeout>[] = [];
 
   function seedPlayers() {
     scenario.players.forEach((p, i) => {
@@ -298,7 +299,12 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "CALIBRATION_START":
         if (!hostOnly()) return;
         return startCalibration(msg.referenceClientId);
+      case "CALIBRATION_CANCEL":
+        if (!hostOnly()) return;
+        return cancelCalibration();
       case "CALIBRATION_REPORT": {
+        // A cancelled run writes nothing, even if the reference's report was already in flight.
+        if (room.calibration.state === "idle") return;
         for (const m of msg.measurements) {
           const c = room.clients[m.clientId];
           if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored, as index.ts promises
@@ -310,6 +316,24 @@ export function startMockServer(opts: MockServerOptions = {}) {
         return;
       }
     }
+  }
+
+  function clearCalibrationTimers() {
+    for (const t of calibrationTimers) clearTimeout(t);
+    calibrationTimers = [];
+  }
+
+  /**
+   * CALIBRATION_CANCEL: back to idle at once. The SCHEDULED_ACTIONs are already on the wire, so the
+   * server cannot un-send them — each client drops its own pending clicks when it sees `idle`
+   * (docs/04). Published immediately rather than on the coalescer, because every millisecond of delay
+   * is another click the room hears after someone pressed Cancel.
+   */
+  function cancelCalibration() {
+    clearCalibrationTimers();
+    room.calibration = IDLE_CALIBRATION;
+    dirty = true;
+    flush();
   }
 
   /** Simulated tuning moment: countdown, one click per speaker every CALIBRATION_CLICK_INTERVAL_MS, fake residuals for mock players. */
@@ -325,15 +349,21 @@ export function startMockServer(opts: MockServerOptions = {}) {
       const s = sockets.get(id);
       if (s) send(s, { type: "SCHEDULED_ACTION", serverTimeToExecute: at, action: { kind: "CALIBRATION_CLICK", clickId: `${id}:${i}`, clickSpec: DEFAULT_CLICK_SPEC } });
     });
-    setTimeout(() => { room.calibration = { ...room.calibration, state: "running" }; dirty = true; }, CALIBRATION_COUNTDOWN_MS);
+    clearCalibrationTimers();
+    calibrationTimers.push(setTimeout(() => {
+      if (room.calibration.state !== "countdown") return; // cancelled during the countdown
+      room.calibration = { ...room.calibration, state: "running" };
+      dirty = true;
+    }, CALIBRATION_COUNTDOWN_MS));
     // mock players "get measured" on schedule; real players are measured by the reference's CALIBRATION_REPORT
     order.forEach((id, i) => {
       if (!id.startsWith("mock-")) return;
-      setTimeout(() => {
+      calibrationTimers.push(setTimeout(() => {
+        if (room.calibration.state === "idle") return; // cancelled: measure nothing
         room.calibration.results[id] = { residualMs: Math.round(((i * 7) % 23) - 11), confidence: 0.9 };
         dirty = true;
         if (Object.keys(room.calibration.results).length >= order.length) { room.calibration = { ...room.calibration, state: "done" }; }
-      }, CALIBRATION_COUNTDOWN_MS + (i + 1) * CALIBRATION_CLICK_INTERVAL_MS);
+      }, CALIBRATION_COUNTDOWN_MS + (i + 1) * CALIBRATION_CLICK_INTERVAL_MS));
     });
   }
 
@@ -388,6 +418,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
     get room() { return room; },
     stop() {
       clearInterval(stateTimer); clearInterval(healthTimer); clearInterval(pingTimer);
+      clearCalibrationTimers();
       if (chaosTimer) clearTimeout(chaosTimer);
       server.stop(true);
     },
