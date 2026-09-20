@@ -60,6 +60,13 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     audioState: AudioStateSchema,
   }),
   z.object({ type: z.literal("CALIBRATION_START"), referenceClientId: z.string() }),
+  /**
+   * Abandon a tuning moment in progress (host only, no fields). The server returns
+   * `room.calibration` to IDLE_CALIBRATION and stops scheduling; because clicks are handed out up
+   * front as SCHEDULED_ACTIONs, each *client* drops its own pending clicks when it sees the idle
+   * state — there is nothing to un-send. A cancelled run writes no `calibratedOffsetMs`.
+   */
+  z.object({ type: z.literal("CALIBRATION_CANCEL") }),
   z.object({
     type: z.literal("CALIBRATION_REPORT"),
     measurements: z.array(CalibrationResultSchema.extend({ clientId: z.string() })).min(1),

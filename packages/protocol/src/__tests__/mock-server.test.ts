@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION } from "../constants";
+import { CALIBRATION_COUNTDOWN_MS, PROTOCOL_VERSION } from "../constants";
 import { parseServerMessage, type ClientMessage, type ServerMessage } from "../messages";
 import { startMockServer } from "../mock-server";
 
@@ -105,5 +105,66 @@ describe("mock server", () => {
     const back = await p2b.next("ROOM_STATE", (m) => m.room.clients["play-000002"]?.connected === true);
     expect(back.room.clients["play-000002"]!.joinIndex).toBe(state.room.clients["play-000002"]!.joinIndex);
     host.ws.close(); p1.ws.close(); p2b.ws.close();
+  });
+});
+
+describe("CALIBRATION_CANCEL (protocol v2)", () => {
+  test("returns the room to idle, stops the countdown, and refuses a late report", async () => {
+    const host = new Fake();
+    const player = new Fake();
+    await Promise.all([host.open(), player.open()]);
+    host.send({ type: "JOIN", clientId: "cancel-host-1", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    player.send({ type: "JOIN", clientId: "cancel-play-1", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await Promise.all([host.next("WELCOME"), player.next("WELCOME")]);
+    await host.next("ROOM_STATE", (m) => !!m.room.clients["cancel-play-1"]);
+
+    host.send({ type: "CALIBRATION_START", referenceClientId: "cancel-host-1" });
+    // Match on the order contents, not just the state: an earlier test in this file leaves the shared
+    // room mid-calibration, so a bare `state === "countdown"` matches that stale snapshot.
+    const started = await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("cancel-play-1"));
+    expect(started.room.calibration.state).toBe("countdown");
+    expect(started.room.calibration.referenceClientId).toBe("cancel-host-1");
+    // the player really was told to click, which is why cancelling has to be client-side too
+    const scheduled = await player.next("SCHEDULED_ACTION");
+    expect(scheduled.action.kind).toBe("CALIBRATION_CLICK");
+
+    host.send({ type: "CALIBRATION_CANCEL" });
+    const idle = await host.next("ROOM_STATE", (m) => m.room.calibration.state === "idle");
+    expect(idle.room.calibration.referenceClientId).toBeNull();
+    expect(idle.room.calibration.order).toEqual([]);
+    expect(idle.room.calibration.results).toEqual({});
+
+    // a report that was already in flight must not write calibratedOffsetMs
+    host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "cancel-play-1", residualMs: 25, confidence: 0.95 }] });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mock.room.clients["cancel-play-1"]!.calibratedOffsetMs).toBeNull();
+    expect(mock.room.calibration.state).toBe("idle");
+
+    // and the cancelled countdown never advances to running
+    await new Promise((r) => setTimeout(r, CALIBRATION_COUNTDOWN_MS));
+    expect(mock.room.calibration.state).toBe("idle");
+    host.ws.close();
+    player.ws.close();
+  }, 15_000);
+
+  test("a player cannot cancel", async () => {
+    const p = new Fake();
+    await p.open();
+    p.send({ type: "JOIN", clientId: "cancel-play-2", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await p.next("WELCOME");
+    p.send({ type: "CALIBRATION_CANCEL" });
+    expect((await p.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+    p.ws.close();
+  });
+
+  test("cancelling when nothing is running is harmless", async () => {
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "cancel-host-2", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    await host.next("WELCOME");
+    host.send({ type: "CALIBRATION_CANCEL" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(mock.room.calibration.state).toBe("idle");
+    host.ws.close();
   });
 });

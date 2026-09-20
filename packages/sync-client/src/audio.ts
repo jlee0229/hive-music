@@ -16,7 +16,7 @@ import {
 } from "@hive/protocol";
 import type { AudioEngine, AudioEngineContext } from "./client";
 import { renderClick } from "./calibration/click";
-import { runAsReference, type CalibrationPlan } from "./calibration/reference";
+import { CalibrationCancelledError, runAsReference, type CalibrationPlan } from "./calibration/reference";
 import { Scheduler, type BufferLike, type CtxLike } from "./scheduler";
 import type { CalibrationProgress, CalibrationResult, HiveCalibration } from "./index";
 
@@ -59,6 +59,13 @@ export function createBrowserAudioEngine(
   let listenersBound = false;
   let pendingPlan: CalibrationPlan | null = null;
   let planWaiter: ((plan: CalibrationPlan) => void) | null = null;
+  /** Rejects the pending awaitPlan so a cancel does not wait out PLAN_TIMEOUT_MS with the mic open. */
+  let planRejecter: ((err: Error) => void) | null = null;
+  /** Clicks handed to us by SCHEDULED_ACTION that have not sounded yet, so a cancel can silence them. */
+  let pendingClicks: Array<{ source: AudioBufferSourceNode; gain: GainNode; atCtx: number }> = [];
+  /** Set while a run is live; flipped by a cancel so runAsReference aborts at its next await. */
+  let cancelState: { cancelled: boolean } | null = null;
+  let sawCalibrationRun = false;
 
   const setState = (next: AudioState): void => {
     if (state === next) return;
@@ -209,14 +216,39 @@ export function createBrowserAudioEngine(
       }
       const timer = setTimeout(() => {
         planWaiter = null;
+        planRejecter = null;
         reject(new Error("CALIBRATION_PLAN did not arrive"));
       }, timeoutMs);
       planWaiter = (plan) => {
         clearTimeout(timer);
         planWaiter = null;
+        planRejecter = null;
         resolve(plan);
       };
+      planRejecter = (err) => {
+        clearTimeout(timer);
+        planWaiter = null;
+        planRejecter = null;
+        reject(err);
+      };
     });
+
+  /** Stops every click that has not sounded yet. One that is already audible is left to finish. */
+  function cancelPendingClicks(): void {
+    const at = ctx ? ctx.currentTime : 0;
+    for (const click of pendingClicks) {
+      try {
+        // Only silence what is still in the future; cutting a sounding click would just be a glitch.
+        if (click.atCtx > at) {
+          click.gain.gain.setValueAtTime(0, at);
+          click.source.stop(at);
+        }
+      } catch {
+        /* a source that already ended throws; nothing to do */
+      }
+    }
+    pendingClicks = [];
+  }
 
   const calibration: HiveCalibration = {
     async runAsReference(o?: { onProgress?: (p: CalibrationProgress) => void }): Promise<CalibrationResult> {
@@ -224,16 +256,25 @@ export function createBrowserAudioEngine(
       // context that is already running, and this is the gesture we are inside.
       const context = ensureContext();
       if (context.state !== "running") await context.resume();
-      return runAsReference(
-        {
-          ctx: context,
-          mapper,
-          serverNow: () => clock.serverNow(),
-          awaitPlan,
-          report: (measurements) => send({ type: "CALIBRATION_REPORT", measurements }),
-        },
-        o,
-      );
+      const signal = { cancelled: false };
+      cancelState = signal;
+      try {
+        return await runAsReference(
+          {
+            ctx: context,
+            mapper,
+            serverNow: () => clock.serverNow(),
+            awaitPlan,
+            report: (measurements) => send({ type: "CALIBRATION_REPORT", measurements }),
+            signal,
+          },
+          o,
+        );
+      } finally {
+        if (cancelState === signal) cancelState = null;
+        pendingPlan = null;
+        planWaiter = null;
+      }
     },
     renderClick: (spec: ClickSpec, sampleRate: number) => renderClick(spec, sampleRate),
   };
@@ -296,6 +337,26 @@ export function createBrowserAudioEngine(
     applyRoom(room: RoomState, assignment: Assignment | null): void {
       lastRoom = room;
       lastAssignment = assignment;
+      /*
+       * CALIBRATION_CANCEL arrives as a state change, not as a message to this client: the clicks were
+       * handed out up front as SCHEDULED_ACTIONs, so the server cannot un-send them and each phone has
+       * to silence its own. Watching the transition (ran → idle) rather than the bare value means a
+       * phone that joins an already-idle room does not try to cancel something it never scheduled.
+       */
+      const calState = room.calibration.state;
+      if (calState === "countdown" || calState === "running") sawCalibrationRun = true;
+      else if (calState === "idle" && sawCalibrationRun) {
+        sawCalibrationRun = false;
+        cancelPendingClicks();
+        if (cancelState) cancelState.cancelled = true;
+        /*
+         * Setting the flag is not enough on its own: a reference that is still blocked in awaitPlan
+         * would hold the microphone until PLAN_TIMEOUT_MS (10 s) elapsed, and on iOS every one of those
+         * seconds keeps the audio session in play-and-record. Reject the wait so the run unwinds now.
+         */
+        planRejecter?.(new CalibrationCancelledError());
+      }
+      if (calState === "done" || calState === "failed") sawCalibrationRun = false;
       if (!ctx) return; // still locked: nothing to schedule, the snapshot is remembered
       if (room.track && room.track.id !== loadedTrackId && state !== "loading") {
         if (loadedTrackId && room.track.id !== loadedTrackId) {
@@ -335,8 +396,12 @@ export function createBrowserAudioEngine(
       const ctxNow = ctx.currentTime;
       const comp = (lastAssignment?.compensationMs ?? 0) / 1000;
       const ol = useOutputLatency() ? ctx.outputLatency || 0 : 0;
-      const at = mapper.ctxTimeForNow(serverTimeToExecute, ctxNow, host.now()) - comp - ol;
-      source.start(Math.max(ctxNow, at));
+      const at = Math.max(ctxNow, mapper.ctxTimeForNow(serverTimeToExecute, ctxNow, host.now()) - comp - ol);
+      source.start(at);
+      pendingClicks.push({ source, gain, atCtx: at });
+      source.onended = () => {
+        pendingClicks = pendingClicks.filter((c) => c.source !== source);
+      };
     },
 
     onCalibrationPlan(plan: CalibrationPlan): void {

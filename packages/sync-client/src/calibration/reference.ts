@@ -29,6 +29,23 @@ import { analyzeClicks, DEFAULT_MIN_CONFIDENCE } from "./xcorr";
 
 export type CalibrationPlan = Extract<ServerMessage, { type: "CALIBRATION_PLAN" }>;
 
+/**
+ * Thrown by `runAsReference()` when the host cancels (`CALIBRATION_CANCEL`) or the server otherwise
+ * returns the room to idle mid-run. Distinguishable by `name` so a UI can ignore it rather than show
+ * "calibration failed" for something the user asked for.
+ */
+export class CalibrationCancelledError extends Error {
+  readonly name = "CalibrationCancelledError";
+  constructor(message = "calibration was cancelled") {
+    super(message);
+  }
+}
+
+/** Lets the engine abort a run in progress; `runAsReference` polls it on every step. */
+export interface CancelSignal {
+  readonly cancelled: boolean;
+}
+
 /** Tail recorded after the last click, ms, so a late phone is still inside the recording. */
 export const RECORD_TAIL_MS = 400;
 /** Recording starts this far before the first click, ms, so an early phone is too. */
@@ -44,6 +61,8 @@ export interface ReferenceDeps {
   /** Resolves with the plan the server sends to the reference. */
   awaitPlan: (timeoutMs: number) => Promise<CalibrationPlan>;
   report: (measurements: CalibrationMeasurement[]) => void;
+  /** Flips to cancelled when the room goes idle; checked at every await point. */
+  signal?: CancelSignal;
 }
 
 interface Capture {
@@ -152,6 +171,16 @@ export async function runAsReference(
 ): Promise<CalibrationResult> {
   const { ctx, mapper } = deps;
   const progress = (p: CalibrationProgress) => opts.onProgress?.(p);
+  /*
+   * Cancellation is checked, never trusted to unwinding: the mic is the resource that matters, and on
+   * iOS an un-released input track keeps the audio session in play-and-record, which changes output
+   * latency for every phone afterwards. So every exit path runs through the same `finally`, and this
+   * helper is called at each await boundary rather than only at the top.
+   */
+  const abortIfCancelled = () => {
+    if (deps.signal?.cancelled) throw new CalibrationCancelledError();
+  };
+  abortIfCancelled();
 
   // 1 · the microphone, inside the gesture. Every processing feature off: echo cancellation would
   // actively remove the clicks, and AGC would change gain mid-recording.
@@ -178,6 +207,7 @@ export async function runAsReference(
     // 2 · the plan. The server sends it to the reference only.
     progress({ phase: "countdown", currentClientId: null, done: 0, total: 0 });
     const plan = await deps.awaitPlan(PLAN_TIMEOUT_MS);
+    abortIfCancelled();
     const spec: ClickSpec = plan.clickSpec ?? DEFAULT_CLICK_SPEC;
     const total = plan.order.length;
 
@@ -192,10 +222,12 @@ export async function runAsReference(
         progress({ phase: "listening", currentClientId: plan.order[k] ?? null, done: Math.max(0, k), total });
       }
       await sleep(Math.min(100, endServerTime - deps.serverNow()));
+      abortIfCancelled(); // a cancel mid-recording stops here; the finally releases the mic
     }
 
     // 4 · analyse. The recording's own start time comes from the audio graph, through the same mapping
     // the scheduler uses.
+    abortIfCancelled();
     progress({ phase: "analysing", currentClientId: null, done: total, total });
     const recording = flatten(capture.chunks, capture.frames);
     const recordingSec = recording.length / ctx.sampleRate;
@@ -225,6 +257,7 @@ export async function runAsReference(
 
     // 5 · report, then let the microphone go. On iOS a live input track keeps the audio session in
     // play-and-record, which changes output latency for everything afterwards.
+    abortIfCancelled(); // never write offsets for a run someone abandoned
     deps.report(measurements);
     release();
     progress({ phase: "done", currentClientId: null, done: total, total });
@@ -244,7 +277,10 @@ export async function runAsReference(
       },
     };
   } catch (err) {
-    progress({ phase: "failed", currentClientId: null, done: 0, total: 0 });
+    // A cancel is not a failure; the UI should not say calibration broke.
+    if (!(err instanceof CalibrationCancelledError)) {
+      progress({ phase: "failed", currentClientId: null, done: 0, total: 0 });
+    }
     throw err;
   } finally {
     capture?.stop();
