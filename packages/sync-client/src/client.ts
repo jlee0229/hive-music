@@ -338,6 +338,8 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
         });
       },
       cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
+      resetCalibration: (clientId?: string) =>
+        transport.send(clientId ? { type: "CALIBRATION_RESET", clientId } : { type: "CALIBRATION_RESET" }),
       async vibe(prompt: string): Promise<ScenePlan> {
         const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
           method: "POST",

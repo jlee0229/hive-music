@@ -129,6 +129,18 @@ export interface HiveHostControls {
    * releasing the microphone. Safe to call when nothing is running.
    */
   cancelCalibration(): void;
+  /**
+   * Throws away measured offsets (`CALIBRATION_RESET`, host only): one client, or every client in the
+   * room when `clientId` is omitted. The undo for a tuning moment that measured the wrong thing — a
+   * phone in a pocket, a click matched to a sidelobe — and distinct from re-running calibration, because
+   * a wrong `calibratedOffsetMs` is the accumulation base for the next run.
+   *
+   * Cleared to `null`, not `0`: the phone falls back to its Tier-1 table row, so a reset is never worse
+   * than never having calibrated. **Cancel first if a run is in flight** — the server answers `ERROR`
+   * `CALIBRATION_BUSY` while `calibration.state !== "idle"`, since clearing the base between the clicks
+   * and the report would bake in the error you were removing.
+   */
+  resetCalibration(clientId?: string): void;
   /** POST /rooms/:code/vibe — resolves with the server's plan (LLM or rules fallback). */
   vibe(prompt: string): Promise<ScenePlan>;
 }

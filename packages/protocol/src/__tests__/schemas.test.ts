@@ -24,6 +24,7 @@ describe("message schemas", () => {
       CALIBRATION_START: { type: "CALIBRATION_START", referenceClientId: "host-1" },
       CALIBRATION_REPORT: { type: "CALIBRATION_REPORT", measurements: [{ clientId: "x", residualMs: 12.5, confidence: 0.9 }] },
       CALIBRATION_CANCEL: { type: "CALIBRATION_CANCEL" },
+      CALIBRATION_RESET: { type: "CALIBRATION_RESET", clientId: "x" },
       PONG: { type: "PONG" },
     };
     for (const t of CLIENT_MESSAGE_TYPES) {

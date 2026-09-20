@@ -21,6 +21,13 @@ class Fake {
   }
   open() { return new Promise<void>((r) => (this.ws.readyState === 1 ? r() : (this.ws.onopen = () => r()))); }
   send(m: ClientMessage) { this.ws.send(JSON.stringify(m)); }
+  /**
+   * Drop the inbox. `next()` searches history first, so a predicate that was ALSO true earlier in the
+   * conversation (e.g. `calibratedOffsetMs === null`, true before anything was measured) resolves off a
+   * stale snapshot and the test passes without the server having done anything. Call this immediately
+   * before sending the message whose effect you are about to await.
+   */
+  forget() { this.inbox.length = 0; }
   next<T extends ServerMessage["type"]>(type: T, pred: (m: Extract<ServerMessage, { type: T }>) => boolean = () => true, timeoutMs = 3000) {
     return new Promise<Extract<ServerMessage, { type: T }>>((resolve, reject) => {
       const p = (m: ServerMessage) => m.type === type && pred(m as Extract<ServerMessage, { type: T }>);
@@ -128,6 +135,7 @@ describe("CALIBRATION_CANCEL (protocol v2)", () => {
     const scheduled = await player.next("SCHEDULED_ACTION");
     expect(scheduled.action.kind).toBe("CALIBRATION_CLICK");
 
+    host.forget(); // the room was idle before this run too: only a fresh snapshot proves the cancel
     host.send({ type: "CALIBRATION_CANCEL" });
     const idle = await host.next("ROOM_STATE", (m) => m.room.calibration.state === "idle");
     expect(idle.room.calibration.referenceClientId).toBeNull();
@@ -228,5 +236,111 @@ describe("P0-6 · the calibration accumulation base matches what the client was 
     expect(done.room.clients["p06-ios-0001"]!.calibratedOffsetMs).toBe(60 - 12); // ios-safari table row
     host.ws.close();
     ios.ws.close();
+  }, 15_000);
+});
+
+describe("CALIBRATION_RESET (protocol v3)", () => {
+  /*
+   * The undo for a tuning moment that measured the wrong thing. It matters as a
+   * distinct operation because of P0-6: a wrong `calibratedOffsetMs` is the accumulation base for the
+   * next run, so "just calibrate again" carries the error forward. Cleared to `null`, never `0` — null
+   * falls back to the Tier-1 table, zero claims the phone has no output latency.
+   */
+  test("CALIBRATION_RESET clears one client back to null, and its compensation falls back to the table", async () => {
+    const host = new Fake();
+    const ios = new Fake();
+    await Promise.all([host.open(), ios.open()]);
+    host.send({ type: "JOIN", clientId: "rst-host-001", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    ios.send({
+      type: "JOIN", clientId: "rst-ios-0001", roomCode: "BZQ7", kind: "player", plays: true,
+      device: { userAgent: "iphone", platform: "ios", browserFamily: "ios-safari" },
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    await Promise.all([host.next("WELCOME"), ios.next("WELCOME")]);
+    await host.next("ROOM_STATE", (m) => !!m.room.clients["rst-ios-0001"]);
+
+    // measure it badly: a sidelobe match 40 ms out
+    host.send({ type: "CALIBRATION_START", referenceClientId: "rst-host-001" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("rst-ios-0001"));
+    host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "rst-ios-0001", residualMs: 40, confidence: 0.9 }] });
+    await host.next("ROOM_STATE", (m) => m.room.clients["rst-ios-0001"]?.calibratedOffsetMs === 100); // 60 table + 40
+
+    // a reset while the run is still `done` is refused: the report path and the reset would race
+    host.send({ type: "CALIBRATION_RESET", clientId: "rst-ios-0001" });
+    const busy = await host.next("ERROR", (m) => m.code === "CALIBRATION_BUSY");
+    expect(busy.message).toContain("cancel first");
+    expect(mock.room.clients["rst-ios-0001"]!.calibratedOffsetMs).toBe(100); // untouched
+
+    host.forget();
+    host.send({ type: "CALIBRATION_CANCEL" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.state === "idle");
+    host.forget(); // `=== null` was also true before the run: only a FRESH snapshot proves the reset
+    host.send({ type: "CALIBRATION_RESET", clientId: "rst-ios-0001" });
+    const cleared = await host.next("ROOM_STATE", (m) => m.room.clients["rst-ios-0001"]?.calibratedOffsetMs === null);
+
+    const rec = cleared.room.clients["rst-ios-0001"]!;
+    expect(rec.calibratedOffsetMs).toBeNull(); // null, not 0
+    expect(rec.assignment!.compensationMs).toBe(60); // straight back to the ios-safari table row
+    host.ws.close();
+    ios.ws.close();
+  }, 15_000);
+
+  test("CALIBRATION_RESET with no clientId clears the whole room, and is idempotent", async () => {
+    const host = new Fake();
+    const a = new Fake();
+    const b = new Fake();
+    await Promise.all([host.open(), a.open(), b.open()]);
+    host.send({ type: "JOIN", clientId: "rst-host-002", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    a.send({ type: "JOIN", clientId: "rst-all-0001", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    b.send({ type: "JOIN", clientId: "rst-all-0002", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await Promise.all([host.next("WELCOME"), a.next("WELCOME"), b.next("WELCOME")]);
+    await host.next("ROOM_STATE", (m) => !!m.room.clients["rst-all-0002"]);
+
+    host.send({ type: "CALIBRATION_START", referenceClientId: "rst-host-002" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("rst-all-0002"));
+    host.send({
+      type: "CALIBRATION_REPORT",
+      measurements: [
+        { clientId: "rst-all-0001", residualMs: 7, confidence: 0.9 },
+        { clientId: "rst-all-0002", residualMs: -9, confidence: 0.9 },
+      ],
+    });
+    await host.next("ROOM_STATE", (m) => typeof m.room.clients["rst-all-0002"]?.calibratedOffsetMs === "number");
+    host.forget();
+    host.send({ type: "CALIBRATION_CANCEL" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.state === "idle");
+
+    host.forget();
+    host.send({ type: "CALIBRATION_RESET" });
+    await host.next("ROOM_STATE", (m) => m.room.clients["rst-all-0002"]?.calibratedOffsetMs === null);
+    // every client, not just the two this test measured
+    for (const c of Object.values(mock.room.clients)) expect(c.calibratedOffsetMs).toBeNull();
+
+    // idempotent: a second reset is not an error and changes nothing
+    host.forget();
+    host.send({ type: "CALIBRATION_RESET" });
+    await host.next("ROOM_STATE", () => true);
+    expect(mock.room.clients["rst-all-0001"]!.calibratedOffsetMs).toBeNull();
+    expect(host.inbox.some((m) => m.type === "ERROR")).toBe(false);
+    host.ws.close();
+    a.ws.close();
+    b.ws.close();
+  }, 15_000);
+
+  test("CALIBRATION_RESET is host-only and names an unknown client", async () => {
+    const host = new Fake();
+    const player = new Fake();
+    await Promise.all([host.open(), player.open()]);
+    host.send({ type: "JOIN", clientId: "rst-host-003", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    player.send({ type: "JOIN", clientId: "rst-play-001", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await Promise.all([host.next("WELCOME"), player.next("WELCOME")]);
+
+    player.send({ type: "CALIBRATION_RESET" });
+    expect((await player.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+
+    host.send({ type: "CALIBRATION_RESET", clientId: "nobody-here" });
+    expect((await host.next("ERROR", (m) => m.code === "NO_CLIENT")).message).toContain("nobody-here");
+    host.ws.close();
+    player.ws.close();
   }, 15_000);
 });

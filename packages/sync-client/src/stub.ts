@@ -181,6 +181,8 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
         });
       },
       cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
+      resetCalibration: (clientId?: string) =>
+        transport.send(clientId ? { type: "CALIBRATION_RESET", clientId } : { type: "CALIBRATION_RESET" }),
       async vibe(prompt: string): Promise<ScenePlan> {
         const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
           method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }),

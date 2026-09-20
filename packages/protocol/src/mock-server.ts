@@ -302,6 +302,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "CALIBRATION_CANCEL":
         if (!hostOnly()) return;
         return cancelCalibration();
+      case "CALIBRATION_RESET":
+        if (!hostOnly()) return;
+        return resetCalibration(ws, msg.clientId);
       case "CALIBRATION_REPORT": {
         // A cancelled run writes nothing, even if the reference's report was already in flight.
         if (room.calibration.state === "idle") return;
@@ -342,6 +345,41 @@ export function startMockServer(opts: MockServerOptions = {}) {
     clearCalibrationTimers();
     room.calibration = IDLE_CALIBRATION;
     dirty = true;
+    flush();
+  }
+
+  /**
+   * CALIBRATION_RESET: throw measured offsets away, for one client or the whole room.
+   *
+   * Two decisions worth arguing with:
+   *
+   * 1. **Cleared to `null`, not `0`.** Null falls back through `tableLatencyMs` and then the phone's own
+   *    `ctx.outputLatency`; zero is a positive claim that the phone has no output latency, which is
+   *    never true. Resetting a measurement must not be worse than never having measured.
+   * 2. **Refused mid-run.** A residual is measured against whatever compensation the phone was applying
+   *    when its click sounded. Clearing the base between the clicks and the report would add those
+   *    residuals to a *different* base — writing in exactly the error the host was trying to undo. So a
+   *    reset during `countdown`/`running`/`done` is an error, not a silent partial success: cancel, then
+   *    reset. (`done` is included because its report may still be in flight from the reference.)
+   */
+  function resetCalibration(ws: Bun.ServerWebSocket<{ clientId: string | null }>, clientId?: string) {
+    if (room.calibration.state !== "idle") {
+      return send(ws, {
+        type: "ERROR",
+        code: "CALIBRATION_BUSY",
+        message: `cannot reset while calibration is ${room.calibration.state}: cancel first`,
+      });
+    }
+    const targets = clientId ? [room.clients[clientId]] : Object.values(room.clients);
+    if (clientId && !room.clients[clientId]) {
+      return send(ws, { type: "ERROR", code: "NO_CLIENT", message: `no client ${clientId}` });
+    }
+    for (const c of targets) {
+      if (c) c.calibratedOffsetMs = null;
+    }
+    // replan(), because each client's compensationMs is derived from the offsets we just cleared; it
+    // sets `dirty` itself. Flushed rather than coalesced so the host sees the offsets go.
+    replan();
     flush();
   }
 
