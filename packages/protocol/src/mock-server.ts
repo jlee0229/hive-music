@@ -193,11 +193,21 @@ export function startMockServer(opts: MockServerOptions = {}) {
       },
       close(ws) {
         const id = ws.data.clientId;
-        if (id && room.clients[id]) {
-          room.clients[id]!.connected = false;
-          sockets.delete(id);
-          dirty = true;
-        }
+        if (!id || !room.clients[id]) return;
+        /*
+         * Only the socket we currently hold for this client may demote it. A phone can briefly have two
+         * sockets — a reconnect racing a manual retry, or a "Tap to resume" during the backoff — and the
+         * orphan's close arrives *after* the new socket has already JOINed. Keyed only by clientId, that
+         * close marked the client disconnected and deleted the LIVE socket's registration: the phone
+         * stayed connected and kept playing, while the server stopped sending it anything targeted
+         * (SCHEDULED_ACTION, CALIBRATION_PLAN) and showed it as offline in the Hive Map for the rest of
+         * the set. Nothing looked broken from either end, which is why it needs a test rather than a
+         * comment.
+         */
+        if (sockets.get(id) !== ws) return;
+        room.clients[id]!.connected = false;
+        sockets.delete(id);
+        dirty = true;
       },
     },
   });

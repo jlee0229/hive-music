@@ -274,4 +274,39 @@ describe("12 phones, one server restart", () => {
       player.client.disconnect();
     }
   }, 90_000);
+  /*
+   * The race the server's close handler must never *have* to resolve: a phone whose backoff is armed and
+   * whose user taps "Tap to resume". Before the fix in `transport.ts`, `connect()` opened a socket and
+   * left the scheduled retry armed; it fired a few hundred ms later, replaced the socket that had just
+   * JOINed, and the server saw a close for a client it had just re-registered. One socket per transport
+   * has to mean one *pending* connect as well.
+   */
+  test("a manual connect during the backoff does not leave a second attempt armed", async () => {
+    const player = harness("race-p-01", "player", true);
+    try {
+      await player.client.connect();
+      await waitFor(() => player.client.status.clockOffsetMs !== null, 15_000, "clock");
+
+      const joinsBefore = mock.received.JOIN ?? 0;
+      mock.simulateRestart();
+      /*
+       * Wait for the transport to actually *be* in backoff before tapping. Calling connect() in the same
+       * tick as the restart is a no-op — the socket is still OPEN as far as the client knows, so connect()
+       * resolves immediately and the race never happens. The window to hit is between `onclose` (which
+       * arms the timer) and the first backoff at 300 ms.
+       */
+      await waitFor(() => player.client.connection === "reconnecting", 2000, "the transport to enter backoff");
+      await player.client.connect().catch(() => {});
+
+      // well past the 300 ms first backoff and the 600 ms second
+      await new Promise((r) => setTimeout(r, 1500));
+      const joins = (mock.received.JOIN ?? 0) - joinsBefore;
+      console.log(`[B9e/storm] tap-to-resume during the backoff: ${joins} JOIN(s)`);
+      expect(joins).toBe(1);
+      expect(player.client.connection).toBe("open");
+      expect(mock.room.clients["race-p-01"]?.connected).toBe(true);
+    } finally {
+      player.client.disconnect();
+    }
+  }, 60_000);
 });

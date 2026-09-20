@@ -344,3 +344,55 @@ describe("CALIBRATION_RESET (protocol v3)", () => {
     player.ws.close();
   }, 15_000);
 });
+
+describe("a phone with two sockets (a reconnect racing a retry)", () => {
+  /*
+   * The engine tries hard not to create this overlap (P0-4, and the reconnect-timer fix in transport.ts),
+   * but the server must not *depend* on that: a close always races a JOIN on a bad network. The failure
+   * this pins was silent from both ends — the phone stayed connected and kept playing while the server
+   * marked it offline and stopped sending it anything targeted.
+   */
+  test("the orphan's close does not demote the live connection", async () => {
+    const first = new Fake();
+    await first.open();
+    first.send({ type: "JOIN", clientId: "dup-client-01", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await first.next("WELCOME");
+
+    // a second socket for the SAME client id, as a reconnect that raced a retry would produce
+    const second = new Fake();
+    await second.open();
+    second.send({ type: "JOIN", clientId: "dup-client-01", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await second.next("WELCOME");
+    expect(mock.room.clients["dup-client-01"]!.connected).toBe(true);
+
+    // the orphan leaves; its close arrives after the new socket has already joined
+    first.ws.close();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(mock.room.clients["dup-client-01"]!.connected).toBe(true);
+
+    // and the live socket still receives what is addressed to it
+    second.forget();
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "dup-host-0001", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    await host.next("WELCOME");
+    host.send({ type: "CALIBRATION_START", referenceClientId: "dup-host-0001" });
+    const click = await second.next("SCHEDULED_ACTION");
+    expect(click.action.kind).toBe("CALIBRATION_CLICK");
+    host.send({ type: "CALIBRATION_CANCEL" });
+
+    second.ws.close();
+    host.ws.close();
+  }, 15_000);
+
+  test("and the last socket to close really does mark it offline", async () => {
+    const only = new Fake();
+    await only.open();
+    only.send({ type: "JOIN", clientId: "dup-client-02", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await only.next("WELCOME");
+    expect(mock.room.clients["dup-client-02"]!.connected).toBe(true);
+    only.ws.close();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(mock.room.clients["dup-client-02"]!.connected).toBe(false);
+  }, 15_000);
+});

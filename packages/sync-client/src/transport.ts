@@ -84,6 +84,17 @@ export class RoomTransport {
    */
   connect(): Promise<void> {
     this.closedByUser = false;
+    /*
+     * Cancel a reconnect that is already scheduled. Without this, a "Tap to resume" during the backoff
+     * left the timer armed: it fired a few hundred ms later, replaced the socket that had just JOINed,
+     * and the server saw a close for a client it had just re-registered — the overlap that the mock's
+     * close handler used to resolve by demoting the live connection. One socket per transport means one
+     * *pending* connect too.
+     */
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const state = this.ws?.readyState;
     if (state === WebSocket.OPEN) return Promise.resolve();
     if (state === WebSocket.CONNECTING && this.connecting) return this.connecting;
