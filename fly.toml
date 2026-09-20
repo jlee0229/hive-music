@@ -2,7 +2,7 @@
 # Keep auto_stop off so the room survives idle minutes. One machine only: rooms are in memory.
 # The Docker build context is the repo root (the Dockerfile copies the whole workspace and runs apps/server/src/index.ts).
 
-app = "hivemusic-server"
+app = "playhivemusic-api"
 primary_region = "ewr"
 
 [build]
@@ -10,6 +10,12 @@ primary_region = "ewr"
 
 [env]
   PORT = "8080"
+
+# Uploaded tracks survive redeploys on this volume (docs/09 §D, docs/12). Seed it once after the
+# first mount: fly ssh console -C "bun run /app/fixtures/gen-synthetic.ts"
+[[mounts]]
+  source = "hive_tracks"
+  destination = "/app/fixtures/tracks"
 
 [http_service]
   internal_port = 8080

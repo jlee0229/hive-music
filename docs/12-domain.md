@@ -18,11 +18,11 @@ Deploy mechanics are docs/09; this file is the domain-specific delta.
    (Root Directory `apps/web`, tick "Include source files outside the Root Directory",
    install command `bun install`). The dashboard import is required once; after that the
    Git integration builds every push, `main` = production.
-3. **Namecheap DNS** (Domain List → playhivemusic.com → Advanced DNS), after steps 4–5 below
-   produce the exact targets:
-   - `A @ 76.76.21.21` (Vercel apex — Vercel's domain screen confirms the current IP)
-   - `CNAME www cname.vercel-dns.com`
-   - `CNAME api hivemusic-server.fly.dev` (or whatever `fly certs add` prints)
+3. **Namecheap DNS** (Domain List → playhivemusic.com → Advanced DNS) — live values as of
+   2026-09-20 (app `playhivemusic-api`, Vercel project `playhivemusic`):
+   - `A @ 76.76.21.21` (Vercel apex)
+   - `CNAME www cname.vercel-dns.com` (redirects to the apex, configured project-side)
+   - `A api 66.241.124.201` (Fly; optional `AAAA api 2a09:8280:1::194:e633:0`)
 
 ## Scripted steps (run from the repo root once logged in)
 
