@@ -22,6 +22,8 @@ import { HostCalibrate } from "@/components/HostCalibrate";
 import { Legend } from "@/components/Legend";
 import { PlayerSheet } from "@/components/PlayerSheet";
 import { PlayersDrawer } from "@/components/PlayersDrawer";
+import { SongsDrawer } from "@/components/SongsDrawer";
+import { Creators } from "@/components/Creators";
 
 /**
  * Bootstraps (or recovers) the hostKey, then mounts HostRoom keyed on that hostKey. A room can be
@@ -131,6 +133,7 @@ function HostRoom({
   const [startAnywayReady, setStartAnywayReady] = useState(false);
   const [sheetClientId, setSheetClientId] = useState<string | null>(null);
   const [showPlayers, setShowPlayers] = useState(false);
+  const [showSongs, setShowSongs] = useState(false);
   const [calibrateDismissed, setCalibrateDismissed] = useState(false);
   const [screenLinkCopied, setScreenLinkCopied] = useState(false);
   const [uploadPhase, setUploadPhase] = useState<"analyzing" | "uploading" | null>(null);
@@ -449,14 +452,21 @@ function HostRoom({
         <div className="flex gap-2.5">
           <button
             onClick={startTuning}
-            className="flex h-13 grow items-center justify-center rounded-2xl border font-semibold"
+            className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
             style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
           >
             Tune the hive
           </button>
           <button
+            onClick={() => setShowSongs(true)}
+            className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
+            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+          >
+            Songs
+          </button>
+          <button
             onClick={() => setShowPlayers(true)}
-            className="flex h-13 grow items-center justify-center rounded-2xl border font-semibold"
+            className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
             style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
           >
             Players
@@ -478,6 +488,22 @@ function HostRoom({
             onClose={() => setShowPlayers(false)}
           />
         ) : null}
+        {showSongs ? (
+          <SongsDrawer
+            tracks={tracks}
+            currentTrackId={room.track?.id ?? null}
+            uploadPhase={uploadPhase}
+            uploadError={uploadError}
+            onSelect={(id) => {
+              setShowSongs(false);
+              selectTrack(id); // SET_TRACK stops the transport server-side: back to the lobby, Start plays it
+            }}
+            onUpload={(f) => void onUploadFile(f)}
+            onClose={() => setShowSongs(false)}
+          />
+        ) : null}
+
+        <Creators />
       </main>
     );
   }
@@ -634,6 +660,7 @@ function HostRoom({
           Tap the speaker toggle again if this phone doesn&apos;t make sound once the show starts.
         </p>
       ) : null}
+      <Creators />
     </main>
   );
 }

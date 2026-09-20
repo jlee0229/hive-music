@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ROOM_CODE_LENGTH } from "@hive/protocol";
 import { apiUrl } from "@/lib/hive/client";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
+import { Creators } from "@/components/Creators";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -94,9 +95,7 @@ export default function LandingPage() {
         <p className="mt-1 text-center text-sm" style={{ color: "var(--faint)" }}>
           Runs in your browser. Nothing to install.
         </p>
-        <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
-          Creators: Frank Lucci &amp; Jaeho Lee
-        </p>
+        <Creators big />
       </div>
     </main>
   );

@@ -9,6 +9,7 @@ import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { NudgeSlider } from "@/components/NudgeSlider";
 import { AdSlot } from "@/components/AdSlot";
+import { Creators } from "@/components/Creators";
 
 /** Full-screen role color, beat pulse (bpm + evaluatePattern), nudge slider, mute. */
 export function PlayerPlayingScreen({
@@ -119,6 +120,7 @@ export function PlayerPlayingScreen({
           {muted ? "Unmute my phone" : "Mute my phone"}
         </button>
         <AdSlot dark />
+        <Creators dark />
       </div>
     </main>
   );

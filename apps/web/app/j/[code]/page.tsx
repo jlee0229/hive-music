@@ -14,6 +14,7 @@ import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { PlayerPlayingScreen } from "@/components/PlayerPlayingScreen";
 import { PlayerCalibratingScreen } from "@/components/PlayerCalibratingScreen";
 import { AdSlot } from "@/components/AdSlot";
+import { Creators } from "@/components/Creators";
 
 type View = "join" | "resume" | "ready" | "playing" | "calibrating" | "removed";
 
@@ -254,6 +255,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </div>
 
         <AdSlot />
+        <Creators />
       </main>
     );
   }
