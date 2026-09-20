@@ -60,9 +60,14 @@ export class Room {
   private calibrationTimers: ReturnType<typeof setTimeout>[] = [];
   private sceneTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private stateTimer: ReturnType<typeof setInterval>;
   private healthTimer: ReturnType<typeof setInterval>;
   private pingTimer: ReturnType<typeof setInterval>;
+  /** Leading-edge ROOM_STATE coalescing: publish immediately if the last publish was >= the rate cap ago;
+   *  otherwise arm one trailing timer for the remainder of the window. A burst of changes (e.g. several
+   *  JOINs at once) always produces at most one broadcast per window, on the earliest possible edge of it —
+   *  never delayed by a full window the way a plain setInterval poll would (docs/PROTOCOL-REQUESTS.md R-1). */
+  private lastPublishAt = -Infinity;
+  private trailingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     code: string,
@@ -84,18 +89,17 @@ export class Room {
       calibration: IDLE_CALIBRATION,
       clients: {},
     };
-    this.stateTimer = setInterval(() => this.flush(), 1000 / ROOM_STATE_MAX_HZ);
     this.healthTimer = setInterval(() => this.publishHealth(), 1000 / HEALTH_HZ);
     this.pingTimer = setInterval(() => this.tickPing(), PING_INTERVAL_MS);
   }
 
   // ---- lifecycle -------------------------------------------------------------
   destroy() {
-    clearInterval(this.stateTimer);
     clearInterval(this.healthTimer);
     clearInterval(this.pingTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.sceneTimer) clearTimeout(this.sceneTimer);
+    if (this.trailingTimer) clearTimeout(this.trailingTimer);
     for (const t of this.disconnectTimers.values()) clearTimeout(t);
     for (const t of this.calibrationTimers) clearTimeout(t);
   }
@@ -118,12 +122,32 @@ export class Room {
   private replan(applyAt: number | null = null) {
     this.room = withAssignments(this.room, applyAt);
     this.dirty = true;
+    this.flush();
   }
 
+  /** Leading-edge coalescing (see the field comment above): call after every state change. A small
+   *  guard band on the trailing timer keeps consecutive publishes at or past minGapMs even accounting
+   *  for ordinary setTimeout scheduling granularity (measured with apps/server/scripts/load-test.ts:
+   *  without it, timer jitter alone can shave a few ms off the nominal gap under sustained load). */
+  private static readonly TRAILING_GUARD_MS = 20;
   private flush() {
     if (!this.dirty) return;
-    this.dirty = false;
-    this.server.publish(this.code, JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
+    const minGapMs = 1000 / ROOM_STATE_MAX_HZ;
+    const elapsed = now() - this.lastPublishAt;
+    if (elapsed >= minGapMs) {
+      this.dirty = false;
+      this.lastPublishAt = now();
+      if (this.trailingTimer) {
+        clearTimeout(this.trailingTimer);
+        this.trailingTimer = null;
+      }
+      this.server.publish(this.code, JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
+    } else if (!this.trailingTimer) {
+      this.trailingTimer = setTimeout(() => {
+        this.trailingTimer = null;
+        this.flush();
+      }, minGapMs - elapsed + Room.TRAILING_GUARD_MS);
+    }
   }
 
   private publishHealth() {
@@ -169,8 +193,7 @@ export class Room {
 
   private fireScene(mode: RoomState["mode"]["kind"], params: RoomState["mode"]["params"], boundaryServerTime: number) {
     this.room.mode = { kind: mode, params };
-    this.replan(boundaryServerTime);
-    this.flush();
+    this.replan(boundaryServerTime); // flushes internally
     this.rearmSceneTimer();
   }
 
@@ -205,6 +228,7 @@ export class Room {
     const start = now() + CALIBRATION_COUNTDOWN_MS;
     this.room.calibration = { state: "countdown", referenceClientId, startServerTime: start, order, results: {} };
     this.dirty = true;
+    this.flush();
 
     const ref = this.sockets.get(referenceClientId);
     if (ref) send(ref, { type: "CALIBRATION_PLAN", startServerTime: start, intervalMs: CALIBRATION_CLICK_INTERVAL_MS, order, clickSpec: DEFAULT_CLICK_SPEC });
@@ -219,6 +243,7 @@ export class Room {
         if (this.room.calibration.state === "countdown") {
           this.room.calibration = { ...this.room.calibration, state: "running" };
           this.dirty = true;
+          this.flush();
         }
       }, CALIBRATION_COUNTDOWN_MS),
       setTimeout(
@@ -226,6 +251,7 @@ export class Room {
           if (this.room.calibration.state !== "done") {
             this.room.calibration = { ...this.room.calibration, state: "failed" };
             this.dirty = true;
+            this.flush();
           }
         },
         CALIBRATION_COUNTDOWN_MS + order.length * CALIBRATION_CLICK_INTERVAL_MS + 5000,
@@ -284,8 +310,10 @@ export class Room {
     this.health.set(rec.id, { rttMs: null, syncErrMs: null, outputLatencyMs: null, audioState: "locked", lastSeenServerTime: now() });
 
     send(ws, { type: "WELCOME", clientId: rec.id, roomCode: this.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: rec.kind === "host" });
+    // ROOM_STATE is a room-wide broadcast, so the joiner's own subscribe() above means replan()'s flush
+    // (leading-edge: immediate in a quiet room, coalesced into the next window during a join burst) is
+    // also "the joiner's snapshot" — a burst of joins must still respect ROOM_STATE_MAX_HZ.
     this.replan();
-    this.flush(); // a joiner gets its snapshot immediately
   }
 
   disconnect(ws: WS) {
@@ -295,6 +323,7 @@ export class Room {
     if (c) {
       c.connected = false;
       this.dirty = true;
+      this.flush();
     }
     this.sockets.delete(id);
     this.clearDisconnectTimer(id);
@@ -303,6 +332,7 @@ export class Room {
       this.room.hostClientIds = this.room.hostClientIds.filter((hid) => hid !== id);
       this.disconnectTimers.delete(id);
       this.dirty = true;
+      this.flush();
       this.checkIdle();
     }, DISCONNECT_RETENTION_MS);
     this.disconnectTimers.set(id, timer);
@@ -337,6 +367,7 @@ export class Room {
         if (me) {
           me.audioReadyTrackId = msg.trackId;
           this.dirty = true;
+          this.flush();
         }
         return;
       case "SET_PLAYS":
@@ -363,11 +394,13 @@ export class Room {
           const from = msg.trackTimeSec ?? (this.room.transport.state === "paused" ? this.room.transport.trackTimeAtPause : 0);
           this.room.transport = { state: "playing", serverTimeAtTrackZero: t + LEAD_MS - from * 1000 };
           this.dirty = true;
+          this.flush();
           this.syncModeToScenePlan();
           this.rearmSceneTimer();
         } else if (msg.action === "PAUSE" && this.room.transport.state === "playing") {
           this.room.transport = { state: "paused", trackTimeAtPause: trackTimeSec(this.room.transport, t) };
           this.dirty = true;
+          this.flush();
           this.cancelSceneTimer();
         }
         return;

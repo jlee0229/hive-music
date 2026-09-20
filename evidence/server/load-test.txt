@@ -1,0 +1,19 @@
+Load test: 30 clients, 180s, room ZAUX
+
+NTP server-side processing latency (t2-t1), 5370 samples:
+  p50 = 0.000 ms
+  p99 = 0.001 ms
+  max = 0.032 ms
+  target: p50/p99 < 1 ms  ->  PASS
+
+ROOM_STATE broadcast rate (observed by the host):
+  56 messages over 180s = 0.311 Hz average
+  smallest gap between consecutive broadcasts: 499.7 ms
+  worst 1s sliding-window count (informational; a boundary artifact, not the server's real guarantee): 2 messages
+  target: >= 1000/ROOM_STATE_MAX_HZ (500ms), 10ms tolerance for client-side measurement/timer granularity  ->  PASS
+
+Largest message any client received: 17878 bytes
+  target: <= 65536 bytes  ->  PASS
+
+Server RSS: start=74340kB end=76436kB
+  target: roughly flat (no unbounded growth over one run)  ->  PASS
