@@ -424,6 +424,10 @@ export function createBrowserAudioEngine(
     get lastCorrectionMs() {
       return scheduler?.lastCorrectionMs ?? 0;
     },
+    get playheadErrorMs() {
+      // 0 when nothing is playing: there is no playhead to be wrong about.
+      return scheduler?.playing ? scheduler.lastDriftErrorMs : 0;
+    },
     get outputLatencyMs() {
       return outputLatencyMs;
     },

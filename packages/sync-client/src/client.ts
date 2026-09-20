@@ -32,6 +32,11 @@ export interface AudioEngine extends HiveAudio {
   applyRoom(room: RoomState, assignment: Assignment | null): void;
   /** Last hard resync applied to the playhead, ms. */
   readonly lastCorrectionMs: number;
+  /**
+   * The *current* playhead error the drift check measured, ms — what B9e's rate trim is working against.
+   * Distinct from `lastCorrectionMs`, which is history and keeps its value forever.
+   */
+  readonly playheadErrorMs: number;
   /** `ctx.outputLatency` when the browser exposes it, ms; null otherwise. */
   readonly outputLatencyMs: number | null;
   /** Schedules a calibration click to leave the speaker at this server time. */
@@ -79,6 +84,7 @@ export function nullAudioEngine(): AudioEngine {
     ctxNow: () => null,
     applyRoom: () => {},
     lastCorrectionMs: 0,
+    playheadErrorMs: 0,
     outputLatencyMs: null,
     debug: { startCtxForZero: null, lastDecision: null, playing: false, ctxState: null, loadedTrackId: null },
     scheduleClick: () => {},
@@ -167,10 +173,12 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
   const status = (): SyncStatus => ({
     clockOffsetMs: clock.offsetMs,
     rttMs: clock.rttMs,
-    syncErrMs: clock.rttMs == null ? null : computeSyncErrMs(clock.rttMs, audio.lastCorrectionMs),
+    syncErrMs:
+      clock.rttMs == null ? null : computeSyncErrMs(clock.rttMs, audio.lastCorrectionMs, audio.playheadErrorMs),
     outputLatencyMs: audio.outputLatencyMs,
     compensationMs: assignmentOf()?.compensationMs ?? 0,
     lastCorrectionMs: audio.lastCorrectionMs,
+    playheadErrorMs: audio.playheadErrorMs,
     playing: room?.transport.state === "playing",
   });
 

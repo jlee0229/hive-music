@@ -42,6 +42,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     outputLatencyMs: null,
     compensationMs: me()?.assignment?.compensationMs ?? 0,
     lastCorrectionMs: 0,
+    playheadErrorMs: 0,
     playing: room?.transport.state === "playing",
   });
 

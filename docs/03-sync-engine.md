@@ -198,10 +198,18 @@ resyncs. `/diag` exposes `slewPpm`, `driftErrorMs`, `slewEnabled` and `resyncCou
 ppm cap is the signal that slewing is losing and a crossfade is coming.
 
 ```
-syncErrMs := rttMs / 2 + |lastCorrectionMs|          // computeSyncErrMs() in @hive/protocol
+syncErrMs := rttMs / 2 + max(|lastCorrectionMs|, |playheadErrorMs|)   // computeSyncErrMs() in @hive/protocol
 ```
 
-An upper bound on how far this phone may be from the server timeline. `healthLevel(h, now)` colours it: `good ≤ 5`, `warn ≤ 20`, `bad` above **or when `lastSeenServerTime` is older than 5 s**, `unknown` when `syncErrMs` is null. The phone reports it in `CLIENT_STATUS` every 2 s; hosts see it in `HEALTH` at 1 Hz. The stub reports `rttMs / 2`.
+An upper bound on how far this phone may be from the server timeline. The `playheadErrorMs` term is there
+because B9e removed the only signal the two-term version had: before slewing, drift *always* ended in a
+hard resync, so `lastCorrectionMs` eventually reported it. Now sub-threshold drift is absorbed
+continuously and never becomes a correction — which is the point — but without the live term a phone whose
+trim is **saturated** (a clock worse than `PLAYBACK_RATE_MAX_PPM`, or a wrong compensation being read as
+drift) would sit at 9 ms of real error and report itself green until the moment it finally crossfades.
+`max` rather than a sum, because the two are measurements of the same quantity at different times, not
+independent error sources. In normal operation the live term is ~0.4 ms and invisible next to `rtt/2`; it
+only speaks up when something is wrong, which is the property worth having. `healthLevel(h, now)` colours it: `good ≤ 5`, `warn ≤ 20`, `bad` above **or when `lastSeenServerTime` is older than 5 s**, `unknown` when `syncErrMs` is null. The phone reports it in `CLIENT_STATUS` every 2 s; hosts see it in `HEALTH` at 1 Hz. The stub reports `rttMs / 2`.
 
 B4 acceptance: rig at t=0 and t=5 min both <10 ms device-to-device; a +40 ms nudge shifts the measured click by 40±3 ms; simulated +50 ppm clock drift keeps the clock estimate within 5 ms.
 

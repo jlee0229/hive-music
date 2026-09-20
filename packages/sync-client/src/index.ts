@@ -37,14 +37,22 @@ export interface SyncStatus {
   clockOffsetMs: number | null;
   /** Best (minimum) round-trip seen in the sliding window, ms. */
   rttMs: number | null;
-  /** rtt/2 + |last applied correction|; what CLIENT_STATUS reports and what healthLevel() colors. */
+  /** rtt/2 + max(|lastCorrectionMs|, |playheadErrorMs|); what CLIENT_STATUS reports and healthLevel() colors. */
   syncErrMs: number | null;
   /** AudioContext.outputLatency when the browser exposes it, else null. */
   outputLatencyMs: number | null;
   /** nudge + (calibrated ?? table ?? 0), as delivered in the current assignment. */
   compensationMs: number;
-  /** Last hard resync applied to the playhead, ms (0 when none). */
+  /** Last hard resync applied to the playhead, ms (0 when none). This is history: it keeps its value. */
   lastCorrectionMs: number;
+  /**
+   * The playhead error the drift check measured most recently, ms; positive = this phone is ahead. 0 when
+   * not playing. This is *live*, unlike `lastCorrectionMs`, and it is what B9e's rate trim is working
+   * against — a phone whose trim is saturated shows a growing number here while `lastCorrectionMs` is
+   * still 0. `syncErrMs` now includes it, so a drifting phone goes amber before it crossfades rather than
+   * after.
+   */
+  playheadErrorMs: number;
   playing: boolean;
 }
 
