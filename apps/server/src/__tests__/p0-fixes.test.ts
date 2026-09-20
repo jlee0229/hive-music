@@ -78,6 +78,38 @@ describe("P0-2: host re-join after the fixed-code room is re-spawned", () => {
 
     room.destroy();
   });
+
+  test("R-15: room destroyed/recreated, stale-keyed host lands as a player behind a new host, then re-JOINs with the current key and is promoted (not duplicated)", () => {
+    const { server } = fakeServer();
+    const room1 = new Room("P0A4", server, () => {}, () => []);
+    const hostWs1 = fakeWs();
+    room1.join(hostWs1.ws, { type: "JOIN", clientId: "host-p0a4-01", roomCode: "P0A4", kind: "host", plays: false, hostKey: room1.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const staleHostKey = room1.hostKey;
+    room1.destroy();
+
+    // re-spawned; someone else claims host first, so the "nobody holds it yet" clause no longer applies
+    const room2 = new Room("P0A4", server, () => {}, () => []);
+    const otherHostWs = fakeWs();
+    room2.join(otherHostWs.ws, { type: "JOIN", clientId: "host-p0a4-02", roomCode: "P0A4", kind: "host", plays: false, hostKey: room2.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+
+    // the original host reconnects with its now-stale key — refused host, lands as a demoted player
+    const staleWs = fakeWs();
+    room2.join(staleWs.ws, { type: "JOIN", clientId: "host-p0a4-01", roomCode: "P0A4", kind: "host", plays: false, hostKey: staleHostKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect(room2.room.clients["host-p0a4-01"]!.kind).toBe("player");
+    const demotedJoinIndex = room2.room.clients["host-p0a4-01"]!.joinIndex;
+
+    // it learns the room's current hostKey (e.g. re-scans a QR code) and re-JOINs with the SAME clientId
+    const currentWs = fakeWs();
+    room2.join(currentWs.ws, { type: "JOIN", clientId: "host-p0a4-01", roomCode: "P0A4", kind: "host", plays: false, hostKey: room2.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect(room2.room.clients["host-p0a4-01"]!.kind).toBe("host");
+    expect(room2.room.hostClientIds).toContain("host-p0a4-01");
+    expect(room2.room.hostClientIds).toEqual(["host-p0a4-02", "host-p0a4-01"]); // not duplicated
+    expect(Object.keys(room2.room.clients).filter((id) => id === "host-p0a4-01")).toHaveLength(1);
+    // same record promoted in place, not a second one spliced in
+    expect(room2.room.clients["host-p0a4-01"]!.joinIndex).toBe(demotedJoinIndex);
+
+    room2.destroy();
+  });
 });
 
 describe("P0-4: a stale socket's close must not demote the live one", () => {
