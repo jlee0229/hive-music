@@ -143,12 +143,19 @@ describe("hard resync", () => {
     expect(rig.ctx.sources.length).toBe(sources);
   });
 
-  test("+50 ppm over 5 minutes: bounded by the resync threshold, not by 5 ms", () => {
-    // The brief asks for "within 5 ms over 5 min". With a hard resync at RESYNC_THRESHOLD_MS the error
-    // necessarily sawtooths up to that threshold before anything corrects it, so the achievable bound is
-    // 10 ms, not 5. This test measures the real shape; the evidence file spells out what it means and
-    // what it would take to reach 5 ms (playbackRate slewing, B9e).
+  test("+50 ppm over 5 minutes with crossfade only: bounded by the resync threshold, not by 5 ms", () => {
+    /*
+     * The brief asks for "within 5 ms over 5 min". With a hard resync at RESYNC_THRESHOLD_MS the error
+     * necessarily sawtooths up to that threshold before anything corrects it, so the achievable bound is
+     * 10 ms, not 5 — a hard-resync design cannot beat its own threshold.
+     *
+     * B9e (playbackRate slewing) is now implemented and ON by default, and it does reach 5 ms: 0.55 ms
+     * worst over the same 5 minutes with zero crossfades (`slew.test.ts`). This test keeps measuring the
+     * crossfade path deliberately, with slewing off, because that path is still the fallback for
+     * everything slewing cannot absorb — a clock step, a resumed tab, a seek, a clock past the ppm cap.
+     */
     const rig = driftRig(50);
+    rig.scheduler.slewEnabled = false;
     const a = assignment();
     rig.scheduler.apply(playing(rig.localMs + 600), a, applyOpts);
 
@@ -167,7 +174,7 @@ describe("hard resync", () => {
     expect(Math.abs(samples[samples.length - 1]!)).toBeLessThanOrEqual(RESYNC_THRESHOLD_MS + 0.2);
     const mean = samples.reduce((x, y) => x + Math.abs(y), 0) / samples.length;
     console.log(
-      `[B4] +50 ppm audio clock over 5 min: ${rig.scheduler.resyncCount} resyncs, ` +
+      `[B4] +50 ppm audio clock over 5 min, slewing OFF: ${rig.scheduler.resyncCount} resyncs, ` +
         `worst |error| ${worst.toFixed(2)} ms, mean |error| ${mean.toFixed(2)} ms ` +
         `(threshold ${RESYNC_THRESHOLD_MS} ms — a hard-resync design cannot beat its own threshold)`,
     );

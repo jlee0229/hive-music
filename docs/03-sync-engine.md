@@ -144,7 +144,7 @@ Rules:
 
 - All stems start in one synchronous sequence with the identical `when`; each stem has its own `GainNode` (dB → linear `10^(dB/20)`; `−60 dB` is silence), summed into a pattern `GainNode`, then a master `GainNode` → `ctx.destination`. `audio.setMuted(true)` = master gain 0 (local only).
 - A `ROOM_STATE` whose `(track.id, transport)` differs from the last applied one is a transport change: `paused`/`stopped` → stop sources with a 10 ms fade (assumption; [02](02-protocol.md) allows a 100 ms ragged pause edge); `playing` → schedule as above, immediately if the start is already past.
-- A change in `compensationMs` or `delayMs` while playing changes the target position; the drift check picks it up and resyncs if the change exceeds `RESYNC_THRESHOLD_MS`, otherwise the residual is carried until the next resync (v1 accepts this; slewing is stretch).
+- A change in `compensationMs` or `delayMs` while playing changes the target position; the drift check picks it up and resyncs if the change exceeds `RESYNC_THRESHOLD_MS`, otherwise the rate trim below absorbs it over a couple of seconds.
 - New `gainsDb` ramp with `linearRampToValueAtTime` over 50 ms (assumption), starting at `ctxAt(applyAtServerTime)` when set and in the future, else now. A new `pattern` takes effect at the same instant.
 
 ## Drift check and hard resync
@@ -159,6 +159,43 @@ errorMs    = (emittedNow − targetNow) · 1000                            // po
 ```
 
 If `|errorMs| > RESYNC_THRESHOLD_MS = 10`: create new sources at the corrected position starting at `ctx.currentTime + 0.05`, crossfade `RESYNC_CROSSFADE_MS = 20` (old branch gain 1→0, new branch 0→1, linear), stop the old sources after the fade, and set `status.lastCorrectionMs = errorMs`. If `|errorMs| ≤ 10`: no audio change and `lastCorrectionMs` keeps its previous value (the `SyncStatus` doc says "last hard resync applied, 0 when none").
+
+### Rate slewing (B9e) — what happens *below* the threshold
+
+"No audio change below 10 ms" was the v1 behaviour, and it has a floor built into it: a hard-resync design
+cannot beat its own threshold, so a phone whose audio clock is 50 ppm fast sawtooths up to 10 ms and
+crossfades roughly every 3.5 minutes, forever. The audio clock is the hardware's, not the system's, and
+the clock model cannot absorb it — `ctx.currentTime` advances faster than real time and the samples go
+with it.
+
+So below the threshold the drift check now trims the rate instead of doing nothing:
+
+```
+ppm  = 0                                                            if |errorMs| < PLAYBACK_RATE_DEADBAND_MS (0.5)
+     = clamp(−errorMs · 1000 / PLAYBACK_RATE_TAU_SEC, ±PLAYBACK_RATE_MAX_PPM)   otherwise
+rate = 1 + ppm / 1e6        applied as source.playbackRate.setValueAtTime(rate, ctx.currentTime)
+```
+
+- **τ ≥ 2 drift-check intervals** (2 s at `DRIFT_CHECK_INTERVAL_MS` = 1000): each tick removes at most
+  half the measured error, which is what keeps a 1 Hz proportional loop from hunting.
+- **The deadband is the part that matters.** `errorMs` inherits the clock model's noise and the applied
+  offset is itself slewing at up to 2 ms/s, so without it the rate would never be 1 and would be reacting
+  to nothing.
+- **500 ppm = 0.5 ms of correction per second and 0.87 cents of pitch shift** — below the ~5 cent
+  just-noticeable difference for a complex tone, and it is a *constant* offset in pitch, not a wobble.
+- **The engine must account for it.** Nothing in Web Audio reports how much content a source has played,
+  so the branch keeps `slewSec` (content-seconds consumed beyond nominal) and the drift check compares
+  against `startCtxForZero − slewSec`. Skip that and the engine measures its own correction as error and
+  never stops correcting — the same shape of bug as P0-5 (comparing the ideal against the ideal).
+- **The crossfade stays** for everything slewing cannot absorb: a clock step, a resumed tab, a seek, or a
+  drift past the cap. A resync resets the trim to 1 (the step *is* the correction; applying both
+  double-corrects).
+
+Measured over 5 simulated minutes at +50 ppm (`packages/sync-client/src/__tests__/slew.test.ts`):
+**mean |error| 0.40 ms, worst 0.55 ms, zero resyncs**, versus mean 4.19 ms / worst 10.00 ms / 1 resync
+with slewing off. With ±1 ms of clock-estimate jitter added: mean 0.55 ms, worst 1.56 ms, still zero
+resyncs. `/diag` exposes `slewPpm`, `driftErrorMs`, `slewEnabled` and `resyncCount`; a phone parked at the
+ppm cap is the signal that slewing is losing and a crossfade is coming.
 
 ```
 syncErrMs := rttMs / 2 + |lastCorrectionMs|          // computeSyncErrMs() in @hive/protocol

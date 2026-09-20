@@ -443,6 +443,12 @@ export function createBrowserAudioEngine(
         playing: scheduler?.playing ?? false,
         ctxState: ctx ? (ctx.state as string) : null,
         loadedTrackId,
+        // B9e: what the rate trim is doing right now, and how much drift it is chasing. A phone parked at
+        // the ppm cap is the signal that slewing is losing and a crossfade is coming.
+        driftErrorMs: scheduler?.lastDriftErrorMs ?? 0,
+        slewPpm: scheduler?.lastSlewPpm ?? 0,
+        slewEnabled: scheduler?.slewEnabled ?? false,
+        resyncCount: scheduler?.resyncCount ?? 0,
       };
     },
 
