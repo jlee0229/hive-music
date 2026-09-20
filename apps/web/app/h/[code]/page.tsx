@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import Link from "next/link";
 import type { TrackLibraryEntry } from "@hive/protocol";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl } from "@/lib/hive/client";
@@ -33,6 +34,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const [sheetClientId, setSheetClientId] = useState<string | null>(null);
   const [showPlayers, setShowPlayers] = useState(false);
   const [calibrateDismissed, setCalibrateDismissed] = useState(false);
+  const [screenLinkCopied, setScreenLinkCopied] = useState(false);
 
   useEffect(() => {
     if (hostKeyState) return;
@@ -117,6 +119,16 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     client.host.setTrack(id);
   }
 
+  async function copyScreenLink() {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/screen/${roomCode}`);
+      setScreenLinkCopied(true);
+      setTimeout(() => setScreenLinkCopied(false), 2000);
+    } catch {
+      // clipboard API can be blocked (permissions, non-HTTPS); nothing else to do from here
+    }
+  }
+
   const [joinUrl, setJoinUrl] = useState(`/j/${roomCode}`);
   useEffect(() => {
     setJoinUrl(`${window.location.origin}/j/${roomCode}`);
@@ -163,6 +175,15 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
         <ReconnectBanner connection={connection} />
         <ProtocolMismatchBanner show={protocolMismatch} />
+
+        <div className="flex items-center justify-between rounded-2xl border px-3.5 py-2.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <Link href={`/screen/${roomCode}`} target="_blank" className="text-[13px] font-semibold underline">
+            Show on screen
+          </Link>
+          <button onClick={copyScreenLink} className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+            {screenLinkCopied ? "Copied!" : "Copy link"}
+          </button>
+        </div>
 
         <TransportBar room={room} clock={client.clock} host={client.host} />
 

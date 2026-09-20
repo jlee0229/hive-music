@@ -34,13 +34,24 @@ export function HiveMap({
   clock,
   host,
   onOpenSheet,
+  size = SIZE,
+  excludeClientId,
 }: {
   room: RoomState;
   health: Record<string, HealthSnapshot>;
   healthServerTime: number | null;
   clock: HiveClock;
-  host: HiveHostControls;
-  onOpenSheet: (clientId: string) => void;
+  /** Omit both host and onOpenSheet for a read-only map (no drag/tap/long-press) -- /screen. */
+  host?: HiveHostControls;
+  onOpenSheet?: (clientId: string) => void;
+  /** Rendered width/height in px; the internal SIZE x SIZE viewBox (and drag math, which reads the rendered box) is unaffected. */
+  size?: number;
+  /**
+   * Never draw this client id as a dot. /screen has no credential-free way to join without also
+   * being forced into `plays: true` server-side (docs/PROTOCOL-REQUESTS.md R-8) -- until that
+   * lands, this hides the viewer's own phantom "speaker" locally.
+   */
+  excludeClientId?: string;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -79,7 +90,7 @@ export function HiveMap({
   const roles = cyclableRoles(room);
 
   // Disconnected speakers stay on the map (their ring goes bad/unknown) until the retention window drops them.
-  const speakers = Object.values(room.clients).filter((c) => c.plays);
+  const speakers = Object.values(room.clients).filter((c) => c.plays && c.id !== excludeClientId);
   const placed = speakers.filter((c) => c.position !== null);
   const unplaced = speakers.filter((c) => c.position === null);
   const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays);
@@ -109,18 +120,20 @@ export function HiveMap({
   }, []);
 
   function onPointerDown(e: React.PointerEvent, clientId: string) {
+    if (!host) return;
     e.stopPropagation();
     (e.target as Element).setPointerCapture(e.pointerId);
     const timer = setTimeout(() => {
       if (gesture.current && gesture.current.id === clientId && !gesture.current.moved) {
         gesture.current.longPressed = true;
-        onOpenSheet(clientId);
+        onOpenSheet?.(clientId);
       }
     }, LONG_PRESS_MS);
     gesture.current = { id: clientId, startX: e.clientX, startY: e.clientY, moved: false, longPressTimer: timer, longPressed: false };
   }
 
   function onPointerMove(e: React.PointerEvent, clientId: string) {
+    if (!host) return;
     const g = gesture.current;
     if (!g || g.id !== clientId || g.longPressed) return;
     const dx = e.clientX - g.startX;
@@ -138,6 +151,7 @@ export function HiveMap({
   }
 
   function onPointerUp(e: React.PointerEvent, clientId: string) {
+    if (!host) return;
     const g = gesture.current;
     if (g && g.id === clientId) {
       if (g.moved) {
@@ -157,8 +171,8 @@ export function HiveMap({
   return (
     <svg
       ref={svgRef}
-      width={SIZE}
-      height={SIZE}
+      width={size}
+      height={size}
       viewBox={`0 0 ${SIZE} ${SIZE}`}
       role="img"
       aria-label={`Hive map: ${placed.length + unplaced.length} player phones`}
@@ -212,7 +226,7 @@ export function HiveMap({
             onPointerMove={(e) => onPointerMove(e, client.id)}
             onPointerUp={(e) => onPointerUp(e, client.id)}
             onPointerCancel={endGesture}
-            style={{ cursor: "pointer" }}
+            style={{ cursor: host ? "pointer" : "default" }}
           >
             <circle cx={cx} cy={cy} r="24" fill="none" stroke={HEALTH_COLORS[level]} strokeWidth="3" />
             <circle
