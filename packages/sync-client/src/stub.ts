@@ -172,11 +172,15 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
       async startCalibration() {
         transport.send({ type: "CALIBRATION_START", referenceClientId: clientId });
         await new Promise<void>((resolve) => {
+          let sawRun = false;
           const off = ev.on("state", (r) => {
-            if (r.calibration.state === "done" || r.calibration.state === "failed") { off(); resolve(); }
+            const st = r.calibration.state;
+            if (st === "countdown" || st === "running") sawRun = true;
+            if (st === "done" || st === "failed" || (sawRun && st === "idle")) { off(); resolve(); }
           });
         });
       },
+      cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
       async vibe(prompt: string): Promise<ScenePlan> {
         const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
           method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }),

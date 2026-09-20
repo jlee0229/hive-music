@@ -120,8 +120,15 @@ export interface HiveHostControls {
   /** Hosts only: opt this phone in/out of being a speaker. */
   setPlays(plays: boolean): void;
   kick(clientId: string): void;
-  /** Starts the tuning moment with this device as the listener; resolves when the server reports done/failed. */
+  /** Starts the tuning moment with this device as the listener; resolves when the server reports done/failed — or when a cancel returns the room to idle. */
   startCalibration(): Promise<void>;
+  /**
+   * Abandons a tuning moment in progress (`CALIBRATION_CANCEL`, host only). The room returns to
+   * `idle`, no `calibratedOffsetMs` is written, every phone drops its pending clicks, and an
+   * in-flight `calibration.runAsReference()` rejects with `CalibrationCancelledError` after
+   * releasing the microphone. Safe to call when nothing is running.
+   */
+  cancelCalibration(): void;
   /** POST /rooms/:code/vibe — resolves with the server's plan (LLM or rules fallback). */
   vibe(prompt: string): Promise<ScenePlan>;
 }
@@ -186,3 +193,4 @@ export { createStubClient } from "./stub";
 /** The clock model and the serverTime↔AudioContext mapping (exported for the rig, /diag and tests). */
 export { ClockModel, CtxMapper, SLEW_RATE_MS_PER_SEC, localNow } from "./clock";
 export { reconnectDelayMs } from "./transport";
+export { CalibrationCancelledError } from "./calibration/reference";

@@ -324,14 +324,20 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
       async startCalibration() {
         transport.send({ type: "CALIBRATION_START", referenceClientId: clientId });
         await new Promise<void>((resolve) => {
+          // `idle` counts as an ending too: a cancel never reaches done/failed, and without this the
+          // host's await would hang forever on the screen it just dismissed.
+          let sawRun = false;
           const off = ev.on("state", (r) => {
-            if (r.calibration.state === "done" || r.calibration.state === "failed") {
+            const st = r.calibration.state;
+            if (st === "countdown" || st === "running") sawRun = true;
+            if (st === "done" || st === "failed" || (sawRun && st === "idle")) {
               off();
               resolve();
             }
           });
         });
       },
+      cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
       async vibe(prompt: string): Promise<ScenePlan> {
         const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
           method: "POST",
