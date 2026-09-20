@@ -45,7 +45,7 @@ vercel.com → Add New… → Project → Import jlee0229/hive-music
 Environment variables (all environments):
   NEXT_PUBLIC_API_URL      = https://<app>.fly.dev
   NEXT_PUBLIC_WS_URL       = wss://<app>.fly.dev/ws
-  NEXT_PUBLIC_HIVE_ENGINE  = stub        ← switch to "real" once the engine's INT PR is merged
+  NEXT_PUBLIC_HIVE_ENGINE  = real        ← default now the engine's INT PR is on main; omit the var entirely, or set "stub" for a no-audio preview build
 Deploy.
 ```
 

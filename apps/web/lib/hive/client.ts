@@ -2,9 +2,9 @@ import { createHiveClient, createStubClient, type HiveClient, type HiveClientOpt
 
 export type EngineKind = "stub" | "real";
 
-/** NEXT_PUBLIC_HIVE_ENGINE=real switches every page to the backend engine; default is the audio-less stub. */
+/** Default is the real, audible engine; NEXT_PUBLIC_HIVE_ENGINE=stub opts into the audio-less stand-in (used for mock/e2e testing). */
 export function engineKind(): EngineKind {
-  return process.env.NEXT_PUBLIC_HIVE_ENGINE === "real" ? "real" : "stub";
+  return process.env.NEXT_PUBLIC_HIVE_ENGINE === "stub" ? "stub" : "real";
 }
 
 export function wsUrl(): string {
