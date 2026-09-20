@@ -38,6 +38,17 @@ export const NTP_BURST_WINDOW_MS = 4000;
 export const NTP_STEADY_INTERVAL_MS = 1000;
 /** Sliding window of probes over which min-RTT selection runs. */
 export const NTP_WINDOW = 30;
+/**
+ * A sample older than this is dropped from that window regardless of its RTT.
+ *
+ * min-RTT selection has no notion of age, so one lucky low-RTT sample wins until it is shifted out — and
+ * an *offset* goes stale with time: the local clock drifts against the server (50 ppm is 3 ms/minute), so
+ * a sample from before a resumed tab, a reconnect or a server restart can pin the clock tens of ms wrong
+ * while reporting an excellent RTT. At the steady 1 Hz probe rate this bound is the window itself
+ * (30 samples ≈ 30 s), so it changes nothing in normal operation and only bites where it should: after a
+ * gap in probing.
+ */
+export const NTP_SAMPLE_MAX_AGE_MS = 30_000;
 /** Coded probe pairs: inter-departure gap; pairs whose server-side gap differs by more than the tolerance are dropped. */
 export const NTP_PROBE_PAIR_GAP_MS = 10;
 export const NTP_PROBE_PAIR_TOLERANCE_MS = 2;

@@ -83,10 +83,10 @@ rtt    = (t3 − t0) − (t2 − t1)
 | Burst | `NTP_BURST_COUNT = 20` coded pairs over `NTP_BURST_WINDOW_MS = 4000` — one pair every 200 ms, as the stub does — right after `WELCOME`; the first estimate is adopted directly (there is nothing to slew from). |
 | Steady state | one coded pair every `NTP_STEADY_INTERVAL_MS = 1000`. |
 | Coded probe pairs | A pair shares `probeGroupId`; `probeGroupIndex` 0 then 1, departing `NTP_PROBE_PAIR_GAP_MS = 10` ms apart. The server echoes both ids with `t1`/`t2`. If `\|(t1[1] − t1[0]) − (t0[1] − t0[0])\| > NTP_PROBE_PAIR_TOLERANCE_MS = 2`, the pair was queued on the path and both samples are rejected. |
-| Window | sliding window of the last `NTP_WINDOW = 30` accepted samples. |
+| Window | the last `NTP_WINDOW = 30` accepted samples, **and** none older than `NTP_SAMPLE_MAX_AGE_MS = 30 000`. The age bound matters because min-RTT selection has no notion of it: one lucky low-RTT sample wins until it is shifted out, while its *offset* goes stale on its own as the local clock drifts against the server. A phone whose tab was suspended, or that lost the socket for minutes, otherwise comes back and pins itself tens of ms wrong while reporting a 2 ms RTT. At 1 Hz steady probing the age bound equals the window, so it prunes nothing in normal operation. The newest sample is always kept — a phone with no clock cannot play at all. |
 | Selection | the sample with minimum `rtt` in the window: its `offset` is the estimate, its `rtt` is `status.rttMs`. |
 | Application | **slewed, never stepped** after the first estimate: `clockOffsetMs` moves toward the estimate at ≤2 ms/s (assumption on rate). A +50 ppm local-clock drift is 0.05 ms/s, far inside the slew rate, so `estServerNow` stays within the ±2–5 ms budget indefinitely (B4). A real jump (route change) shows up as audio error and is handled by the hard resync below, not by the clock. |
-| Reconnect | keep the applied offset; restart the burst; keep the old window until 10 new samples are accepted (assumption). |
+| Reconnect | keep the applied offset (a step would be audible); restart the burst; the window keeps whatever is still inside the age bound, which after a long drop is nothing — that is the point. |
 
 B2 acceptance: fake transport with +137 ms offset, ±30 ms jitter, 20 % spikes → estimate within 2 ms after 30 probes. `ClockModel` takes `addProbe(t0, t1, t2, t3)` so the test needs no network.
 
