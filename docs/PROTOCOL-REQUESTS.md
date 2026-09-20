@@ -190,3 +190,14 @@ const rec: ClientRecord = existing
 
 **Note on the number collision:** a same-day frontend PR (#10) independently filed its own entry as R-15 with the same finding, quoting what looks like `apps/server/src/rooms.ts`'s *pre*-P0-2 code as "current" — that citation is stale (P0-2 landed and merged, with its own regression test, before PR #10 was opened); its `mock-server.ts` citation is accurate and is what this entry's proposal above addresses. Per the numbering convention, this entry takes the next number from `main` as of this write and does not renumber either side; whichever of the two merges second should note the collision rather than edit the other's entry.
 **Answer (backend):** …
+
+### R-18 · 2026-09-20 02:50 · from engine · status: open   (a proposal I am deliberately NOT implementing; was R-11 then R-14 on agent/backend, renumbered twice at merge per R-3)
+**ORCHESTRA with fewer phones than stems drops stems entirely**, and `docs/05-effect-modes.md` line 13 says so on purpose: "the planner does not fold stems; the host fixes it with pins or by switching to UNISON. A folding rule is a candidate `PROTOCOL-REQUESTS` entry, not a v1 behaviour."
+
+I am filing the entry rather than the code, because this is a product decision and changing the planner an hour before a freeze is the wrong kind of brave. What it looks like on stage: a 3-phone ORCHESTRA demo loses the vocals completely, and nothing indicates why — the mix just sounds thin. That is a plausible thing to happen in front of an audience, since the first minutes of a demo are the ones with the fewest phones.
+
+**The rule I would propose** (pure, deterministic, no protocol change — it only widens each phone's `gainsDb`): when `speakers < roles.length`, deal the roles round-robin so every stem lands on someone, i.e. phone `i` gets `{ roles[j] : j ≡ i (mod speakers) }`. With 2 phones and 4 stems that is `drums+vocals` and `bass+other` — deliberately splitting the pairs that carry the song rather than giving one phone the whole rhythm section. Pins still win, and a phone joining later takes stems *off* the existing phones, which is a reshuffle and therefore needs `applyAtServerTime` so it happens on a scene boundary rather than mid-bar.
+
+**The cheaper alternative, if anyone wants a one-line answer:** have the *UI* refuse ORCHESTRA below `roles.length` speakers and say "needs 4 phones", which is honest and costs the engine nothing.
+
+Either way this is the host's decision to make with a number in front of them, not mine to make silently.

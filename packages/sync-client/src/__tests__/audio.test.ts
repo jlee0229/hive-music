@@ -177,6 +177,25 @@ describe("audio engine lifecycle", () => {
     expect(h.engine.outputLatencyMs).toBeNull(); // the fake reports 0, which we treat as "unknown"
   });
 
+  test("outputLatency is read live, because it is not a constant of the device", async () => {
+    /*
+     * A Bluetooth speaker, a headset, or a calibration run that put iOS into play-and-record all change
+     * `ctx.outputLatency` after unlock. The number goes out in CLIENT_STATUS, where the server uses it as
+     * the accumulation base for a calibration report (P0-6) — so a cached value means the phone
+     * calibrates onto the latency it had at unlock and the offset it is given is wrong by the difference.
+     */
+    const h = engineHarness();
+    await h.engine.unlock();
+    expect(h.engine.outputLatencyMs).toBeNull();
+
+    // the speaker changes under us; `readonly` is a compile-time claim, not a runtime one
+    (h.ctx as unknown as { outputLatency: number }).outputLatency = 0.17;
+    expect(h.engine.outputLatencyMs).toBeCloseTo(170, 6);
+
+    (h.ctx as unknown as { outputLatency: number }).outputLatency = 0.03;
+    expect(h.engine.outputLatencyMs).toBeCloseTo(30, 6);
+  });
+
   test("a calibration click is compensated but ignores WAVE's spatial delay", async () => {
     // docs/04 step 6: the click carries compensationMs and NOT delayMs — a deliberate spatial delay
     // must not move the signal we are using to measure latency.

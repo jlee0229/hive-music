@@ -61,7 +61,19 @@ export function createBrowserAudioEngine(
   let loadedTrackId: string | null = null;
   let loadingTrackId: string | null = null;
   let wakeLock: WakeLockSentinelLike | null = null;
-  let outputLatencyMs: number | null = null;
+  /*
+   * Read live, never cached. `ctx.outputLatency` is not a constant of the device: on iOS it changes when
+   * the audio session does — a calibration run switches to play-and-record, a Bluetooth speaker or a
+   * headset adds its own buffering — and the value is reported in CLIENT_STATUS, where the server uses it
+   * as the accumulation base for a calibration report (P0-6). A cached number means a phone that gained
+   * 170 ms of Bluetooth latency calibrates onto the latency it had at unlock, and the offset it is given
+   * is wrong by the difference. The scheduler already reads the live value, so this only fixes what we
+   * *say*.
+   */
+  const readOutputLatencyMs = (): number | null => {
+    const ol = ctx?.outputLatency;
+    return typeof ol === "number" && ol > 0 ? ol * 1000 : null;
+  };
   let lastRoom: RoomState | null = null;
   let lastAssignment: Assignment | null = null;
   let listenersBound = false;
@@ -340,8 +352,6 @@ export function createBrowserAudioEngine(
         /* older engines: resume() alone is enough */
       }
       await context.resume();
-      outputLatencyMs =
-        typeof context.outputLatency === "number" && context.outputLatency > 0 ? context.outputLatency * 1000 : null;
       bindLifecycle();
       void requestWakeLock();
 
@@ -429,7 +439,7 @@ export function createBrowserAudioEngine(
       return scheduler?.playing ? scheduler.lastDriftErrorMs : 0;
     },
     get outputLatencyMs() {
-      return outputLatencyMs;
+      return readOutputLatencyMs();
     },
 
     /**
