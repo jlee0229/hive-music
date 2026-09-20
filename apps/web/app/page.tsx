@@ -58,7 +58,7 @@ export default function LandingPage() {
 
       <div className="flex flex-col gap-4">
         <h1 className="font-display text-5xl leading-[1.02] font-extrabold tracking-tight">
-          Every phone in the room. One speaker.
+          Party wherever. Party together. Become the speaker
         </h1>
       </div>
 
