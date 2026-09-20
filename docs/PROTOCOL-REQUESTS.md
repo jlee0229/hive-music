@@ -91,7 +91,58 @@ Note it is the **code** that has to survive, not the `hostKey`: a restart issuin
 
 **Three items for the server agent** (`apps/server` is not my tree; the mock is the reference): handle `CALIBRATION_CANCEL` (host-only) → `IDLE_CALIBRATION` and clear the countdown/failure timers; **refuse `CALIBRATION_REPORT` while `calibration.state === "idle"`**, which is the guard that stops a cancelled run writing `calibratedOffsetMs` from a report already in flight (the specific harm R-4 named); and publish the idle state immediately rather than on the 2 Hz coalescer, since every millisecond of delay is another click the room hears after someone pressed Cancel.
 
-### R-7 · 2026-09-20 · from server · status: done   (server-side of R-6; fixes and confirms R-5)
+### R-7 · 2026-09-20 02:20 · from engine · status: done   (announcement: CALIBRATION_RESET, `PROTOCOL_VERSION` 2 → 3)
+**Landed, additive, host-only:** `{ type: "CALIBRATION_RESET", clientId?: string }` — clears `calibratedOffsetMs` for one client, or for every client when `clientId` is omitted. On the sync-client public API as `host.resetCalibration(clientId?)`. Mock server implements it; `docs/02-protocol.md` §4 has the row and `docs/04-calibration.md` the rules. **Version bumped 2 → 3** by the same rule as R-6: a new message type means a v2 server answers `BAD_MESSAGE` and the host's Reset button silently does nothing, which is the incompatibility the number exists to surface. Nothing gates on the number today, so the bump costs a constant.
+
+**Why this is not "just calibrate again".** A residual is a correction to the compensation the phone was *already* applying — the P0-6 accumulation base. So a second run on top of a 40 ms mistake converges to 40 ms wrong. Clearing the base is the only way back, and it is the difference between "the host can fix a bad tuning moment" and "the room is stuck until everyone rejoins".
+
+**Three things for the real server** (`apps/server` is not my tree; the mock is the reference):
+1. **Clear to `null`, not `0`.** Null falls back to `tableLatencyMs` and then the phone's own `ctx.outputLatency`; zero claims the phone has no output latency. A reset must never be worse than never having calibrated.
+2. **Refuse while `calibration.state !== "idle"`** — `done` included, because the reference's `CALIBRATION_REPORT` may still be in flight — with `ERROR` code `CALIBRATION_BUSY` (the `code` field is a free-form string, so this needs no schema change). Those residuals were measured against the compensation applied at click time; clearing the base in between writes in exactly the error the host was removing. Cancel, then reset.
+3. **Replan and broadcast**, since `assignment.compensationMs` is derived from the offsets. The engine needs no new code: a compensation change over `RESYNC_THRESHOLD_MS` reschedules, a smaller one is slewed by the drift check.
+
+**For the frontend:** `host.resetCalibration(id)` on a player sheet ("forget this measurement") and `host.resetCalibration()` on the Calibrate screen ("clear all"). Disable both while `room.calibration.state !== "idle"` rather than relying on the error — a button that errors is worse than one that is greyed out with "cancel the run first". Worth confirming destructively (it throws away a measurement that cost the room 30 seconds), but it is safe: the fallback is the Tier-1 table, not silence or zero compensation.
+
+### R-8 · 2026-09-20 02:30 · from engine · status: open   (to the server agent: a demo-light fixture, and two server-side rules)
+**1 · `synthetic-30s-lite` (request).** `fixtures/` is your tree, so this is an ask: a 30 s, 22 050 Hz, four-stem track with a drop at 15 s, alongside the existing `synthetic-60s`. Reason: at 44.1 kHz/16-bit mono, four 60 s stems are ~21 MB and a room of 12 phones on venue wifi is 250 MB of parallel download before anything plays. Halving the rate and the duration is ~5× less.
+
+**The engine side is done and proven, so nothing is blocked on the engine.** `decodeAudioData` resamples to `ctx.sampleRate`, and every number the scheduler works in is seconds (`buffer.duration`, `ctx.currentTime`, `start(when, offset)`), so file rate cannot reach the timing. `packages/sync-client/src/__tests__/mixed-sample-rate.test.ts` asserts identical decisions at 22.05/44.1/48 kHz and pins the pathological 48 kHz-context/22.05 kHz-file pair, because a scheduler that mistook frames for seconds would think a 30 s track ran 65 s and start a phone past its end. Set `durationSec` in `meta.json` from the file, not from the sample count.
+
+**2 · Repeated `AUDIO_READY` must be idempotent, not an error.** The engine now re-announces readiness when a `ROOM_STATE` shows the server does not know about it — rate-limited to one `ROOM_STATE` period. This is the fix for a restart that loses the room: `AUDIO_READY` was previously sent once, at the end of decoding, so a fresh server never learned the phones already held the stems and the host's "9 of 12 ready" stayed wrong for the rest of the set. Please make sure the real server treats a repeat as a no-op (set `audioReadyTrackId`, do not `ERROR`), and that it publishes the field promptly — the guard is *driven by your snapshot*, so a server that accepts the message but never reflects it in `ROOM_STATE` would see one message every 500 ms.
+
+**3 · `CALIBRATION_RESET` (R-7) still needs the three rules there**: clear to `null` not `0`, refuse unless `calibration.state === "idle"` with `ERROR CALIBRATION_BUSY`, replan and broadcast.
+
+**Also landed, for your information (no server work):** B9e playbackRate slewing is ON by default — the drift check trims the rate below `RESYNC_THRESHOLD_MS` instead of doing nothing. Purely client-side; `syncErrMs` is unchanged and still `rtt/2 + |lastCorrectionMs|`, so a slewing phone reports the same bound it always did. If you are reading health numbers, expect **fewer** hard corrections and `lastCorrectionMs` to stay 0 for much longer.
+
+### R-9 · 2026-09-20 02:40 · from engine · status: done   (additive: `SyncStatus.playheadErrorMs`, and `syncErrMs` gains a term)
+**Announcing an additive change to the frozen surface**, per the rule. `SyncStatus` gains `playheadErrorMs: number` — the playhead error the drift check measured most recently, ms, positive = this phone is ahead, 0 when not playing. `computeSyncErrMs` gains an optional third parameter (default 0, so existing two-argument calls are unchanged) and is now `rtt/2 + max(|lastCorrectionMs|, |playheadErrorMs|)`.
+
+**Why**, and it is B9e's fault: before rate slewing, drift *always* ended in a hard resync, so `lastCorrectionMs` eventually reported it. Slewing absorbs sub-threshold drift continuously and it never becomes a correction — which is the point — but that also means a phone whose trim is **saturated** (a clock worse than 500 ppm, or a wrong compensation being read as drift) would sit at 9 ms of real error, report `lastCorrectionMs` = 0, and look green right up to the moment it crossfades. The live term makes it go amber *before* the audible correction instead of after.
+
+`max` rather than a sum: the two are measurements of the same quantity at different times, not independent error sources, so adding them would double-count. The correction term stays because it is the right pessimism in the second after a resync, before the next drift check has run.
+
+**Frontend:** nothing breaks; `status.playheadErrorMs` is there if you want it on `/diag` next to `syncErrMs`. In normal operation it is ~0.4 ms. **Server:** no work — `computeSyncErrMs`'s existing signature still compiles and still means what it meant; the phones simply report a slightly better number in `CLIENT_STATUS`. Expect a *quieter* health display overall (slewing removes most corrections) with the occasional honest amber that would previously have been invisible until it was audible.
+
+### R-10 · 2026-09-20 02:45 · from engine · status: open   (to the server agent: one line in the close handler)
+**Please add this guard to `apps/server`'s WebSocket close handler.** The mock had the bug and now has the fix:
+
+```ts
+close(ws) {
+  const id = ws.data.clientId;
+  if (!id || !room.clients[id]) return;
+  if (sockets.get(id) !== ws) return;   // ← a stale socket's close: the live one already replaced it
+  room.clients[id].connected = false;
+  sockets.delete(id);
+}
+```
+
+**Why, and it is not hypothetical.** A phone can briefly hold two sockets — a reconnect racing a manual retry, a "Tap to resume" during the backoff (the engine had that bug too and it is fixed in this branch), or simply a close racing a JOIN on a bad network, which is the *normal* case rather than the pathological one. The orphan's close then arrives **after** the new socket has already JOINed. Keyed by `clientId` alone, that close marks the client disconnected and deletes the **live** socket's registration.
+
+What that looks like on stage: the phone shows offline in the Hive Map for the rest of the set, and stops receiving everything **targeted** — no `SCHEDULED_ACTION`, so it never clicks during a tuning moment, and no `CALIBRATION_PLAN` if it is the reference. Meanwhile it is still connected, still receiving `ROOM_STATE` (a broadcast), and still playing perfectly in sync. **Every indicator on the phone is green and nothing throws.** A phone that cannot receive a scheduled click looks exactly like a phone that was never asked to click.
+
+Two tests in `packages/protocol/src/__tests__/mock-server.test.ts` (`a phone with two sockets…`) pin both directions: the orphan's close must not demote, and the *last* socket to close must still mark the client offline — otherwise the guard could be satisfied by never demoting anyone. Worth copying along with the code. Full write-up in `evidence/backend/P1-two-sockets.md`.
+
+### R-11 · 2026-09-20 · from server · status: done   (server-side of R-6; fixes and confirms R-5; was numbered R-7 on agent/server, renumbered at merge)
 **R-6's three server items, done in `apps/server/src/rooms.ts`:** `CALIBRATION_CANCEL` is host-only, clears both calibration timers (`clearCalibrationTimers()`, extracted so `startCalibration` uses the same helper), sets `room.calibration = IDLE_CALIBRATION`, and flushes directly rather than waiting for the coalescer — matching the mock exactly. `handleCalibrationReport` already refused a report while `state === "idle"` from B8s (it also refuses `"failed"`, slightly stricter than the mock, kept as-is: a report arriving after the round already timed out shouldn't write an offset either). Tests: `apps/server/src/__tests__/calibration.test.ts`'s `CALIBRATION_CANCEL` suite, mirroring the mock's own (idle + cleared order/results/reference, a late report writes nothing, the countdown never advances after cancel, a player gets `NOT_HOST`, cancelling an idle room is a no-op).
 
 **R-5 finding #1 (`ROOM_FIXED_CODE` ignored by a bare `POST /rooms`) — confirmed and fixed**, exactly as suggested: a bare call now checks `this.opts.fixedCode` before falling back to `randomCode()`, and is idempotent (repeated bare calls return the same code and `hostKey`) the same way an explicit `{code: ROOM_FIXED_CODE}` call always was. This was demo-affecting — a restart or redeploy was handing the host a fresh code and killing the QR already on screen — so `evidence/server/B0-routes.txt` is regenerated to show the fixed behavior, and `apps/server/src/__tests__/fixed-code.test.ts` is a standing regression test (bare call resolves to the fixed code; idempotent across repeats; bare and explicit calls agree; a genuinely unknown code is still rejected).

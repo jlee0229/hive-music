@@ -10,7 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startMockServer } from "@hive/protocol/mock-server";
-import { SYNC_TARGET_MS } from "@hive/protocol";
+import { RESYNC_THRESHOLD_MS, SYNC_TARGET_MS } from "@hive/protocol";
 import { createHiveClient } from "../index";
 import { createBrowserAudioEngine } from "../audio";
 import { CtxMapper } from "../clock";
@@ -130,6 +130,19 @@ describe("two engines against the mock server", () => {
       // ...so they agree with each other, which is the number that matters on stage.
       const skewMs = Math.abs(ea - eb);
       expect(skewMs).toBeLessThan(SYNC_TARGET_MS);
+
+      /*
+       * B9e: the live playhead term reaches the public `SyncStatus`, and `syncErrMs` is never below
+       * `rtt/2`. Right after a start it is 0 (the 1 Hz drift check has not run yet) — the point of
+       * asserting it here is the wiring, which a scheduler-level test cannot see: `slew.test.ts` measures
+       * the number itself over 5 minutes.
+       */
+      for (const h of [a, b]) {
+        const st = h.client.status;
+        expect(Number.isFinite(st.playheadErrorMs)).toBe(true);
+        expect(Math.abs(st.playheadErrorMs)).toBeLessThan(RESYNC_THRESHOLD_MS);
+        expect(st.syncErrMs!).toBeGreaterThanOrEqual(st.rttMs! / 2);
+      }
 
       // and the weaker check the gate asks for, on the clock rather than the scheduler
       const dtMs = Math.abs(a.client.clock.trackTimeSec() - b.client.clock.trackTimeSec()) * 1000;

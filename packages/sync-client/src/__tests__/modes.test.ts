@@ -209,10 +209,15 @@ describe("mode switches are gain changes", () => {
     expect(plan(r).host).toBeNull();
     const { ctx, scheduler } = rig();
     const result = scheduler.apply(playing(), plan(r).host ?? null, applyOpts);
-    // null assignment still starts audio at 0 dB — the *server* is what keeps a controller silent, by
-    // never marking it plays:true; the UI does not call unlock() on a non-speaker host.
-    expect(result.action).toBe("started");
-    expect(ctx.allStarts().length).toBe(STEMS.length);
+    /*
+     * This assertion used to read "started", with a comment claiming the server alone keeps a controller
+     * silent. That was wrong and it was P0-3: a null assignment built a branch with every stem at
+     * gainFromDb(undefined ?? 0) and no compensation, so a host that turned its speaker toggle off
+     * mid-song blared unison, out of sync with the room. A null assignment is silence.
+     */
+    expect(result.action).toBe("idle");
+    expect(ctx.allStarts()).toHaveLength(0);
+    expect(scheduler.playing).toBe(false);
   });
 });
 

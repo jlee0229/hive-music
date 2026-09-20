@@ -30,7 +30,7 @@ The host phone does not play (if its speaker toggle is on it is still the refere
 | 7 | server | at `startServerTime`: `calibration.state = 'running'`; broadcast |
 | 8 | reference engine | matched filter → arrival per click → residual per player → confidence |
 | 9 | reference → server | `CALIBRATION_REPORT {measurements:[{clientId, residualMs, confidence}]}` (≥1 entry) |
-| 10 | server | for each measurement with `confidence ≥ 0.5` (the `index.ts` contract; the mock applies all): `calibratedOffsetMs = (calibratedOffsetMs ?? tableLatencyMs ?? 0) + residualMs`; `calibration.results[id] = {residualMs, confidence}`; `state = 'done'`; re-plan; `ROOM_STATE` |
+| 10 | server | for each measurement with `confidence ≥ 0.5` (the `index.ts` contract): `calibratedOffsetMs = (calibratedOffsetMs ?? tableLatencyMs ?? lastReportedOutputLatencyMs ?? 0) + residualMs`. The `outputLatencyMs` term matters for a phone with no table row (`browserFamily: 'other'`): the engine was subtracting `ctx.outputLatency` itself while the click was measured, and writing `calibratedOffsetMs` makes it stop, so a base of 0 would leave that phone late by exactly its output latency until a second pass; `calibration.results[id] = {residualMs, confidence}`; `state = 'done'`; re-plan; `ROOM_STATE` |
 | 11 | reference engine | `track.stop()` on every mic track; disconnect the worklet; the host's audio session returns to playback; `runAsReference` resolves `{measurements, diagnostics}` and `host.startCalibration()` resolves on `state: done` |
 
 Host · Calibrate rows come from `room.calibration.results` (waiting / listening… / clear ✓ with `residualMs` and confidence); "Apply offsets" returns to Stage — the server has already applied on report. Running calibration again accumulates: residuals are corrections to the current value, so a second pass converges rather than restarting.
@@ -104,6 +104,29 @@ Short enough that "Quiet, please" is realistic even at 20 phones. The recording 
 | Fewer than 2 players | median of one | residuals are 0; the UI says "needs at least two phones" and does not start (assumption) |
 | Reference's `AudioContext` is `locked` | `audio.state` | the Calibrate tap doubles as `audio.unlock()` for the host; the worklet runs in that context |
 | Second run after a first | accumulation | residuals are corrections to the current value; a converged room shows residuals near 0 |
+| A run measured the wrong thing (phone in a pocket, click matched to a sidelobe) | the offset is far from the phone's table row, or `syncErrMs` got worse | **`CALIBRATION_RESET`** (v3, host only): clears `calibratedOffsetMs` to `null` for one client or the whole room. Re-running calibration is *not* the fix, because a wrong offset is the accumulation base for the next run |
+
+### Undoing a run — `CALIBRATION_RESET` (v3)
+
+Accumulation is the reason this needs its own message rather than a "calibrate again" button. A residual
+is a *correction to the compensation the phone was already applying*, so a run on top of a 40 ms mistake
+converges to 40 ms wrong; only clearing the base recovers.
+
+Three rules the server must hold to:
+
+1. **Clear to `null`, never `0`.** Null falls back through `tableLatencyMs` and then the phone's own
+   `ctx.outputLatency`. Zero is a positive claim that the phone has no output latency, which is never
+   true — a reset must not be worse than never having calibrated.
+2. **Refuse while a run is in flight** (`calibration.state !== "idle"`, `done` included, since the
+   reference's report may still be on the wire): answer `ERROR` code `CALIBRATION_BUSY`. The residuals in
+   that report were measured against the compensation the phones applied *at click time*; clearing the
+   base in between would add them to a different base and write in exactly the error being removed.
+   Cancel first, then reset.
+3. **Replan after clearing**, because each client's `assignment.compensationMs` is derived from the
+   offsets. The engine needs no code for a reset: a compensation change over `RESYNC_THRESHOLD_MS`
+   reschedules and a smaller one is slewed by the drift check, which is the B4 rule already. A reset the
+   phone does not act on would be a control that lies — `packages/sync-client/src/__tests__/calibration-reset.test.ts`
+   pins it at the reset boundary.
 
 ## Implementation notes
 

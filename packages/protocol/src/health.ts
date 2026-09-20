@@ -25,7 +25,25 @@ export function healthLevel(h: ClientHealth | null | undefined, nowServerTime: n
   return "bad";
 }
 
-/** syncErrMs := minRttMs/2 + |lastAppliedCorrectionMs| — the number CLIENT_STATUS reports. */
-export function computeSyncErrMs(minRttMs: number, lastAppliedCorrectionMs: number): number {
-  return minRttMs / 2 + Math.abs(lastAppliedCorrectionMs);
+/**
+ * `syncErrMs := minRttMs/2 + max(|lastAppliedCorrectionMs|, |playheadErrorMs|)` — the number
+ * `CLIENT_STATUS` reports, and an upper bound on how far this phone may be from the server timeline.
+ *
+ * `playheadErrorMs` is additive (default 0, so the two-argument call is unchanged) and exists because
+ * B9e's rate slewing removed the only signal the old formula had. Before slewing, drift *always* ended in
+ * a hard resync, so `lastAppliedCorrectionMs` eventually reported it. Now sub-threshold drift is absorbed
+ * continuously and never becomes a correction — which is the point — but it also means a phone whose trim
+ * is saturated (a clock worse than `PLAYBACK_RATE_MAX_PPM`, or a wrong compensation being mistaken for
+ * drift) would sit at 9 ms of real error and report itself green until the moment it finally crossfades.
+ *
+ * `max` rather than a sum: the two are measurements of the *same* quantity at different times, not
+ * independent error sources, so adding them would double-count. The correction term is kept because it is
+ * still the right pessimism immediately after a resync, before the next drift check has run.
+ */
+export function computeSyncErrMs(
+  minRttMs: number,
+  lastAppliedCorrectionMs: number,
+  playheadErrorMs = 0,
+): number {
+  return minRttMs / 2 + Math.max(Math.abs(lastAppliedCorrectionMs), Math.abs(playheadErrorMs));
 }

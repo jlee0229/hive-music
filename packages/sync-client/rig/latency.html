@@ -58,9 +58,19 @@
 
 <div id="env" class="note"></div>
 <pre id="line" hidden></pre>
+<pre id="paste" hidden></pre>
+<button id="copy" hidden style="margin-top:12px;background:#1E293B;color:var(--fg)">Copy both lines</button>
 <div class="note">
   <code>outputLatency</code> of 0 or missing means this browser will not tell us — the Tier-1 table row is
   then the only estimate, and that row has to come from B8e's acoustic calibration or from the nudge slider.
+</div>
+<div class="note">
+  The second line drops straight into <code>STARTER_LATENCY_TABLE_MS</code> in
+  <code>packages/protocol/src/constants.ts</code> — but <strong>one phone is not a row</strong>. Collect a
+  line from every phone of that family and use the <strong>median</strong>: the table exists to capture what a
+  family of devices has in common, and a single handset's estimate carries its own error into every room.
+  Two phones of the same family disagreeing by more than ~15 ms means the family is the wrong key and those
+  phones need Tier-2 calibration, not a table edit.
 </div>
 
 <script>
@@ -142,6 +152,48 @@ document.getElementById("go").addEventListener("click", async (ev) => {
     `base=${ms(interactive.baseLatency)}ms | outputLatency(playback)=${ms(playback.outputLatency)}ms | ` +
     `rate=${interactive.sampleRate ?? "?"} | audioSession=${"audioSession" in navigator} | ` +
     `ua=${navigator.userAgent}`;
+
+  /*
+   * The pasteable form. The engine uses the "interactive" context, so that is the number the table row
+   * has to describe — `playback` is reported here only because the gap between the two is diagnostic
+   * (32 vs 72 ms on Chromium 141), not because the engine ever sees it.
+   *
+   * `null` rather than 0 when the browser refuses to say: null falls through to the phone's own
+   * `ctx.outputLatency` at runtime and then to acoustic calibration, while 0 would be a claim that this
+   * family of devices has no output latency, which is never true and is silently wrong.
+   */
+  const rowMs = typeof interactive.outputLatency === "number" && interactive.outputLatency > 0
+    ? Math.round(interactive.outputLatency * 1000)
+    : null;
+  const model = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "?";
+  const stamp = new Date().toISOString().slice(0, 10);
+  const pasteLine =
+    `  "${browserFamily()}": ${rowMs === null ? "null" : rowMs},` +
+    `${rowMs === null ? "  // browser reports no outputLatency — needs Tier-2 calibration" : ""}` +
+    `  // ${model}, measured ${ms(interactive.outputLatency)} ms @ ${interactive.sampleRate ?? "?"} Hz, ${stamp}`;
+  const paste = document.getElementById("paste");
+  paste.hidden = false;
+  paste.textContent = pasteLine;
+
+  const copy = document.getElementById("copy");
+  copy.hidden = false;
+  copy.onclick = async () => {
+    const text = out.textContent + "\n" + pasteLine;
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = "Copied";
+    } catch {
+      // iOS refuses the clipboard outside some gestures; select the text instead so a long-press works.
+      const range = document.createRange();
+      range.selectNodeContents(paste);
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      copy.textContent = "Selected — long-press to copy";
+    }
+    setTimeout(() => (copy.textContent = "Copy both lines"), 2500);
+  };
+
   ev.target.textContent = "Measure again";
   ev.target.disabled = false;
 });

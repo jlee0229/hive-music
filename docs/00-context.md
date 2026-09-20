@@ -109,6 +109,7 @@ Every doc, brief and gate check must agree with `packages/protocol/src/constants
 | clock budget | ±2–5 ms | NTP client over one Wi-Fi/hotspot |
 | `LEAD_MS` | 600 | PLAY lead; the scene timer fires this early |
 | `RESYNC_THRESHOLD_MS` / `RESYNC_CROSSFADE_MS` | 10 / 20 | hard resync |
+| `PLAYBACK_RATE_SLEW_DEFAULT` / `PLAYBACK_RATE_MAX_PPM` / `PLAYBACK_RATE_DEADBAND_MS` / `PLAYBACK_RATE_TAU_SEC` | true / 500 / 0.5 / 2 | B9e rate trim: absorbs audio-clock drift before it is worth a crossfade |
 | `HEALTH_GOOD_MS` / `HEALTH_WARN_MS` / `HEALTH_STALE_MS` | 5 / 20 / 5000 | `healthLevel`: good ≤5, warn ≤20, bad above **or stale**; unknown = no data |
 | `ROOM_STATE_MAX_HZ` / `HEALTH_HZ` / `SET_POSITION_MAX_HZ` | 2 / 1 / 10 | broadcast coalescing; hosts-only health; drag throttle (inside the engine) |
 | `CLIENT_STATUS_INTERVAL_MS` / `PING_INTERVAL_MS` | 2000 / 20 000 | phone → server status; liveness |

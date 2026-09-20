@@ -3,7 +3,7 @@
  * Every number here is quoted in docs/02-protocol.md; change both or neither.
  */
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 // ---- timeline & scheduling --------------------------------------------------
 /** PLAY is scheduled this far ahead so every phone can line up on the same instant. */
@@ -11,6 +11,23 @@ export const LEAD_MS = 600;
 /** Hard resync (20 ms crossfade) when |playhead error| exceeds this. */
 export const RESYNC_THRESHOLD_MS = 10;
 export const RESYNC_CROSSFADE_MS = 20;
+
+// ---- playbackRate slewing (B9e) ---------------------------------------------
+/*
+ * A phone's audio clock is not its system clock: a crystal 50 ppm fast consumes 3 ms of extra content
+ * per minute, which crosses RESYNC_THRESHOLD_MS every ~3.5 minutes and buys an audible crossfade each
+ * time. Trimming `source.playbackRate` by a few hundred ppm removes the error before it is ever worth
+ * correcting — the same trade every wireless multiroom system makes. The hard resync stays as the
+ * fallback for what slewing cannot absorb (a clock step, a resumed tab, a seek).
+ */
+/** Whether the drift check trims playbackRate. Off keeps the pure B4 behaviour (crossfade only). */
+export const PLAYBACK_RATE_SLEW_DEFAULT = true;
+/** Cap on the trim, parts per million. 500 ppm = 0.5 ms/s of correction and 0.87 cents of pitch shift. */
+export const PLAYBACK_RATE_MAX_PPM = 500;
+/** Below this |error| the rate returns to exactly 1: a deadband, so measurement noise is not chased. */
+export const PLAYBACK_RATE_DEADBAND_MS = 0.5;
+/** Target time to null out the error, seconds. Must be ≥ 2 drift-check intervals or the loop hunts. */
+export const PLAYBACK_RATE_TAU_SEC = 2;
 /** Engineering targets quoted everywhere: device-to-device after calibration / acceptable floor. */
 export const SYNC_TARGET_MS = 10;
 export const SYNC_FLOOR_MS = 30;
