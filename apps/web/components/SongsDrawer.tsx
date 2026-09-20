@@ -30,14 +30,16 @@ export function SongsDrawer({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: "var(--stage)" }}>
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
-        <div className="flex items-center justify-between">
+      {/* min-h-0 down the flex chain: without it the track list refuses to shrink, so it can't
+          scroll and shoves the upload/back buttons off-screen once the library grows. */}
+      <div className="mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
+        <div className="flex shrink-0 items-center justify-between">
           <span className="font-display text-xl font-bold">Songs</span>
           <span className="text-[13px]" style={{ color: "var(--muted)" }}>
             picking one pauses the show
           </span>
         </div>
-        <div className="flex flex-col gap-2 overflow-y-auto">
+        <div className="flex min-h-0 grow flex-col gap-2 overflow-y-auto">
           {tracks.map((t) => (
             <button
               key={t.id}
@@ -68,20 +70,19 @@ export function SongsDrawer({
         <button
           onClick={() => inputRef.current?.click()}
           disabled={uploadPhase !== null}
-          className="flex items-center justify-center gap-2 rounded-2xl border border-dashed px-3.5 py-3 text-[15px] font-semibold disabled:opacity-60"
+          className="flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-dashed px-3.5 py-3 text-[15px] font-semibold disabled:opacity-60"
           style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
         >
           {uploadPhase === "analyzing" ? "Analyzing…" : uploadPhase === "uploading" ? "Uploading…" : "+ Upload a song"}
         </button>
         {uploadError ? (
-          <p className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
+          <p className="shrink-0 text-center text-sm" style={{ color: "var(--health-bad)" }}>
             {uploadError}
           </p>
         ) : null}
-        <div className="grow" />
         <button
           onClick={onClose}
-          className="flex h-13 items-center justify-center rounded-2xl border font-semibold"
+          className="flex h-13 shrink-0 items-center justify-center rounded-2xl border font-semibold"
           style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
         >
           Back to the stage

@@ -21,12 +21,12 @@ export function PlayersDrawer({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: "var(--stage)" }}>
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
-        <div className="flex items-center justify-between">
+      <div className="mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
+        <div className="flex shrink-0 items-center justify-between">
           <span className="font-display text-xl font-bold">{players.length} players</span>
           <span className="text-[13px]" style={{ color: "var(--muted)" }}>sorted by sync health</span>
         </div>
-        <div className="flex flex-col gap-2 overflow-y-auto">
+        <div className="flex min-h-0 grow flex-col gap-2 overflow-y-auto">
           {players.map((p) => {
             const level = healthLevel(health[p.id] ?? null, healthServerTime ?? 0);
             return (
@@ -53,10 +53,9 @@ export function PlayersDrawer({
             );
           })}
         </div>
-        <div className="grow" />
         <button
           onClick={onClose}
-          className="flex h-13 items-center justify-center rounded-2xl border font-semibold"
+          className="flex h-13 shrink-0 items-center justify-center rounded-2xl border font-semibold"
           style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
         >
           Back to the stage
