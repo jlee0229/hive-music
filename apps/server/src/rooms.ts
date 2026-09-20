@@ -25,10 +25,9 @@ import {
   type ScenePlan,
   type ServerMessage,
   type TrackInfo,
-  type TrackLibraryEntry,
 } from "@hive/protocol";
 import { currentScene, nextScene } from "./scene-timer";
-import { loadLibrary } from "./library";
+import { loadLibrary, type LibraryEntry } from "./library";
 
 const now = () => performance.timeOrigin + performance.now();
 
@@ -69,7 +68,7 @@ export class Room {
     code: string,
     private server: Bun.Server<Conn>,
     private onEmpty: () => void,
-    private getLibrary: () => TrackLibraryEntry[],
+    private getLibrary: () => LibraryEntry[],
   ) {
     this.code = code;
     this.hostKey = crypto.randomUUID();
@@ -146,7 +145,7 @@ export class Room {
     this.server.publish(this.code, JSON.stringify({ type: "PING", serverTime: t } satisfies ServerMessage));
   }
 
-  private setTrack(t: TrackLibraryEntry) {
+  private setTrack(t: LibraryEntry) {
     const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm };
     this.room.track = info;
   }
@@ -430,7 +429,7 @@ export class Room {
 export class RoomManager {
   private rooms = new Map<string, Room>();
   private server: Bun.Server<Conn> | null = null;
-  private library: TrackLibraryEntry[] = [];
+  private library: LibraryEntry[] = [];
 
   constructor(private opts: { fixturesDir: string; fixedCode?: string }) {}
 
@@ -438,12 +437,23 @@ export class RoomManager {
     this.server = server;
   }
 
-  async loadLibrary(origin: string) {
-    this.library = await loadLibrary(this.opts.fixturesDir, origin);
+  async loadLibrary() {
+    this.library = await loadLibrary(this.opts.fixturesDir);
   }
 
-  getLibrary(): TrackLibraryEntry[] {
+  getLibrary(): LibraryEntry[] {
     return this.library;
+  }
+
+  /** Re-scans fixtures/tracks (called after an upload writes a new track directory). */
+  async reloadLibrary() {
+    await this.loadLibrary();
+  }
+
+  /** True if `key` is the current hostKey of any room in this process (POST /tracks has no room in its path). */
+  isKnownHostKey(key: string): boolean {
+    for (const room of this.rooms.values()) if (room.hostKey === key) return true;
+    return false;
   }
 
   private randomCode(): string {

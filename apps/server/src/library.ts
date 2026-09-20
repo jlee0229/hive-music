@@ -1,23 +1,26 @@
-// Track library loaded from fixtures/tracks/<id>/meta.json; mirrors packages/protocol/src/mock-server.ts loadLibrary.
+// Track library loaded from fixtures/tracks/<id>/meta.json; mirrors packages/protocol/src/mock-server.ts
+// loadLibrary. Entries are stored without `urls` — those are built per-request from the request's own
+// origin (buildTrackUrls), so the same binary serves http://localhost:8080 and https://<app>.fly.dev
+// with no configured base (engine's R-1 review of the old apps/server implementation).
 import { STEMS, type TrackLibraryEntry } from "@hive/protocol";
 
-export async function loadLibrary(fixturesDir: string, origin: string): Promise<TrackLibraryEntry[]> {
-  const out: TrackLibraryEntry[] = [];
+export type LibraryEntry = Omit<TrackLibraryEntry, "urls">;
+
+export async function loadLibrary(fixturesDir: string): Promise<LibraryEntry[]> {
+  const out: LibraryEntry[] = [];
   const glob = new Bun.Glob("*/meta.json");
   try {
     for await (const rel of glob.scan({ cwd: `${fixturesDir}/tracks` })) {
       const meta = await Bun.file(`${fixturesDir}/tracks/${rel}`).json();
-      const urls: Record<string, string> = {};
-      for (const s of meta.stems as string[]) urls[s] = `${origin}/audio/${meta.id}/${s}.wav`;
       out.push({
         id: meta.id,
         title: meta.title,
         durationSec: meta.durationSec,
         stems: meta.stems,
         bpm: meta.bpm,
-        urls,
         energy: meta.energy,
         clickTimesSec: meta.clickTimesSec,
+        dropSec: meta.dropSec,
         generated: meta.generated,
       });
     }
@@ -25,9 +28,17 @@ export async function loadLibrary(fixturesDir: string, origin: string): Promise<
     /* no fixtures dir yet: fall through to the placeholder below */
   }
   if (out.length === 0) {
-    const urls: Record<string, string> = {};
-    for (const s of STEMS) urls[s] = `${origin}/audio/synthetic-60s/${s}.wav`;
-    out.push({ id: "synthetic-60s", title: "Synthetic 60", durationSec: 60, stems: [...STEMS], bpm: 120, urls, generated: true });
+    out.push({ id: "synthetic-60s", title: "Synthetic 60", durationSec: 60, stems: [...STEMS], bpm: 120, generated: true });
   }
   return out;
+}
+
+export function buildTrackUrls(entry: LibraryEntry, origin: string): Record<string, string> {
+  const urls: Record<string, string> = {};
+  for (const s of entry.stems) urls[s] = `${origin}/audio/${entry.id}/${s}.wav`;
+  return urls;
+}
+
+export function withUrls(entry: LibraryEntry, origin: string): TrackLibraryEntry {
+  return { ...entry, urls: buildTrackUrls(entry, origin) };
 }
