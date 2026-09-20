@@ -6,6 +6,9 @@ evidence
 apps/web/.next
 apps/web/out
 fixtures/tracks/**/*.wav
+# personal music dropped into the local library (metadata included): never bake into an image
+fixtures/tracks/baby
+.tunnels
 *.log
 .env
 .env.local
