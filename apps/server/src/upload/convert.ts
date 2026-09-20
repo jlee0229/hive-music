@@ -1,11 +1,14 @@
-// Normalizes an uploaded stem to the fixtures spec: mono, 16-bit, <=60s (fixtures/README.md's WAV
-// spec). Conversion is pure TS — no ffmpeg on Fly. Every stem in one upload is resampled to the same
-// TARGET_SAMPLE_RATE (44100, matching every existing fixture) so stems from different source files
-// never end up at different rates within one track.
+// Normalizes an uploaded stem to the fixtures spec: mono, 16-bit, <=MAX_STEM_SEC. Conversion is
+// pure TS — no ffmpeg on Fly. Every stem in one upload is resampled to the same TARGET_SAMPLE_RATE
+// (44100, matching every existing fixture) so stems from different source files never end up at
+// different rates within one track.
 import { parseWav, type ParsedWav } from "./wav";
 
 export const TARGET_SAMPLE_RATE = 44100;
-export const MAX_STEM_SEC = 60;
+// 10 minutes: the host lobby uploads whole songs now (decoded/downmixed in the browser), not just
+// <=60s demo clips. A 600s mono 16-bit WAV is ~53MB in flight — still well under Bun's default
+// request-body cap. Mirrored client-side in apps/web/lib/hive/upload-track.ts (MAX_UPLOAD_SEC).
+export const MAX_STEM_SEC = 600;
 
 export interface NormalizedStem {
   samples: Float32Array; // mono, in [-1, 1]

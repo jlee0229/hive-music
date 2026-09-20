@@ -33,7 +33,8 @@ describe("normalizeStem", () => {
   });
 
   test("rejects a stem longer than MAX_STEM_SEC with a clear error", () => {
-    const wav = synthWav(44100 * (MAX_STEM_SEC + 1), 440, 44100);
+    // 8kHz keeps the synthetic buffer small now that the limit is minutes, not seconds.
+    const wav = synthWav(8000 * (MAX_STEM_SEC + 1), 440, 8000);
     expect(() => normalizeStem(wav)).toThrow(new RegExp(`over the ${MAX_STEM_SEC}s limit`));
   });
 });

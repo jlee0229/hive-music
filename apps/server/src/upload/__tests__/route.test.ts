@@ -59,16 +59,17 @@ describe("POST /tracks (B9 upload)", () => {
     expect((await fetch(`${BASE}/tracks`, { method: "POST", body: empty })).status).toBe(400);
   });
 
-  test("rejects a stem over 60s with a clear message", async () => {
+  test("rejects a stem over the duration limit with a clear message", async () => {
     const { hostKey } = await makeRoom();
     const form = new FormData();
     form.set("hostKey", hostKey);
     form.set("title", "Too Long");
-    form.set("mix", synthWavFile("mix.wav", 44100 * 61, 440));
+    // 8kHz keeps the over-limit file small now that the limit is 600s, not 60s.
+    form.set("mix", synthWavFile("mix.wav", 8000 * 601, 440, 8000));
     const res = await fetch(`${BASE}/tracks`, { method: "POST", body: form });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toMatch(/60s limit/);
+    expect(body.error).toMatch(/600s limit/);
   });
 
   test("a single-file 'mix' upload is stored, appears in GET /tracks, and its audio is servable", async () => {

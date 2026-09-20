@@ -7,6 +7,7 @@ import type { TrackLibraryEntry } from "@hive/protocol";
 import type { CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
+import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
 import { getHostKey, setHostKey } from "@/lib/hive/storage";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
@@ -132,6 +133,10 @@ function HostRoom({
   const [showPlayers, setShowPlayers] = useState(false);
   const [calibrateDismissed, setCalibrateDismissed] = useState(false);
   const [screenLinkCopied, setScreenLinkCopied] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<"analyzing" | "uploading" | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [tracksVersion, setTracksVersion] = useState(0);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const [hostToast, setHostToast] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
   /**
@@ -196,7 +201,7 @@ function HostRoom({
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [query, tracksVersion]);
 
   // Auto-pick the first library track once the room exists and has none — and actually push it
   // to the server (host.setTrack), not just the local radio state: the mock scenarios always
@@ -232,6 +237,26 @@ function HostRoom({
   function selectTrack(id: string) {
     setSelectedTrackId(id);
     client.host.setTrack(id);
+  }
+
+  /**
+   * Upload from a file the phone can play: decoded + downmixed to the WAV spec in the browser
+   * (fileToMonoWav), analyzed and stored by POST /tracks, then the list refetches so the new track
+   * appears — added to the playlist, but never auto-selected: the default track stays the default.
+   */
+  async function onUploadFile(file: File) {
+    setUploadError(null);
+    setUploadPhase("analyzing");
+    try {
+      const wav = await fileToMonoWav(file);
+      setUploadPhase("uploading");
+      await postTrack(apiUrl(), hostKey, titleFromFilename(file.name), wav);
+      setTracksVersion((v) => v + 1);
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "upload failed");
+    } finally {
+      setUploadPhase(null);
+    }
   }
 
   const finishAutoStart = useCallback(() => {
@@ -562,6 +587,30 @@ function HostRoom({
             </span>
           </label>
         ))}
+        <input
+          ref={uploadInputRef}
+          type="file"
+          accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void onUploadFile(f);
+            e.target.value = ""; // same file can be picked again after an error
+          }}
+        />
+        <button
+          onClick={() => uploadInputRef.current?.click()}
+          disabled={uploadPhase !== null}
+          className="flex items-center justify-center gap-2 rounded-2xl border border-dashed px-3.5 py-3 text-[15px] font-semibold disabled:opacity-60"
+          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+        >
+          {uploadPhase === "analyzing" ? "Analyzing…" : uploadPhase === "uploading" ? "Uploading…" : "+ Upload a song"}
+        </button>
+        {uploadError ? (
+          <p className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
+            {uploadError}
+          </p>
+        ) : null}
       </div>
 
       <div className="grow" />
