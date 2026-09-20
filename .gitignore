@@ -22,6 +22,10 @@ fixtures/tracks/**/*.wav
 # os
 .DS_Store
 
+# local tooling (machine-specific launch config, cloudflared quick-tunnel logs)
+.claude/
+.tunnels/
+
 # playwright
 apps/web/test-results
 apps/web/playwright-report

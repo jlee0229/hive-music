@@ -1,0 +1,8 @@
+# The repo is authored with LF. Force LF on checkout everywhere: git's default CRLF
+# conversion on Windows breaks tests that assert on file contents byte-for-byte
+# (packages/sync-client/src/__tests__/rig-latency-page.test.ts reads rig/latency.html
+# and expects literal \n).
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.wav binary
