@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ClientRecord, RoomState } from "@hive/protocol";
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
-import { beatPhase, formatMs, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
+import { beatPhase, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { NudgeSlider } from "@/components/NudgeSlider";
@@ -16,7 +16,6 @@ export function PlayerPlayingScreen({
   client,
   room,
   me,
-  status,
   connection,
   muted,
   roomCode,
@@ -24,7 +23,8 @@ export function PlayerPlayingScreen({
   client: HiveClient;
   room: RoomState;
   me: ClientRecord | null;
-  status: SyncStatus;
+  /** Still accepted so callers don't churn, but the ms readout is gone: simplified player screen. */
+  status?: SyncStatus;
   connection: ConnectionState;
   muted: boolean;
   roomCode: string;
@@ -90,13 +90,6 @@ export function PlayerPlayingScreen({
 
       <div className="relative flex items-center justify-between">
         <span className="font-mono text-[13px] tracking-widest opacity-80">HIVE · {roomCode}</span>
-        <span
-          className="font-mono flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[13px]"
-          style={{ background: "rgba(11,15,20,0.35)", color: "#F1F5F9" }}
-        >
-          <span className="h-2 w-2 rounded-full" style={{ background: "#22C55E" }} />
-          {formatMs(status.syncErrMs)}
-        </span>
       </div>
 
       <div ref={ringRef} className="relative flex flex-col items-center gap-2.5">

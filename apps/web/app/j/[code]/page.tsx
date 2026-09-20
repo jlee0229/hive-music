@@ -7,7 +7,7 @@ import { detectDevice } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { getPlayerName, setPlayerName } from "@/lib/hive/storage";
-import { formatMs, selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
+import { selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
 import { RingerBanner } from "@/components/RingerBanner";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
@@ -206,9 +206,6 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             ) : null}
           </svg>
           <span className="font-display text-[34px] font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
-          <span className="font-mono text-[15px]" style={{ color: "var(--muted)" }}>
-            clock {formatMs(status.syncErrMs)} · rtt {status.rttMs == null ? "—" : `${Math.round(status.rttMs)} ms`}
-          </span>
         </div>
 
         <div className="flex flex-col gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>

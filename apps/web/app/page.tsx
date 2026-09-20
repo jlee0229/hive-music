@@ -92,9 +92,6 @@ export default function LandingPage() {
           </button>
         </form>
         {error ? <p className="text-center text-sm" style={{ color: "var(--health-bad)" }}>{error}</p> : null}
-        <p className="mt-1 text-center text-sm" style={{ color: "var(--faint)" }}>
-          Runs in your browser. Nothing to install.
-        </p>
         <Creators big />
       </div>
     </main>

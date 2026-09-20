@@ -355,9 +355,9 @@ function HostRoom({
     router.push("/");
   }
 
-  async function copyScreenLink() {
+  async function copyJoinLink() {
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/screen/${roomCode}`);
+      await navigator.clipboard.writeText(`${window.location.origin}/j/${roomCode}`);
       setScreenLinkCopied(true);
       setTimeout(() => setScreenLinkCopied(false), 2000);
     } catch {
@@ -423,11 +423,11 @@ function HostRoom({
           </div>
         ) : null}
 
-        <div className="flex items-center justify-between rounded-2xl border px-3.5 py-2.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-          <Link href={`/screen/${roomCode}`} target="_blank" className="text-[13px] font-semibold underline">
-            Show on screen
+        <div className="flex items-center justify-between rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <Link href={`/qr/${roomCode}`} target="_blank" className="text-lg font-bold underline">
+            Join QR code
           </Link>
-          <button onClick={copyScreenLink} className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+          <button onClick={copyJoinLink} className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
             {screenLinkCopied ? "Copied!" : "Copy link"}
           </button>
         </div>

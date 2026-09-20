@@ -42,18 +42,18 @@ test("F2: Start sends TRANSPORT PLAY and the transport bar starts moving", async
   expect(t2).not.toBe(t1);
 });
 
-test("F2: Stage has a Show on screen link to /screen/[code] and a working copy button", async ({ page, context }) => {
+test("F2: Stage has a Join QR code link to /qr/[code] and a copy button for the join URL", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/h/BZQ7");
   await expect(page.getByText("Synthetic 60")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: /Start the hive|Start anyway/ }).click();
   await expect(page.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10_000 });
 
-  const link = page.getByRole("link", { name: "Show on screen" });
-  await expect(link).toHaveAttribute("href", "/screen/BZQ7");
+  const link = page.getByRole("link", { name: "Join QR code" });
+  await expect(link).toHaveAttribute("href", "/qr/BZQ7");
 
   await page.getByRole("button", { name: "Copy link" }).click();
   await expect(page.getByRole("button", { name: "Copied!" })).toBeVisible();
   const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
-  expect(clipboardText).toContain("/screen/BZQ7");
+  expect(clipboardText).toContain("/j/BZQ7");
 });
