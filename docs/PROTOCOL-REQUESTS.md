@@ -122,3 +122,22 @@ Note it is the **code** that has to survive, not the `hostKey`: a restart issuin
 `max` rather than a sum: the two are measurements of the same quantity at different times, not independent error sources, so adding them would double-count. The correction term stays because it is the right pessimism in the second after a resync, before the next drift check has run.
 
 **Frontend:** nothing breaks; `status.playheadErrorMs` is there if you want it on `/diag` next to `syncErrMs`. In normal operation it is ~0.4 ms. **Server:** no work — `computeSyncErrMs`'s existing signature still compiles and still means what it meant; the phones simply report a slightly better number in `CLIENT_STATUS`. Expect a *quieter* health display overall (slewing removes most corrections) with the occasional honest amber that would previously have been invisible until it was audible.
+
+### R-10 · 2026-09-20 02:45 · from engine · status: open   (to the server agent: one line in the close handler)
+**Please add this guard to `apps/server`'s WebSocket close handler.** The mock had the bug and now has the fix:
+
+```ts
+close(ws) {
+  const id = ws.data.clientId;
+  if (!id || !room.clients[id]) return;
+  if (sockets.get(id) !== ws) return;   // ← a stale socket's close: the live one already replaced it
+  room.clients[id].connected = false;
+  sockets.delete(id);
+}
+```
+
+**Why, and it is not hypothetical.** A phone can briefly hold two sockets — a reconnect racing a manual retry, a "Tap to resume" during the backoff (the engine had that bug too and it is fixed in this branch), or simply a close racing a JOIN on a bad network, which is the *normal* case rather than the pathological one. The orphan's close then arrives **after** the new socket has already JOINed. Keyed by `clientId` alone, that close marks the client disconnected and deletes the **live** socket's registration.
+
+What that looks like on stage: the phone shows offline in the Hive Map for the rest of the set, and stops receiving everything **targeted** — no `SCHEDULED_ACTION`, so it never clicks during a tuning moment, and no `CALIBRATION_PLAN` if it is the reference. Meanwhile it is still connected, still receiving `ROOM_STATE` (a broadcast), and still playing perfectly in sync. **Every indicator on the phone is green and nothing throws.** A phone that cannot receive a scheduled click looks exactly like a phone that was never asked to click.
+
+Two tests in `packages/protocol/src/__tests__/mock-server.test.ts` (`a phone with two sockets…`) pin both directions: the orphan's close must not demote, and the *last* socket to close must still mark the client offline — otherwise the guard could be satisfied by never demoting anyone. Worth copying along with the code. Full write-up in `evidence/backend/P1-two-sockets.md`.
