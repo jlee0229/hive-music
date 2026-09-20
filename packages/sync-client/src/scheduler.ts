@@ -12,7 +12,8 @@
  * the same code path.
  */
 import {
-  evaluatePattern, RESYNC_CROSSFADE_MS, RESYNC_THRESHOLD_MS,
+  evaluatePattern, PLAYBACK_RATE_DEADBAND_MS, PLAYBACK_RATE_MAX_PPM, PLAYBACK_RATE_SLEW_DEFAULT,
+  PLAYBACK_RATE_TAU_SEC, RESYNC_CROSSFADE_MS, RESYNC_THRESHOLD_MS,
   type Assignment, type Pattern, type Transport,
 } from "@hive/protocol";
 import type { ClockModel, CtxMapper } from "./clock";
@@ -47,6 +48,12 @@ export interface SourceLike {
   connect(destination: never): unknown;
   disconnect(): unknown;
   onended: ((ev: never) => unknown) | null;
+  /**
+   * Optional so a stand-in without one still satisfies the interface — and so an engine that refuses to
+   * automate it degrades to the crossfade-only behaviour rather than throwing. Every browser we target
+   * has it (it is an AudioParam on AudioBufferSourceNode).
+   */
+  playbackRate?: ParamLike;
 }
 export interface CtxLike {
   readonly currentTime: number;
@@ -109,8 +116,18 @@ export function decideStart({ ctxNow, startCtxForZero, durationSec }: DecideInpu
   }
   const whenCtx = ctxNow + LATE_START_MARGIN_SEC;
   const offsetSec = whenCtx - startCtxForZero;
+  /*
+   * P0-5. The start is in the future but nearer than the margin — a lead of 20–50 ms, which is what a
+   * phone sees when ROOM_STATE arrives late in the PLAY window. `offsetSec` is then NEGATIVE, and
+   * clamping it to 0 played track position 0 at `ctxNow + LATE_START_MARGIN_SEC`: up to 30 ms EARLY.
+   * Worse, the branch records the *ideal* startCtxForZero, so the drift check compared the ideal against
+   * the ideal, read zero error, and never corrected it — every phone in this window started early
+   * together with green health, while a phone that got the snapshot later took the correct late path and
+   * sat up to 30 ms behind them. Web Audio accepts any future `when`, so schedule it exactly.
+   */
+  if (offsetSec < 0) return { whenCtx: startCtxForZero, offsetSec: 0, startCtxForZero, mode: "scheduled" };
   if (offsetSec >= durationSec) return null;
-  return { whenCtx, offsetSec: Math.max(0, offsetSec), startCtxForZero, mode: "immediate" };
+  return { whenCtx, offsetSec, startCtxForZero, mode: "immediate" };
 }
 
 export interface SchedulerDeps {
@@ -142,6 +159,21 @@ interface Branch {
   startedAtCtx: number;
   startOffsetSec: number;
   stopped: boolean;
+  /**
+   * Content-seconds consumed beyond nominal because `playbackRate !== 1` (B9e). Positive = this branch
+   * has eaten *more* of the track than wall time says, i.e. it is further along.
+   *
+   * This bookkeeping is the whole cost of slewing, and it cannot be skipped: nothing in Web Audio reports
+   * how much content a source has played. `startCtxForZero` is where track zero left the speaker *if the
+   * rate were 1*, so once it is not, the effective value is `startCtxForZero − slewSec` and the drift
+   * check has to use that or it would measure the correction as if it were still error, and never stop
+   * correcting.
+   */
+  slewSec: number;
+  /** The rate currently in effect (1 = nominal). */
+  slewRate: number;
+  /** Ctx time `slewSec` was last accrued to. */
+  slewAtCtx: number;
 }
 
 /** Identity of a schedule: if any of this changes while playing, the branch must be rebuilt. */
@@ -180,6 +212,10 @@ export class Scheduler {
   /** Most recent drift measurement, ms, corrected or not (diagnostics). */
   lastDriftErrorMs = 0;
   resyncCount = 0;
+  /** Rate trim currently applied, ppm (B9e). 0 when slewing is off or inside the deadband. */
+  lastSlewPpm = 0;
+  /** B9e on/off. Defaults to the constant; `/diag` can flip it to compare against crossfade-only. */
+  slewEnabled = PLAYBACK_RATE_SLEW_DEFAULT;
   private driftTimer: ReturnType<typeof setInterval> | null = null;
   private useOutputLatency = false;
 
@@ -220,8 +256,18 @@ export class Scheduler {
    * subtracted: start earlier to come out on time.
    */
   ctxTimeForTrackPosition(serverTimeAtTrackZero: number, p: number, a: Assignment | null, useOutputLatency: boolean): number {
+    return this.ctxTimeForServerTime(serverTimeAtTrackZero + p * 1000, a, useOutputLatency);
+  }
+
+  /**
+   * The ctx time at which whatever is scheduled for `serverTime` actually leaves this speaker — the
+   * formula from docs/02-protocol.md §1. Everything time-critical goes through this one function: source
+   * starts, the drift check, and scene-boundary gain ramps. A ramp computed without the compensation
+   * lands ~compensationMs (≈60 ms on iOS) after the audio it is supposed to gate, which is audible on a
+   * hard STROBE edge (P1-10).
+   */
+  ctxTimeForServerTime(serverTime: number, a: Assignment | null, useOutputLatency: boolean): number {
     const ctxNow = this.deps.ctx.currentTime;
-    const serverTime = serverTimeAtTrackZero + p * 1000;
     const base = this.deps.mapper.ctxTimeForNow(serverTime, ctxNow, this.deps.now());
     const delaySec = (a?.delayMs ?? 0) / 1000;
     const compSec = (a?.compensationMs ?? 0) / 1000;
@@ -240,6 +286,19 @@ export class Scheduler {
   ): ApplyResult {
     this.assignment = assignment;
     this.useOutputLatency = opts.useOutputLatency;
+
+    /*
+     * P0-3. `assignment === null` means the planner decided this device is not a speaker — a host that
+     * turned "use this phone as a speaker" off, or a client whose record is gone. Falling through built a
+     * branch with `gainFromDb(undefined ?? 0)` on every stem and `compensationMs` 0: the phone blared
+     * every stem, uncompensated and out of sync with the room. Silence is the only correct reading. When
+     * an assignment reappears the normal path below schedules it from the transport, i.e. a late join.
+     */
+    if (assignment === null) {
+      const wasPlaying = this.playing;
+      if (wasPlaying) this.stopAll("no assignment: this device is not a speaker");
+      return { action: wasPlaying ? "stopped" : "idle", decision: null, reason: "assignment is null" };
+    }
 
     if (transport.state !== "playing" || !opts.trackId || opts.trackId !== this.trackId || this.buffers.size === 0) {
       const wasPlaying = this.playing;
@@ -327,6 +386,9 @@ export class Scheduler {
       startedAtCtx: decision.whenCtx,
       startOffsetSec: decision.offsetSec,
       stopped: false,
+      slewSec: 0,
+      slewRate: 1,
+      slewAtCtx: decision.whenCtx,
     };
 
     for (const [stem, buffer] of this.buffers) {
@@ -391,8 +453,56 @@ export class Scheduler {
   driftErrorMs(assignment: Assignment | null, useOutputLatency: boolean): number | null {
     const branch = this.branches.find((b) => !b.stopped);
     if (!branch || this.applied === null) return null;
+    this.accrueSlew(branch);
     const ideal = this.ctxTimeForTrackPosition(this.applied.serverTimeAtTrackZero, 0, assignment, useOutputLatency);
-    return (ideal - branch.startCtxForZero) * 1000;
+    // `− slewSec`: content already consumed by a rate trim has moved track zero earlier in effect.
+    return (ideal - (branch.startCtxForZero - branch.slewSec)) * 1000;
+  }
+
+  /**
+   * Integrate the rate trim into `slewSec` up to now. Idempotent (a second call in the same ctx instant
+   * adds nothing), so it is safe to call from both the drift check and `driftErrorMs`.
+   */
+  private accrueSlew(branch: Branch): void {
+    const ctxNow = this.deps.ctx.currentTime;
+    const dt = ctxNow - branch.slewAtCtx;
+    if (dt > 0) branch.slewSec += (branch.slewRate - 1) * dt;
+    branch.slewAtCtx = ctxNow;
+  }
+
+  /**
+   * B9e. Trim `playbackRate` so a sub-threshold error converges instead of growing until it is worth a
+   * crossfade. Proportional control, one measurement per `DRIFT_CHECK_INTERVAL_MS`:
+   *
+   *     ppm = clamp(−errorMs · 1000 / PLAYBACK_RATE_TAU_SEC, ±PLAYBACK_RATE_MAX_PPM)
+   *
+   * The 1000 converts ms of error into ppm-seconds: a trim of `r` ppm moves the playhead `r/1000` ms per
+   * second, so nulling `e` ms over τ seconds needs `1000·e/τ` ppm. τ ≥ 2 check intervals keeps the loop
+   * from overshooting (each tick removes at most half the measured error).
+   *
+   * The deadband matters more than the gain. `driftErrorMs` inherits the clock model's own noise, and the
+   * applied offset is itself slewing at up to 2 ms/s, so chasing tenths of a millisecond would mean a
+   * permanently non-unity rate reacting to nothing. Inside the deadband the rate returns to exactly 1.
+   */
+  private applySlew(branch: Branch, errorMs: number): number {
+    if (!this.slewEnabled) return 0;
+    const ppm =
+      Math.abs(errorMs) < PLAYBACK_RATE_DEADBAND_MS
+        ? 0
+        : Math.max(
+            -PLAYBACK_RATE_MAX_PPM,
+            Math.min(PLAYBACK_RATE_MAX_PPM, (-errorMs * 1000) / PLAYBACK_RATE_TAU_SEC),
+          );
+    const rate = 1 + ppm / 1_000_000;
+    if (rate === branch.slewRate) return ppm;
+    const ctxNow = this.deps.ctx.currentTime;
+    this.accrueSlew(branch); // close the books on the old rate before the new one takes effect
+    for (const source of branch.sources.values()) {
+      // A step, not a ramp: 500 ppm is 0.87 cents, and a ramp would make the integral above a guess.
+      source.playbackRate?.setValueAtTime(rate, ctxNow);
+    }
+    branch.slewRate = rate;
+    return ppm;
   }
 
   /**
@@ -405,7 +515,12 @@ export class Scheduler {
     const errorMs = this.driftErrorMs(assignment, useOutputLatency);
     if (errorMs === null) return null;
     this.lastDriftErrorMs = errorMs;
-    if (Math.abs(errorMs) <= RESYNC_THRESHOLD_MS) return { errorMs, resynced: false };
+    const live = this.branches.find((b) => !b.stopped);
+    if (Math.abs(errorMs) <= RESYNC_THRESHOLD_MS) {
+      // B9e: absorb it by rate instead of letting it grow into a crossfade.
+      if (live) this.lastSlewPpm = this.applySlew(live, errorMs);
+      return { errorMs, resynced: false };
+    }
 
     const ctxNow = this.deps.ctx.currentTime;
     const startCtxForZero = this.ctxTimeForTrackPosition(
@@ -433,6 +548,9 @@ export class Scheduler {
     this.lastDecision = decision;
     this.lastCorrectionMs = errorMs;
     this.resyncCount++;
+    // The fresh branch starts at rate 1: the step it was just given is the correction, so any trim
+    // carried over would be applied twice.
+    this.lastSlewPpm = 0;
     return { errorMs, resynced: true };
   }
 
@@ -456,9 +574,11 @@ export class Scheduler {
   applyAssignmentGains(assignment: Assignment | null): void {
     this.assignment = assignment;
     const ctxNow = this.deps.ctx.currentTime;
+    // P1-10: the ramp has to land where the *audio* for that server time plays, not where the server
+    // time maps to bare ctx, or it trails the sound it gates by this phone's compensation.
     const at =
       assignment?.applyAtServerTime != null
-        ? Math.max(ctxNow, this.deps.mapper.ctxTimeForNow(assignment.applyAtServerTime, ctxNow, this.deps.now()))
+        ? Math.max(ctxNow, this.ctxTimeForServerTime(assignment.applyAtServerTime, assignment, this.useOutputLatency))
         : ctxNow;
     for (const branch of this.branches) {
       if (branch.stopped) continue;

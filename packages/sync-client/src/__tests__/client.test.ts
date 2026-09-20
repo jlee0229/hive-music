@@ -103,4 +103,40 @@ describe("createHiveClient", () => {
       host.disconnect();
     }
   });
+  /*
+   * CALIBRATION_RESET (v3) through the public API, over a real socket. The server semantics are covered
+   * in the protocol package; what this test adds is that `host.resetCalibration(...)` produces a message
+   * the server accepts, and that the *phone* sees its compensation change — a reset the engine does not
+   * feel is a control that lies. The measured offset is planted directly on the in-process mock, because
+   * writing it the honest way needs a microphone.
+   */
+  test("host.resetCalibration clears a measured offset, one client and then the whole room", async () => {
+    const host = createHiveClient({ ...base(), kind: "host", plays: false, hostKey: mock.hostKey, clientId: "host-rst-0001" });
+    const player = createHiveClient({ ...base(), kind: "player", plays: true, name: "Rst", clientId: "play-rst-0001" });
+    try {
+      await Promise.all([host.connect(), player.connect()]);
+      await waitFor(() => player.assignment !== null);
+      const rec = () => mock.room.clients["play-rst-0001"]!;
+
+      // stand in for a tuning moment, then a NUDGE(0) to make the server replan and broadcast it
+      rec().calibratedOffsetMs = 77;
+      host.host.nudge("play-rst-0001", 0);
+      await waitFor(() => player.assignment?.compensationMs === 77);
+
+      host.host.resetCalibration("play-rst-0001");
+      await waitFor(() => rec().calibratedOffsetMs === null);
+      await waitFor(() => player.assignment?.compensationMs === 0); // browserFamily "other": no table row
+
+      // the whole-room form: `clientId` absent, not `undefined`
+      rec().calibratedOffsetMs = 41;
+      host.host.nudge("play-rst-0001", 0);
+      await waitFor(() => player.assignment?.compensationMs === 41);
+      host.host.resetCalibration();
+      await waitFor(() => rec().calibratedOffsetMs === null);
+      await waitFor(() => player.assignment?.compensationMs === 0);
+    } finally {
+      host.disconnect();
+      player.disconnect();
+    }
+  });
 });

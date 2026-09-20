@@ -58,6 +58,8 @@ export interface StartCall {
 
 export class FakeSource implements SourceLike {
   buffer: BufferLike | null = null;
+  /** B9e: the rate trim lands here. A step per drift tick, so `events` is the correction history. */
+  readonly playbackRate = new FakeParam();
   starts: StartCall[] = [];
   stops: number[] = [];
   onended: ((ev: never) => unknown) | null = null;

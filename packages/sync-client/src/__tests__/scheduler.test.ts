@@ -72,11 +72,17 @@ describe("decideStart", () => {
     expect(d.offsetSec).toBeCloseTo(42 + LATE_START_MARGIN_SEC - 12.39, 9);
   });
 
-  test("the boundary is FUTURE_START_MARGIN_SEC, and just inside it we start immediately", () => {
+  test("a start inside FUTURE_START_MARGIN_SEC is still scheduled exactly (P0-5)", () => {
+    // This test used to assert the opposite, and the opposite was a bug: a lead just inside the margin
+    // took the immediate path and played position 0 up to 30 ms early, invisibly to the drift check.
     const at = decideStart({ ctxNow: 10, startCtxForZero: 10 + FUTURE_START_MARGIN_SEC, durationSec: 60 })!;
     expect(at.mode).toBe("scheduled");
     const inside = decideStart({ ctxNow: 10, startCtxForZero: 10 + FUTURE_START_MARGIN_SEC - 0.001, durationSec: 60 })!;
-    expect(inside.mode).toBe("immediate");
+    expect(inside.mode).toBe("scheduled");
+    expect(inside.whenCtx).toBeCloseTo(10 + FUTURE_START_MARGIN_SEC - 0.001, 9);
+    expect(inside.offsetSec).toBe(0);
+    // only a start that is genuinely in the past becomes an immediate one
+    expect(decideStart({ ctxNow: 10, startCtxForZero: 9.9, durationSec: 60 })!.mode).toBe("immediate");
   });
 
   test("past the end of the track there is nothing to start", () => {
