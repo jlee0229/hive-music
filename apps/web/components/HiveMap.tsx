@@ -99,12 +99,14 @@ export function HiveMap({
 
   const dots: Dot[] = [
     ...placed.map((c) => ({ client: c, x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y, isHost: c.kind === "host" })),
-    ...unplaced.map((c, i) => ({
-      client: c,
-      x: unplaced.length > 1 ? (i + 0.5) / unplaced.length : 0.5,
-      y: 0.94,
-      isHost: c.kind === "host",
-    })),
+    // Auto-placement fills the map from the centre out (sunflower spiral): the first phone lands
+    // dead centre, later ones ring outward — a hive from the first join, not a queue at the edge.
+    // Dragging still writes a real position; this only lays out phones nobody has placed yet.
+    ...unplaced.map((c, i) => {
+      const r = Math.min(0.4, 0.16 * Math.sqrt(i));
+      const a = i * 2.39996; // golden angle keeps neighbours apart at any count
+      return { client: c, x: 0.5 + r * Math.cos(a), y: 0.5 + r * Math.sin(a), isHost: c.kind === "host" };
+    }),
   ];
 
   function normFromEvent(e: { clientX: number; clientY: number }): { x: number; y: number } {
@@ -216,6 +218,10 @@ export function HiveMap({
       {dots.map(({ client, x, y, isHost }) => {
         const level = healthLevel(health[client.id] ?? null, healthServerTime ?? 0);
         const fill = client.assignment ? ROLE_COLORS[client.assignment.role] : ROLE_COLORS.unison;
+        // In unison (and before a track is assigned) the health ring stays a calm black: a red ring
+        // on a phone that sounds fine read as "something is wrong". Stem modes keep the traffic
+        // lights — there the host is actively managing parts and wants the signal.
+        const ringColor = !client.assignment || client.assignment.role === "unison" ? "#0B0F14" : HEALTH_COLORS[level];
         const gain = client.assignment?.pattern ? (gains[client.id] ?? 1) : 1;
         const cx = x * SIZE;
         const cy = y * SIZE;
@@ -230,7 +236,7 @@ export function HiveMap({
             onPointerCancel={endGesture}
             style={{ cursor: host ? "pointer" : "default" }}
           >
-            <circle cx={cx} cy={cy} r="24" fill="none" stroke={HEALTH_COLORS[level]} strokeWidth="3" />
+            <circle cx={cx} cy={cy} r="24" fill="none" stroke={ringColor} strokeWidth="3" />
             <circle
               cx={cx}
               cy={cy}
@@ -244,11 +250,6 @@ export function HiveMap({
             <text x={cx} y={cy + 40} textAnchor="middle" fontSize="11" fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
               {client.name}
             </text>
-            {client.position === null ? (
-              <text x={cx} y={cy - 32} textAnchor="middle" fontSize="9" fill="var(--faint)" fontFamily="IBM Plex Sans, sans-serif">
-                drag me
-              </text>
-            ) : null}
           </g>
         );
       })}

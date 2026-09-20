@@ -401,6 +401,9 @@ export function createBrowserAudioEngine(
     setMuted(next: boolean) {
       muted = next;
       scheduler?.setMuted(next);
+      // The UI mirrors `audio.muted` off this event. Without it the button label never flipped,
+      // so every press re-sent muted:true — a phone that could be muted but never unmuted.
+      emit.emit("audio", state, loadProgress);
     },
     get muted() {
       return muted;
