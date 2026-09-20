@@ -50,6 +50,7 @@ host phone ──POST /rooms──▶ room code + QR
 - Design canvas (host mode + player mode screens): https://claude.ai/artifact/1CPiXwhDfDPqRenDQC9Nzb
 - Roadmap, checkpoints and the 3-minute demo script: [`docs/08-roadmap.md`](docs/08-roadmap.md)
 - Deploying (Fly + Vercel, once, ~20 min): [`docs/09-deploy.md`](docs/09-deploy.md)
+- If the phone test goes badly: triage order, symptom → fallback, three demo tiers: [`docs/10-contingency.md`](docs/10-contingency.md)
 
 ```
 bun install && bun run fixtures
