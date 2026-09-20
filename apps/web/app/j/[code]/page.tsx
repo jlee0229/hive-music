@@ -14,7 +14,7 @@ import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { PlayerPlayingScreen } from "@/components/PlayerPlayingScreen";
 import { PlayerCalibratingScreen } from "@/components/PlayerCalibratingScreen";
 
-type View = "join" | "ready" | "playing" | "calibrating" | "removed";
+type View = "join" | "resume" | "ready" | "playing" | "calibrating" | "removed";
 
 export default function PlayerPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = use(params);
@@ -24,6 +24,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const [joinRequested, setJoinRequested] = useState(false);
   const [joining, setJoining] = useState(false);
   const [removed, setRemoved] = useState<{ heading: string; detail: string } | null>(null);
+  const [resuming, setResuming] = useState(false);
   const device = detectDevice();
 
   const { client, room, me, connection, status, audio, connect, protocolMismatch } = useHiveClient({
@@ -63,19 +64,52 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     }
   }
 
+  // iOS suspends/interrupts the AudioContext on a lock screen, an incoming call, or Siri --
+  // audio.state goes back to "locked" mid-session. Resuming needs only unlock() (it re-resumes the
+  // existing context and re-requests the wake lock); calling connect() again would open a second
+  // socket for the same client on top of the one that never actually dropped.
+  async function handleResume() {
+    if (resuming) return;
+    setResuming(true);
+    try {
+      await client.audio.unlock();
+    } catch {
+      // stays on the resume screen; another tap retries
+    } finally {
+      setResuming(false);
+    }
+  }
+
   const [flash, setFlash] = useState(false);
   useEffect(() => {
     // Registered here (not inside the Calibrating screen) so a click that arrives before the
     // coalesced ROOM_STATE switches us into "calibrating" still flashes.
-    return client.on("calibrationClick", () => {
-      setFlash(true);
-      setTimeout(() => setFlash(false), 300);
+    //
+    // The event fires on SCHEDULED_ACTION receipt, which lands ~3s + k*400ms before the click
+    // actually plays -- flashing immediately would show it far too early. Time it to the click
+    // itself via the shared clock instead.
+    let showTimer: ReturnType<typeof setTimeout> | null = null;
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+    const off = client.on("calibrationClick", (clickAtServerTime) => {
+      if (showTimer) clearTimeout(showTimer);
+      if (hideTimer) clearTimeout(hideTimer);
+      const delayMs = Math.max(0, clickAtServerTime - client.clock.serverNow());
+      showTimer = setTimeout(() => {
+        setFlash(true);
+        hideTimer = setTimeout(() => setFlash(false), 300);
+      }, delayMs);
     });
+    return () => {
+      off();
+      if (showTimer) clearTimeout(showTimer);
+      if (hideTimer) clearTimeout(hideTimer);
+    };
   }, [client]);
 
   let view: View = "join";
   if (removed) view = "removed";
-  else if (joinRequested && audio.state !== "locked") {
+  else if (joinRequested && audio.state === "locked") view = "resume";
+  else if (joinRequested) {
     if (room?.calibration.state === "countdown" || room?.calibration.state === "running") view = "calibrating";
     else if (room?.transport.state === "playing") view = "playing";
     else view = "ready";
@@ -94,6 +128,19 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>
+      </main>
+    );
+  }
+
+  if (view === "resume") {
+    body = (
+      <main
+        className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center"
+        style={{ overscrollBehavior: "none", touchAction: "manipulation" }}
+        onClick={handleResume}
+      >
+        <h1 className="font-display text-3xl font-bold">{resuming ? "Resuming…" : "Tap to resume"}</h1>
+        <p style={{ color: "var(--muted)" }}>Sound paused — a call, the lock screen, or Siri interrupted it.</p>
       </main>
     );
   }

@@ -14,6 +14,8 @@ export interface UseHiveClientOptions {
   name?: string;
   /** Connect immediately on mount. Player Join defers this until the tap unlocks audio. */
   autoConnect?: boolean;
+  /** Overrides the per-room persisted clientId. See app/h/[code]/page.tsx's demotion recovery for why. */
+  clientId?: string;
 }
 
 export interface UseHiveClientResult {
@@ -42,8 +44,9 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
       plays: opts.plays,
       hostKey: opts.hostKey,
       name: opts.name,
+      clientId: opts.clientId,
     }),
-    [opts.roomCode, opts.kind, opts.plays, opts.hostKey, opts.name],
+    [opts.roomCode, opts.kind, opts.plays, opts.hostKey, opts.name, opts.clientId],
   );
 
   const clientRef = useRef<HiveClient | null>(null);
