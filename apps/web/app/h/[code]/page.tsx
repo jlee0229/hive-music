@@ -71,16 +71,30 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     fetch(`${apiUrl()}/tracks${q ? `?q=${encodeURIComponent(q)}` : ""}`)
       .then((r) => r.json())
       .then((d: { tracks: TrackLibraryEntry[] }) => {
-        if (cancelled) return;
-        setTracks(d.tracks);
-        if (!selectedTrackId && d.tracks[0]) setSelectedTrackId(d.tracks[0].id);
+        if (!cancelled) setTracks(d.tracks);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
+
+  // Auto-pick the first library track once the room exists and has none — and actually push it
+  // to the server (host.setTrack), not just the local radio state: the mock scenarios always
+  // pre-seed a track, but a fresh real room starts with track: null, so "Start" would otherwise
+  // send TRANSPORT into a room with nothing loaded (ERROR NO_TRACK) until the user happened to
+  // click a radio button that was already visually checked.
+  useEffect(() => {
+    if (!room) return;
+    if (room.track) {
+      setSelectedTrackId(room.track.id);
+      return;
+    }
+    if (!selectedTrackId && tracks[0]) {
+      setSelectedTrackId(tracks[0].id);
+      client.host.setTrack(tracks[0].id);
+    }
+  }, [room, tracks, selectedTrackId, client]);
 
   useEffect(() => {
     setStartAnywayReady(false);

@@ -72,7 +72,7 @@ Each agent edits its own rows only (the detailed gate tables with ✅/🟡 live 
 | F5 | frontend | done | `evidence/frontend/F5-modes.md` (+webm, gitignored) |
 | F6 | frontend | done | `evidence/frontend/F6-vibe.png` |
 | F7 | frontend | done | `evidence/frontend/F7-calibrate.png` |
-| F8 | frontend | todo | |
+| F8 | frontend | ❌ blocked (engine agent's `createHiveClient`) | `evidence/frontend/F8-notes.md` |
 | F9 | frontend | 🟡 needs human (Vercel/Fly creds) | `evidence/frontend/F9-restart.png`, `F9-deploy.md` |
 
 ## Cut list

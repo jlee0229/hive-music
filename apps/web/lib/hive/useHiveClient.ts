@@ -40,8 +40,7 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
       hostKey: opts.hostKey,
       name: opts.name,
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [opts.roomCode, opts.kind, opts.hostKey],
+    [opts.roomCode, opts.kind, opts.plays, opts.hostKey, opts.name],
   );
 
   const clientRef = useRef<HiveClient | null>(null);
