@@ -153,6 +153,9 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
       get loadProgress() { return loadProgress; },
       setMuted(m) { muted = m; },
       get muted() { return muted; },
+      // The stub has no AudioContext at all, and says so rather than inventing plausible values.
+      ctxState: null,
+      sampleRate: null,
     },
     host: {
       setTrack: (trackId) => transport.send({ type: "SET_TRACK", trackId }),

@@ -22,7 +22,8 @@
  *    once: the alternative is minutes of audible drift.
  */
 import {
-  NTP_PROBE_PAIR_GAP_MS, NTP_PROBE_PAIR_TOLERANCE_MS, NTP_WINDOW, NTP_BURST_WINDOW_MS, RESYNC_THRESHOLD_MS,
+  NTP_PROBE_PAIR_GAP_MS, NTP_PROBE_PAIR_TOLERANCE_MS, NTP_SAMPLE_MAX_AGE_MS, NTP_WINDOW, NTP_BURST_WINDOW_MS,
+  RESYNC_THRESHOLD_MS,
 } from "@hive/protocol";
 
 /** Applied-offset slew rate, ms per second (docs/03-sync-engine.md, "Application"). */
@@ -61,6 +62,8 @@ export interface ClockModelOptions {
 interface Sample {
   offset: number;
   rtt: number;
+  /** Local time the sample completed (`t3`), so the window can drop it by age as well as by count. */
+  at: number;
 }
 
 export class ClockModel {
@@ -142,8 +145,21 @@ export class ClockModel {
 
   private accept(p: Probe): void {
     this.accepted++;
-    this.samples.push({ offset: (p.t1 - p.t0 + (p.t2 - p.t3)) / 2, rtt: rttOf(p) });
+    this.samples.push({ offset: (p.t1 - p.t0 + (p.t2 - p.t3)) / 2, rtt: rttOf(p), at: p.t3 });
     if (this.samples.length > NTP_WINDOW) this.samples.shift();
+    /*
+     * Age matters as much as count, and min-RTT selection does not know that. One lucky low-RTT sample
+     * wins the `reduce` below until it is shifted out — but an *offset* goes stale on its own: the local
+     * clock drifts against the server at tens of ppm, so a sample from before a resumed tab, a reconnect
+     * or a server restart can pin this phone tens of ms wrong while reporting a 2 ms RTT and a healthy
+     * `syncErrMs`. Probing is 1 Hz in steady state, so this prunes nothing in normal operation; it only
+     * bites after a gap, which is exactly where the stale sample comes from. The last sample is always
+     * kept: a phone with no clock cannot play at all.
+     */
+    if (this.samples.length > 1) {
+      const fresh = this.samples.filter((s) => p.t3 - s.at <= NTP_SAMPLE_MAX_AGE_MS);
+      this.samples = fresh.length > 0 ? fresh : [this.samples[this.samples.length - 1]!];
+    }
     const best = this.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a));
     this.estimateOffsetMs = best.offset;
     this.rttMs = best.rtt;

@@ -406,8 +406,15 @@ export class Scheduler {
     for (const source of branch.sources.values()) source.start(decision.whenCtx, decision.offsetSec);
 
     this.branches.push(branch);
-    // A new branch needs its own curve even when the pattern object is unchanged.
-    this.startPatternAutomation(assignment?.pattern ?? null, { restart: true });
+    /*
+     * A new branch needs its own curve even when the pattern object is unchanged — `patternGain` starts at
+     * 1, so an un-automated new branch plays at FULL level, which during STROBE's silent half is a loud
+     * blip. The branch must be named explicitly: during a hard resync the old branch is still un-stopped
+     * at this point (the crossfade needs it), so "the live branch" would find the one that is about to
+     * fade out, and the fresh node would sit at 1 until the automation caught up — up to
+     * PATTERN_LOOKAHEAD_MS of full-volume audio through the correction.
+     */
+    this.startPatternAutomation(assignment?.pattern ?? null, { restart: true, branch });
     return branch;
   }
 
@@ -594,7 +601,10 @@ export class Scheduler {
    * `evaluatePattern(pattern, trackTimeMs)` and writes the next PATTERN_LOOKAHEAD_MS of values ahead of
    * the playhead, so WAVE and STROBE travel across the room without a single per-tick packet.
    */
-  private startPatternAutomation(pattern: Pattern | null, opts: { restart?: boolean } = {}): void {
+  private startPatternAutomation(
+    pattern: Pattern | null,
+    opts: { restart?: boolean; branch?: Branch } = {},
+  ): void {
     const key = pattern ? JSON.stringify(pattern) : null;
     if (key === this.patternKey && !opts.restart) return;
     this.patternKey = key;
@@ -608,7 +618,7 @@ export class Scheduler {
       return;
     }
     this.patternWrittenUntilMs = 0;
-    this.writePatternWindow(pattern);
+    this.writePatternWindow(pattern, opts.branch);
     if (this.patternTimer) return;
     this.patternTimer = setInterval(() => {
       const p = this.assignment?.pattern ?? null;
@@ -632,9 +642,9 @@ export class Scheduler {
    *    window is shifted forward so `setValueCurveAtTime` gets a time it will accept, and the curve
    *    stays aligned to the music rather than to the moment we happened to wake up.
    */
-  private writePatternWindow(pattern: Pattern): void {
-    const branch = this.branches.find((b) => !b.stopped);
-    if (!branch) return;
+  private writePatternWindow(pattern: Pattern, target?: Branch): void {
+    const branch = target ?? this.branches.find((b) => !b.stopped);
+    if (!branch || branch.stopped) return;
     const ctxNow = this.deps.ctx.currentTime;
     const positionNowMs = (branch.startOffsetSec + (ctxNow - branch.startedAtCtx)) * 1000;
     let fromMs = Math.max(0, positionNowMs, this.patternWrittenUntilMs);

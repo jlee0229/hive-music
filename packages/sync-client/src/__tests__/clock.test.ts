@@ -309,3 +309,52 @@ describe("CtxMapper", () => {
     expect(mapper.ctxTimeForNow(target, ctxNow, local)).toBeCloseTo(ctxNow + 0.45, 6);
   });
 });
+
+/*
+ * Sample age. min-RTT selection has no notion of it, and that is a bug rather than a simplification: an
+ * offset goes stale on its own, because the local clock drifts against the server. A phone whose tab was
+ * suspended, or that lost the socket for a few minutes, comes back with a window full of samples whose
+ * offsets are wrong by (gap × drift) — and if one of them has a lucky low RTT it wins the selection and
+ * pins the phone tens of ms out of sync while reporting a 2 ms RTT and a healthy syncErrMs. Confidently
+ * wrong, like every other bug in this engine's list.
+ */
+describe("the min-RTT window drops samples by age as well as by count", () => {
+  const L = 1_700_000_000_000;
+  /** A probe with a known true offset and a symmetric one-way delay, so rtt = 2·owd exactly. */
+  const probe = (m: ClockModel, at: number, offset: number, owdMs: number) =>
+    m.addProbe(at, at + offset + owdMs, at + offset + owdMs, at + 2 * owdMs);
+
+  test("a lucky low-RTT sample from before a long gap no longer pins the clock", () => {
+    const m = new ClockModel();
+    for (let i = 0; i < 29; i++) probe(m, L + i * 1000, 0, 12);
+    probe(m, L + 29_000, 0, 1); // the lucky one: rtt 2 ms, and its offset is the truth *at that time*
+    expect(m.estimateOffsetMs).toBeCloseTo(0, 6);
+    expect(m.rttMs).toBeCloseTo(2, 6);
+
+    // ten minutes suspended; the local clock has drifted so the true offset is now +30 ms
+    const after = L + 29_000 + 600_000;
+    for (let i = 0; i < 5; i++) probe(m, after + i * 1000, 30, 12);
+
+    expect(m.estimateOffsetMs).toBeCloseTo(30, 6); // follows the fresh truth, not the lucky stale sample
+    expect(m.rttMs).toBeCloseTo(24, 6); // and reports the RTT it can actually see now
+  });
+
+  test("steady 1 Hz probing is unaffected: nothing inside the window is ever pruned", () => {
+    const m = new ClockModel();
+    for (let i = 0; i < 40; i++) probe(m, L + i * 1000, 0, i === 20 ? 3 : 14);
+    // the low-RTT sample at t=20 s is 19 s old at the end — inside NTP_SAMPLE_MAX_AGE_MS, so it still wins
+    expect(m.rttMs).toBeCloseTo(6, 6);
+    expect(m.estimateOffsetMs).toBeCloseTo(0, 6);
+  });
+
+  test("a phone that comes back after an hour is never left with no clock at all", () => {
+    const m = new ClockModel();
+    probe(m, L, 0, 12);
+    const muchLater = L + 3_600_000;
+    // the only sample in the window is older than the age bound; the newest must be kept regardless
+    probe(m, muchLater, 40, 12);
+    expect(m.estimateOffsetMs).toBeCloseTo(40, 6);
+    expect(m.rttMs).toBeCloseTo(24, 6);
+    expect(m.serverNow(muchLater)).toBeGreaterThan(muchLater); // it has a usable clock
+  });
+});

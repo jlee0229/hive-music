@@ -237,3 +237,56 @@ describe("a resumed tab drift-checks instead of restarting", () => {
     expect(recovered.reason).toContain("drift");
   });
 });
+
+/*
+ * A resync in the middle of STROBE or WAVE. The crossfade builds a whole new branch with its own
+ * `patternGain`, and that node starts at 1 — full volume. If the automation is not written onto the NEW
+ * node, the phone plays at full level through the correction: during STROBE's silent half that is a loud
+ * blip, and it lasts until the automation catches up, which is up to PATTERN_LOOKAHEAD_MS.
+ */
+describe("a resync during a pattern", () => {
+  const strobe = { kind: "strobe" as const, periodMs: 500, phaseMs: 0, duty: 0.5, rampMs: 8 };
+
+  test("the new branch gets its own curve, not the branch that is fading out", () => {
+    const rig = driftRig(50);
+    rig.scheduler.slewEnabled = false; // force the crossfade path rather than the rate trim
+    const a = assignment({ pattern: strobe });
+    rig.scheduler.apply(playing(rig.localMs + 600), a, applyOpts);
+    rig.scheduler.applyAssignmentGains(a);
+    // the first branch is under automation
+    expect(rig.ctx.gains.some((g) => g.gain.events.some((e) => e.kind === "setValueCurve"))).toBe(true);
+
+    rig.advance(400_000); // 20 ms of drift: past the threshold
+    const gainsBefore = rig.ctx.gains.length;
+    const result = rig.scheduler.checkDrift(a, false)!;
+    expect(result.resynced).toBe(true);
+
+    // every node created by the resync; the new patternGain is among them
+    const fresh = rig.ctx.gains.slice(gainsBefore);
+    const curves = fresh.flatMap((g) => g.gain.events.filter((e) => e.kind === "setValueCurve"));
+    expect(curves.length).toBeGreaterThan(0);
+
+    // and the curve it was given is the pattern, not a flat 1: a strobe crosses zero within one period
+    const curve = curves[0]!.curve!;
+    expect(Math.min(...curve)).toBeLessThan(0.5);
+    expect(Math.max(...curve)).toBeGreaterThan(0.5);
+  });
+
+  test("the curve on the new branch starts no earlier than now and stays aligned to the music", () => {
+    const rig = driftRig(50);
+    rig.scheduler.slewEnabled = false;
+    const a = assignment({ pattern: strobe });
+    rig.scheduler.apply(playing(rig.localMs + 600), a, applyOpts);
+    rig.scheduler.applyAssignmentGains(a);
+    rig.advance(400_000);
+    const gainsBefore = rig.ctx.gains.length;
+    rig.scheduler.checkDrift(a, false);
+    const fresh = rig.ctx.gains.slice(gainsBefore);
+    const written = fresh.flatMap((g) => g.gain.events.filter((e) => e.kind === "setValueCurve"));
+    for (const e of written) {
+      // setValueCurveAtTime throws on a past time, and a curve scheduled late is silently a flat gain
+      expect(e.time).toBeGreaterThanOrEqual(rig.ctx.currentTime - 1e-9);
+      expect(e.duration!).toBeCloseTo(0.2, 6); // PATTERN_LOOKAHEAD_MS
+    }
+  });
+});

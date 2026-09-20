@@ -56,7 +56,7 @@ describe("renderClick", () => {
 // ---- engine harness ---------------------------------------------------------
 const STEMS = ["drums", "bass", "vocals", "other"];
 
-function engineHarness(opts: { compensationMs?: number; delayMs?: number } = {}) {
+function engineHarness(opts: { compensationMs?: number; delayMs?: number; loadStem?: (url: string) => Promise<unknown> } = {}) {
   const clock = new ClockModel();
   const local = 1_700_000_000_000;
   clock.addProbe(local, local, local, local); // offset exactly 0, so server time == local time
@@ -124,7 +124,9 @@ function engineHarness(opts: { compensationMs?: number; delayMs?: number } = {})
 
   const engine = createBrowserAudioEngine(host, {
     createContext: () => ctx as unknown as AudioContext,
-    loadStem: async () => new FakeBuffer(60, ctx.sampleRate) as unknown as AudioBuffer,
+    loadStem: opts.loadStem
+      ? (opts.loadStem as unknown as (url: string, c: AudioContext) => Promise<AudioBuffer>)
+      : async () => new FakeBuffer(60, ctx.sampleRate) as unknown as AudioBuffer,
   });
   return { engine, ctx, room, assignment, sent, events, clock, mapper, serverNow: local };
 }
@@ -170,11 +172,106 @@ describe("audio engine lifecycle", () => {
     expect(h.sent.filter((m) => (m as { type: string }).type === "AUDIO_READY")).toHaveLength(1);
   });
 
+  test("a failed stem load is retried, but behind a backoff rather than on every snapshot", async () => {
+    /*
+     * ROOM_STATE arrives at 2 Hz. An unconditional retry means 12 phones × 2 Hz × 4 stems ≈ 96 requests a
+     * second at a server that is already failing — and a missing fixture answers 404 as fast as it can,
+     * so the herd never thins. Giving up instead is worse: a phone that loses one flaky download is
+     * silent for the whole set. So: retry, with a doubling backoff.
+     */
+    let attempts = 0;
+    const h = engineHarness({
+      loadStem: async () => {
+        attempts++;
+        throw new Error("404 no fixture");
+      },
+    });
+    const errors: string[] = [];
+    h.engine.applyRoom(h.room, h.assignment);
+    await h.engine.unlock();
+    expect(attempts).toBeGreaterThan(0);
+    expect(h.engine.state).toBe("unlocked"); // honest: not "ready"
+    const afterFirst = attempts;
+
+    // a burst of snapshots, as the 2 Hz stream would deliver: none of them may re-fetch
+    for (let i = 0; i < 10; i++) h.engine.applyRoom(h.room, h.assignment);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(attempts).toBe(afterFirst);
+
+    // the track is still not loaded and the engine has not lied about it
+    expect(h.engine.debug.loadedTrackId).toBeNull();
+    expect((h.engine.debug as unknown as { loadAttempts: string[] }).loadAttempts).toEqual(["synthetic-60s×1"]);
+    void errors;
+  });
+
+  test("a load that succeeds after a failure clears the backoff", async () => {
+    let attempts = 0;
+    const h = engineHarness({
+      loadStem: async () => {
+        attempts++;
+        if (attempts <= 4) throw new Error("flaky wifi");
+        return new FakeBuffer(60, 44100) as unknown as AudioBuffer;
+      },
+    });
+    h.engine.applyRoom(h.room, h.assignment);
+    await h.engine.unlock();
+    expect(h.engine.state).toBe("unlocked");
+
+    // wait out the first backoff step, then let the next snapshot through
+    await new Promise((r) => setTimeout(r, 1100));
+    h.engine.applyRoom(h.room, h.assignment);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.engine.state).toBe("ready");
+    expect(h.engine.debug.loadedTrackId).toBe("synthetic-60s");
+    expect((h.engine.debug as unknown as { loadAttempts: string[] }).loadAttempts).toEqual([]);
+  }, 10_000);
+
+  test("ctxState and sampleRate are the context's own, and null before it exists (R-12)", async () => {
+    /*
+     * `audio.state` is the engine's view; `ctxState` is the hardware's. The pair that matters is
+     * `ctxState: "suspended"` with `state: "ready"` — sounds fine to the engine, nothing comes out of the
+     * speaker — which /diag's copy-report needs to show a human on the other end of a text message.
+     */
+    const h = engineHarness();
+    expect(h.engine.ctxState).toBeNull();
+    expect(h.engine.sampleRate).toBeNull();
+
+    await h.engine.unlock();
+    expect(h.engine.ctxState).toBe("running");
+    expect(h.engine.sampleRate).toBe(h.ctx.sampleRate);
+
+    // the context is interrupted (a call, the lock screen) while the engine still holds its buffers
+    h.ctx.state = "suspended";
+    h.ctx.onstatechange?.();
+    expect(h.engine.ctxState).toBe("suspended");
+    expect(h.engine.state).toBe("locked"); // the engine noticed too, and they agree here
+    expect(h.engine.sampleRate).toBe(h.ctx.sampleRate); // a suspended context still has a rate
+  });
+
   test("outputLatency is reported once a context exists, and null before that", async () => {
     const h = engineHarness();
     expect(h.engine.outputLatencyMs).toBeNull();
     await h.engine.unlock();
     expect(h.engine.outputLatencyMs).toBeNull(); // the fake reports 0, which we treat as "unknown"
+  });
+
+  test("outputLatency is read live, because it is not a constant of the device", async () => {
+    /*
+     * A Bluetooth speaker, a headset, or a calibration run that put iOS into play-and-record all change
+     * `ctx.outputLatency` after unlock. The number goes out in CLIENT_STATUS, where the server uses it as
+     * the accumulation base for a calibration report (P0-6) — so a cached value means the phone
+     * calibrates onto the latency it had at unlock and the offset it is given is wrong by the difference.
+     */
+    const h = engineHarness();
+    await h.engine.unlock();
+    expect(h.engine.outputLatencyMs).toBeNull();
+
+    // the speaker changes under us; `readonly` is a compile-time claim, not a runtime one
+    (h.ctx as unknown as { outputLatency: number }).outputLatency = 0.17;
+    expect(h.engine.outputLatencyMs).toBeCloseTo(170, 6);
+
+    (h.ctx as unknown as { outputLatency: number }).outputLatency = 0.03;
+    expect(h.engine.outputLatencyMs).toBeCloseTo(30, 6);
   });
 
   test("a calibration click is compensated but ignores WAVE's spatial delay", async () => {

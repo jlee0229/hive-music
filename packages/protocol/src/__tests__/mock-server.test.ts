@@ -10,8 +10,9 @@ class Fake {
   ws: WebSocket;
   inbox: ServerMessage[] = [];
   waiters: Array<{ pred: (m: ServerMessage) => boolean; resolve: (m: ServerMessage) => void }> = [];
-  constructor() {
-    this.ws = new WebSocket(`ws://localhost:${PORT}/ws`);
+  /** `port` so a test can drive its own server instance — the shared one always has a host already. */
+  constructor(port: number = PORT) {
+    this.ws = new WebSocket(`ws://localhost:${port}/ws`);
     this.ws.onmessage = (ev) => {
       const m = parseServerMessage(String(ev.data));
       if (!m) throw new Error(`unparsable server message: ${ev.data}`);
@@ -394,5 +395,200 @@ describe("a phone with two sockets (a reconnect racing a retry)", () => {
     only.ws.close();
     await new Promise((r) => setTimeout(r, 300));
     expect(mock.room.clients["dup-client-02"]!.connected).toBe(false);
+  }, 15_000);
+});
+
+describe("a viewer joins read-only (protocol v4, answers frontend R-13)", () => {
+  /*
+   * `/screen` is a projector display on a laptop at the venue, shown to a room full of people. It must
+   * not need a `hostKey`, because a leaked one is full control — track, transport, KICK. Before `viewer`
+   * existed, a no-key join could only land as `kind: "player", plays: true`, which inflated the player
+   * count, consumed a stem in ORCHESTRA's rotation (the room loses an instrument to a laptop), and still
+   * never received HEALTH — so the one number the display exists to show was unavailable.
+   */
+  test("no hostKey, never a speaker, not a player, and it still gets HEALTH", async () => {
+    const viewer = new Fake();
+    await viewer.open();
+    viewer.send({
+      type: "JOIN", clientId: "screen-000001", roomCode: "BZQ7", kind: "viewer", plays: true, // asks to play…
+      device, protocolVersion: PROTOCOL_VERSION,
+    });
+    const welcome = await viewer.next("WELCOME");
+    expect(welcome.isHost).toBe(false);
+
+    const state = await viewer.next("ROOM_STATE", (m) => !!m.room.clients["screen-000001"]);
+    const rec = state.room.clients["screen-000001"]!;
+    expect(rec.kind).toBe("viewer");
+    expect(rec.plays).toBe(false); // …and is refused: the field is a request, not a fact
+    expect(rec.assignment).toBeNull(); // plan() gives a non-speaker nothing, so it cannot play audio
+    expect(state.room.hostClientIds).not.toContain("screen-000001");
+
+    // HEALTH is the whole point: the "Synced ±N ms" tile is a median over these numbers
+    const h = await viewer.next("HEALTH", () => true, 2500);
+    expect(typeof h.serverTime).toBe("number");
+    expect(h.clients["screen-000001"]).toBeDefined();
+
+    viewer.ws.close();
+  }, 15_000);
+
+  test("a viewer cannot drive the room", async () => {
+    const viewer = new Fake();
+    await viewer.open();
+    viewer.send({ type: "JOIN", clientId: "screen-000002", roomCode: "BZQ7", kind: "viewer", plays: false, device, protocolVersion: PROTOCOL_VERSION });
+    await viewer.next("WELCOME");
+    viewer.forget();
+    // every host-only handler gates on hostClientIds, which a viewer is never added to
+    viewer.send({ type: "TRANSPORT", action: "PAUSE" });
+    expect((await viewer.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+    viewer.send({ type: "KICK", clientId: "screen-000002" });
+    expect((await viewer.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+    viewer.ws.close();
+  }, 15_000);
+
+  test("a viewer that claims to be a host without the key is not one", async () => {
+    // the existing guard, re-asserted here because `viewer` adds a third branch to it
+    const faker = new Fake();
+    await faker.open();
+    faker.send({ type: "JOIN", clientId: "screen-000003", roomCode: "BZQ7", kind: "host", plays: false, device, protocolVersion: PROTOCOL_VERSION });
+    const welcome = await faker.next("WELCOME");
+    expect(welcome.isHost).toBe(false);
+    const state = await faker.next("ROOM_STATE", (m) => !!m.room.clients["screen-000003"]);
+    expect(state.room.clients["screen-000003"]!.kind).toBe("player"); // no key, no viewer claim → player
+    expect(state.room.clients["screen-000003"]!.plays).toBe(true);
+    faker.ws.close();
+  }, 15_000);
+});
+
+
+describe("JOIN re-derives kind and plays on every join (R-16, mirrors apps/server's P0-2 tests)", () => {
+  /*
+   * The old code spread `...existing` and never consulted `wantsHost`, so a client demoted once could
+   * never come back however many times it re-JOINed with the room's real key. `clientId` is persisted per
+   * room code *independently of* `hostKey`, so that is the normal recovery path, not an edge case: a host
+   * whose stored key went stale (a restart minted a new one) re-POSTs /rooms, gets the real key, re-JOINs
+   * with the same id — and used to stay a player forever, with every host command answering NOT_HOST.
+   */
+  test("an existing player record is promoted to host once it presents the room's real hostKey", async () => {
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "promo-host-01", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    await host.next("WELCOME");
+
+    // it first lands as a plain player (what the demotion bug left behind)
+    const demoted = new Fake();
+    await demoted.open();
+    demoted.send({ type: "JOIN", clientId: "promo-demoted-1", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    const first = await demoted.next("WELCOME");
+    expect(first.isHost).toBe(false);
+    await host.next("ROOM_STATE", (m) => !!m.room.clients["promo-demoted-1"]);
+    expect(mock.room.clients["promo-demoted-1"]!.kind).toBe("player");
+    const joinIndexBefore = mock.room.clients["promo-demoted-1"]!.joinIndex;
+
+    // it learns the room's real key and re-JOINs with the SAME clientId
+    const recovered = new Fake();
+    await recovered.open();
+    recovered.send({ type: "JOIN", clientId: "promo-demoted-1", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    const second = await recovered.next("WELCOME");
+
+    expect(second.isHost).toBe(true); // WELCOME must agree with the record, or the UI shows the wrong screen
+    const rec = mock.room.clients["promo-demoted-1"]!;
+    expect(rec.kind).toBe("host");
+    expect(rec.plays).toBe(false); // a host chooses; it asked not to be a speaker
+    expect(rec.joinIndex).toBe(joinIndexBefore); // promoted in place, not a second record spliced in
+    expect(mock.room.hostClientIds.filter((id) => id === "promo-demoted-1")).toHaveLength(1); // no duplicate
+    // and it really has authority now
+    recovered.forget();
+    recovered.send({ type: "SET_MODE", mode: "ORCHESTRA", params: {} });
+    await recovered.next("ROOM_STATE", (m) => m.room.mode.kind === "ORCHESTRA");
+
+    host.ws.close();
+    demoted.ws.close();
+    recovered.ws.close();
+  }, 15_000);
+
+  test("an impostor claiming host with the wrong key is still refused while someone holds the room", async () => {
+    const impostor = new Fake();
+    await impostor.open();
+    impostor.send({ type: "JOIN", clientId: "impostor-0001", roomCode: "BZQ7", kind: "host", plays: false, hostKey: "wrong-key", device, protocolVersion: PROTOCOL_VERSION });
+    const welcome = await impostor.next("WELCOME");
+    expect(welcome.isHost).toBe(false);
+    expect(mock.room.clients["impostor-0001"]!.kind).toBe("player");
+    expect(mock.room.hostClientIds).not.toContain("impostor-0001");
+    impostor.forget();
+    impostor.send({ type: "KICK", clientId: "impostor-0001" });
+    expect((await impostor.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+    impostor.ws.close();
+  }, 15_000);
+
+  test("with nobody holding a freshly re-spawned room, a stale key still gets the host in", async () => {
+    // Ported from apps/server: a fixed-code room re-spawned after a restart mints a new hostKey that the
+    // host's stored key can never match. Needs its own server, because the shared one already has hosts.
+    const port = 19_700 + Math.floor(Math.random() * 200);
+    const fresh = startMockServer({ port, quiet: true, scenario: { players: [] } });
+    await fresh.ready;
+    try {
+      expect(fresh.room.hostClientIds).toHaveLength(0);
+      const host = new Fake(port);
+      await host.open();
+      host.send({ type: "JOIN", clientId: "respawn-host-1", roomCode: "BZQ7", kind: "host", plays: false, hostKey: "a-key-from-the-previous-life", device, protocolVersion: PROTOCOL_VERSION });
+      const welcome = await host.next("WELCOME");
+      expect(welcome.isHost).toBe(true);
+      expect(fresh.room.clients["respawn-host-1"]!.kind).toBe("host");
+      expect(fresh.room.hostClientIds).toContain("respawn-host-1");
+      host.ws.close();
+    } finally {
+      fresh.stop();
+    }
+  }, 15_000);
+
+  test("a JOIN may drop privilege: a host id that asks to be a viewer loses host authority with it", async () => {
+    /*
+     * The engine's addition, which `apps/server` does not need yet (there a host record can only stay a
+     * host). Authority lives in `hostClientIds` — `isHost` is derived from it — so a record that just
+     * asked to become a read-only display must lose it in the same breath. Dropping privilege on request
+     * can never be an attack; keeping it silently after the client asked not to have it can.
+     */
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "demote-me-0001", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect((await host.next("WELCOME")).isHost).toBe(true);
+    expect(mock.room.hostClientIds).toContain("demote-me-0001");
+
+    const asViewer = new Fake();
+    await asViewer.open();
+    asViewer.send({ type: "JOIN", clientId: "demote-me-0001", roomCode: "BZQ7", kind: "viewer", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    expect((await asViewer.next("WELCOME")).isHost).toBe(false);
+    expect(mock.room.clients["demote-me-0001"]!.kind).toBe("viewer");
+    expect(mock.room.clients["demote-me-0001"]!.plays).toBe(false);
+    expect(mock.room.hostClientIds).not.toContain("demote-me-0001");
+    asViewer.forget();
+    asViewer.send({ type: "TRANSPORT", action: "PAUSE" });
+    expect((await asViewer.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+
+    host.ws.close();
+    asViewer.ws.close();
+  }, 15_000);
+
+  test("a viewer id that later joins as a player gets plays back, or it would be silently silent", async () => {
+    // /screen and /j share localStorage, so they share the persisted clientId. Inheriting "viewer" here
+    // would leave a real phone in the room with no assignment and no sound, looking perfectly healthy.
+    const screen = new Fake();
+    await screen.open();
+    screen.send({ type: "JOIN", clientId: "screen-then-p1", roomCode: "BZQ7", kind: "viewer", plays: false, device, protocolVersion: PROTOCOL_VERSION });
+    await screen.next("WELCOME");
+    expect(mock.room.clients["screen-then-p1"]!.plays).toBe(false);
+
+    const player = new Fake();
+    await player.open();
+    player.send({ type: "JOIN", clientId: "screen-then-p1", roomCode: "BZQ7", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
+    await player.next("WELCOME");
+    const rec = mock.room.clients["screen-then-p1"]!;
+    expect(rec.kind).toBe("player");
+    expect(rec.plays).toBe(true);
+    await player.next("ROOM_STATE", (m) => m.room.clients["screen-then-p1"]?.assignment !== null);
+    expect(mock.room.clients["screen-then-p1"]!.assignment).not.toBeNull(); // it is a speaker again
+
+    screen.ws.close();
+    player.ws.close();
   }, 15_000);
 });

@@ -115,6 +115,7 @@ Every doc, brief and gate check must agree with `packages/protocol/src/constants
 | `CLIENT_STATUS_INTERVAL_MS` / `PING_INTERVAL_MS` | 2000 / 20 000 | phone → server status; liveness |
 | `DISCONNECT_RETENTION_MS` / `ROOM_IDLE_TTL_MS` | 120 000 / 600 000 | rejoin keeps identity and assignment; empty rooms expire |
 | `NTP_BURST_COUNT` / `NTP_BURST_WINDOW_MS` / `NTP_STEADY_INTERVAL_MS` / `NTP_WINDOW` | 20 / 4000 / 1000 / 30 | clock model |
+| `NTP_SAMPLE_MAX_AGE_MS` | 30 000 | samples older than this leave the min-RTT window: an offset goes stale even when its RTT was excellent |
 | `NTP_PROBE_PAIR_GAP_MS` / `NTP_PROBE_PAIR_TOLERANCE_MS` | 10 / 2 | coded probe pairs |
 | stems | ≤4 (`STEMS`), mono, 16-bit WAV, 44.1 kHz, ≤60 s | ≈42 MB decoded per phone |
 | `CALIBRATION_CLICK_INTERVAL_MS` / `CALIBRATION_COUNTDOWN_MS` | 400 / 3000 | one click per player after a 3 s countdown |

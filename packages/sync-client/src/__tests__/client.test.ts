@@ -140,3 +140,47 @@ describe("createHiveClient", () => {
     }
   });
 });
+
+describe("a viewer client (protocol v4, for /screen)", () => {
+  /*
+   * The frontend's `/screen` page will call `createHiveClient({ kind: "viewer", plays: false })` with no
+   * hostKey. The mock-server tests prove the *server* side; this proves the engine end works the way the
+   * page needs it to — a live room snapshot and live HEALTH, with no audio and no authority.
+   */
+  test("joins with no hostKey, receives ROOM_STATE and HEALTH, and is never a speaker", async () => {
+    const host = createHiveClient({ ...base(), kind: "host", plays: false, hostKey: mock.hostKey, clientId: "vw-host-0001" });
+    const player = createHiveClient({ ...base(), kind: "player", plays: true, name: "P", clientId: "vw-play-0001" });
+    const screen = createHiveClient({ ...base(), kind: "viewer", plays: false, name: "Screen", clientId: "vw-screen-01" });
+    let healthSeen: Record<string, { syncErrMs: number | null }> | null = null;
+    screen.on("health", (clients) => (healthSeen = clients as Record<string, { syncErrMs: number | null }>));
+    try {
+      await Promise.all([host.connect(), player.connect(), screen.connect()]);
+      await waitFor(() => screen.room !== null && screen.me !== null, 5000);
+
+      expect(screen.me!.kind).toBe("viewer");
+      expect(screen.me!.plays).toBe(false);
+      expect(screen.assignment).toBeNull(); // nothing to play, so nothing can come out
+      expect(screen.room!.hostClientIds).not.toContain("vw-screen-01");
+
+      // it sees the room the way the host does — the player count the page shows is from this snapshot
+      await waitFor(() => !!screen.room?.clients["vw-play-0001"], 5000);
+      const players = Object.values(screen.room!.clients).filter((c) => c.kind === "player");
+      expect(players.map((c) => c.id)).toContain("vw-play-0001");
+      expect(players.map((c) => c.id)).not.toContain("vw-screen-01"); // and does not count itself
+
+      // HEALTH reaches it: the "Synced ±N ms" tile is a median over these
+      await waitFor(() => healthSeen !== null, 4000); // HEALTH at a viewer
+      expect(Object.keys(healthSeen!).length).toBeGreaterThan(0);
+
+      // and it has a clock of its own, so it can render the playhead without asking anyone
+      await waitFor(() => screen.status.clockOffsetMs !== null, 5000);
+      host.host.play(0);
+      await waitFor(() => screen.room?.transport.state === "playing", 4000);
+      await waitFor(() => screen.clock.trackTimeSec() > 0, 4000);
+    } finally {
+      host.disconnect();
+      player.disconnect();
+      screen.disconnect();
+    }
+  }, 30_000);
+});
