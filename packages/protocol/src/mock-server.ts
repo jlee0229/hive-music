@@ -308,7 +308,16 @@ export function startMockServer(opts: MockServerOptions = {}) {
         for (const m of msg.measurements) {
           const c = room.clients[m.clientId];
           if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored, as index.ts promises
-          c.calibratedOffsetMs = (c.calibratedOffsetMs ?? c.tableLatencyMs ?? 0) + m.residualMs;
+          /*
+           * P0-6. The accumulation base must match what the client was ALREADY subtracting when the
+           * click was measured, or the first pass makes things worse. With no table row (browserFamily
+           * "other") the engine subtracts `ctx.outputLatency` itself, so the residual was measured with
+           * it applied — but writing `calibratedOffsetMs` makes the engine stop subtracting it. A base of
+           * 0 would leave the phone late by exactly its output latency until a second pass. The client
+           * reports that number in CLIENT_STATUS, so use it.
+           */
+          const base = c.calibratedOffsetMs ?? c.tableLatencyMs ?? health.get(m.clientId)?.outputLatencyMs ?? 0;
+          c.calibratedOffsetMs = base + m.residualMs;
           room.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
         }
         room.calibration = { ...room.calibration, state: "done" };

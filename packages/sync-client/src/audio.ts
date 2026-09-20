@@ -66,6 +66,18 @@ export function createBrowserAudioEngine(
   /** Set while a run is live; flipped by a cancel so runAsReference aborts at its next await. */
   let cancelState: { cancelled: boolean } | null = null;
   let sawCalibrationRun = false;
+  /** Set when a schedule was refused for want of a clock; the next accepted probe retries it. */
+  let waitingForClock = false;
+
+  /*
+   * The clock arrives asynchronously, so the refused schedule has to be retried by an event rather than
+   * polled. `status` fires after every probe, which is exactly when offsetMs can first become non-null.
+   */
+  emit.on("status", () => {
+    if (!waitingForClock || clock.offsetMs === null) return;
+    waitingForClock = false;
+    reschedule(true, "clock ready");
+  });
 
   const setState = (next: AudioState): void => {
     if (state === next) return;
@@ -147,9 +159,22 @@ export function createBrowserAudioEngine(
     };
   }
 
-  /** Recomputes the schedule from the latest snapshot. Safe to call as often as you like. */
+  /**
+   * Recomputes the schedule from the latest snapshot. Safe to call as often as you like.
+   *
+   * Refuses to schedule before the clock has accepted its first sample. `ClockModel.serverNow()` falls
+   * back to `offsetMs ?? 0`, so scheduling early maps server time to ctx time using the raw difference
+   * between two unrelated clocks — on a hotspot where stems decode before the first coded pair validates,
+   * the first start can be seconds out, and it stays wrong until the 1 Hz drift check hauls it back. One
+   * accepted sample is enough (the degraded-pair fallback guarantees one arrives), so this waits rather
+   * than guessing.
+   */
   function reschedule(force: boolean, _reason: string): void {
     if (!scheduler || !lastRoom) return;
+    if (clock.offsetMs === null) {
+      waitingForClock = true;
+      return;
+    }
     scheduler.apply(lastRoom.transport, lastAssignment, {
       trackId: lastRoom.track?.id ?? null,
       useOutputLatency: useOutputLatency(),

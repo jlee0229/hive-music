@@ -168,3 +168,65 @@ describe("CALIBRATION_CANCEL (protocol v2)", () => {
     host.ws.close();
   });
 });
+
+describe("P0-6 · the calibration accumulation base matches what the client was already subtracting", () => {
+  test("a phone with no table row keeps its outputLatency in the base", async () => {
+    // browserFamily "other" ⇒ tableLatencyMs null ⇒ the engine subtracts ctx.outputLatency itself, so the
+    // residual was measured with it applied. Writing calibratedOffsetMs makes the engine STOP subtracting
+    // it, so a base of 0 would leave the phone late by exactly its output latency until a second pass.
+    const host = new Fake();
+    const other = new Fake();
+    await Promise.all([host.open(), other.open()]);
+    host.send({ type: "JOIN", clientId: "p06-host-01", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    other.send({
+      type: "JOIN", clientId: "p06-other-01", roomCode: "BZQ7", kind: "player", plays: true,
+      device: { userAgent: "firefox", platform: "linux", browserFamily: "other" },
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    await Promise.all([host.next("WELCOME"), other.next("WELCOME")]);
+    await host.next("ROOM_STATE", (m) => !!m.room.clients["p06-other-01"]);
+    expect(mock.room.clients["p06-other-01"]!.tableLatencyMs).toBeNull(); // the case under test
+
+    // the phone reports the latency it is compensating for itself
+    other.send({ type: "CLIENT_STATUS", rttMs: 20, syncErrMs: 10, outputLatencyMs: 30, audioState: "ready" });
+    await host.next("HEALTH", (m) => m.clients["p06-other-01"]?.outputLatencyMs === 30, 2500);
+
+    host.send({ type: "CALIBRATION_START", referenceClientId: "p06-host-01" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("p06-other-01"));
+    // a perfectly synced phone measures residual 0 — and must STAY in sync after the report
+    host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "p06-other-01", residualMs: 0, confidence: 0.95 }] });
+    const done = await host.next("ROOM_STATE", (m) => typeof m.room.clients["p06-other-01"]?.calibratedOffsetMs === "number");
+
+    const rec = done.room.clients["p06-other-01"]!;
+    expect(rec.calibratedOffsetMs).toBe(30); // 30 (what it was subtracting) + 0 (residual), not 0
+    // compensation is unchanged in effect: it used to subtract 30 itself, now the server supplies it
+    expect(rec.assignment!.compensationMs).toBe(30);
+    host.ws.close();
+    other.ws.close();
+  }, 15_000);
+
+  test("a phone with a table row still accumulates on the table value", async () => {
+    const host = new Fake();
+    const ios = new Fake();
+    await Promise.all([host.open(), ios.open()]);
+    host.send({ type: "JOIN", clientId: "p06-host-02", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    ios.send({
+      type: "JOIN", clientId: "p06-ios-0001", roomCode: "BZQ7", kind: "player", plays: true,
+      device: { userAgent: "iphone", platform: "ios", browserFamily: "ios-safari" },
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    await Promise.all([host.next("WELCOME"), ios.next("WELCOME")]);
+    await host.next("ROOM_STATE", (m) => !!m.room.clients["p06-ios-0001"]);
+    // even if it reports an outputLatency, the table row wins — the engine is not subtracting it
+    ios.send({ type: "CLIENT_STATUS", rttMs: 20, syncErrMs: 10, outputLatencyMs: 99, audioState: "ready" });
+    await host.next("HEALTH", (m) => m.clients["p06-ios-0001"]?.outputLatencyMs === 99, 2500);
+
+    host.send({ type: "CALIBRATION_START", referenceClientId: "p06-host-02" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("p06-ios-0001"));
+    host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "p06-ios-0001", residualMs: -12, confidence: 0.9 }] });
+    const done = await host.next("ROOM_STATE", (m) => typeof m.room.clients["p06-ios-0001"]?.calibratedOffsetMs === "number");
+    expect(done.room.clients["p06-ios-0001"]!.calibratedOffsetMs).toBe(60 - 12); // ios-safari table row
+    host.ws.close();
+    ios.ws.close();
+  }, 15_000);
+});

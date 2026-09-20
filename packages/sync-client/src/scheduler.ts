@@ -109,8 +109,18 @@ export function decideStart({ ctxNow, startCtxForZero, durationSec }: DecideInpu
   }
   const whenCtx = ctxNow + LATE_START_MARGIN_SEC;
   const offsetSec = whenCtx - startCtxForZero;
+  /*
+   * P0-5. The start is in the future but nearer than the margin — a lead of 20–50 ms, which is what a
+   * phone sees when ROOM_STATE arrives late in the PLAY window. `offsetSec` is then NEGATIVE, and
+   * clamping it to 0 played track position 0 at `ctxNow + LATE_START_MARGIN_SEC`: up to 30 ms EARLY.
+   * Worse, the branch records the *ideal* startCtxForZero, so the drift check compared the ideal against
+   * the ideal, read zero error, and never corrected it — every phone in this window started early
+   * together with green health, while a phone that got the snapshot later took the correct late path and
+   * sat up to 30 ms behind them. Web Audio accepts any future `when`, so schedule it exactly.
+   */
+  if (offsetSec < 0) return { whenCtx: startCtxForZero, offsetSec: 0, startCtxForZero, mode: "scheduled" };
   if (offsetSec >= durationSec) return null;
-  return { whenCtx, offsetSec: Math.max(0, offsetSec), startCtxForZero, mode: "immediate" };
+  return { whenCtx, offsetSec, startCtxForZero, mode: "immediate" };
 }
 
 export interface SchedulerDeps {
@@ -220,8 +230,18 @@ export class Scheduler {
    * subtracted: start earlier to come out on time.
    */
   ctxTimeForTrackPosition(serverTimeAtTrackZero: number, p: number, a: Assignment | null, useOutputLatency: boolean): number {
+    return this.ctxTimeForServerTime(serverTimeAtTrackZero + p * 1000, a, useOutputLatency);
+  }
+
+  /**
+   * The ctx time at which whatever is scheduled for `serverTime` actually leaves this speaker — the
+   * formula from docs/02-protocol.md §1. Everything time-critical goes through this one function: source
+   * starts, the drift check, and scene-boundary gain ramps. A ramp computed without the compensation
+   * lands ~compensationMs (≈60 ms on iOS) after the audio it is supposed to gate, which is audible on a
+   * hard STROBE edge (P1-10).
+   */
+  ctxTimeForServerTime(serverTime: number, a: Assignment | null, useOutputLatency: boolean): number {
     const ctxNow = this.deps.ctx.currentTime;
-    const serverTime = serverTimeAtTrackZero + p * 1000;
     const base = this.deps.mapper.ctxTimeForNow(serverTime, ctxNow, this.deps.now());
     const delaySec = (a?.delayMs ?? 0) / 1000;
     const compSec = (a?.compensationMs ?? 0) / 1000;
@@ -240,6 +260,19 @@ export class Scheduler {
   ): ApplyResult {
     this.assignment = assignment;
     this.useOutputLatency = opts.useOutputLatency;
+
+    /*
+     * P0-3. `assignment === null` means the planner decided this device is not a speaker — a host that
+     * turned "use this phone as a speaker" off, or a client whose record is gone. Falling through built a
+     * branch with `gainFromDb(undefined ?? 0)` on every stem and `compensationMs` 0: the phone blared
+     * every stem, uncompensated and out of sync with the room. Silence is the only correct reading. When
+     * an assignment reappears the normal path below schedules it from the transport, i.e. a late join.
+     */
+    if (assignment === null) {
+      const wasPlaying = this.playing;
+      if (wasPlaying) this.stopAll("no assignment: this device is not a speaker");
+      return { action: wasPlaying ? "stopped" : "idle", decision: null, reason: "assignment is null" };
+    }
 
     if (transport.state !== "playing" || !opts.trackId || opts.trackId !== this.trackId || this.buffers.size === 0) {
       const wasPlaying = this.playing;
@@ -456,9 +489,11 @@ export class Scheduler {
   applyAssignmentGains(assignment: Assignment | null): void {
     this.assignment = assignment;
     const ctxNow = this.deps.ctx.currentTime;
+    // P1-10: the ramp has to land where the *audio* for that server time plays, not where the server
+    // time maps to bare ctx, or it trails the sound it gates by this phone's compensation.
     const at =
       assignment?.applyAtServerTime != null
-        ? Math.max(ctxNow, this.deps.mapper.ctxTimeForNow(assignment.applyAtServerTime, ctxNow, this.deps.now()))
+        ? Math.max(ctxNow, this.ctxTimeForServerTime(assignment.applyAtServerTime, assignment, this.useOutputLatency))
         : ctxNow;
     for (const branch of this.branches) {
       if (branch.stopped) continue;
