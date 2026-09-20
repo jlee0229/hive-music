@@ -39,6 +39,7 @@ export function NudgeSlider({
         type="range"
         min={-NUDGE_RANGE_MS}
         max={NUDGE_RANGE_MS}
+        step={5}
         value={local}
         aria-label={label}
         onChange={(e) => setLocal(Number(e.target.value))}
@@ -52,6 +53,9 @@ export function NudgeSlider({
         <span>−{NUDGE_RANGE_MS} · sounds early</span>
         <span>sounds late · +{NUDGE_RANGE_MS}</span>
       </div>
+      <span className="text-[11px]" style={{ color: mutedColor }}>
+        Small moves are absorbed — try ±20
+      </span>
     </div>
   );
 }

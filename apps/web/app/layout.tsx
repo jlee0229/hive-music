@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { StubEngineBanner } from "@/components/StubEngineBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -40,7 +41,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-dvh antialiased">{children}</body>
+      <body className="min-h-dvh antialiased">
+        <StubEngineBanner />
+        {children}
+      </body>
     </html>
   );
 }

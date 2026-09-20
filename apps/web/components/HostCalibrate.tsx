@@ -14,11 +14,14 @@ export function HostCalibrate({
   clock,
   host,
   onClose,
+  micError,
 }: {
   room: RoomState;
   clock: HiveClock;
   host: HiveHostControls;
   onClose: () => void;
+  /** Set when runAsReference() rejected (mic denied, etc.) -- the server-side run still runs its course and reports "failed". */
+  micError?: string | null;
 }) {
   const { state, order, results, startServerTime } = room.calibration;
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(CALIBRATION_COUNTDOWN_MS / 1000));
@@ -55,6 +58,17 @@ export function HostCalibrate({
           {state === "countdown" ? "STARTING" : state === "running" ? "LISTENING" : state === "failed" ? "FAILED" : "DONE"}
         </span>
       </div>
+
+      {micError ? (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium"
+          style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
+        >
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--ringer-fg)" }} />
+          Microphone: {micError}
+        </div>
+      ) : null}
 
       <div className="flex items-center gap-4 rounded-[20px] border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
         <div className="relative flex h-[84px] w-[84px] shrink-0 items-center justify-center">
