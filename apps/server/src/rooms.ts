@@ -59,6 +59,7 @@ export class Room {
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private calibrationTimers: ReturnType<typeof setTimeout>[] = [];
   private sceneTimer: ReturnType<typeof setTimeout> | null = null;
+  private loopTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private healthTimer: ReturnType<typeof setInterval>;
   private pingTimer: ReturnType<typeof setInterval>;
@@ -99,6 +100,7 @@ export class Room {
     clearInterval(this.pingTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.sceneTimer) clearTimeout(this.sceneTimer);
+    if (this.loopTimer) clearTimeout(this.loopTimer);
     if (this.trailingTimer) clearTimeout(this.trailingTimer);
     for (const t of this.disconnectTimers.values()) clearTimeout(t);
     for (const t of this.calibrationTimers) clearTimeout(t);
@@ -205,6 +207,45 @@ export class Room {
       this.room.mode = { kind: cur.mode, params: cur.params };
       this.replan(null);
     }
+  }
+
+  // ---- loop timer ----------------------------------------------------------------
+  /**
+   * Nothing used to fire at the end of the track: the room stayed "playing" forever with every
+   * phone silent (a 60s demo track ends and the party just… stops, while the UI still says playing).
+   * The loop timer restarts the track at its own end, seamlessly: it fires LEAD_MS before the
+   * boundary and moves serverTimeAtTrackZero to exactly the old end, so every phone gets the new
+   * transport with the standard lead and schedules the restart on the boundary instant itself.
+   */
+  private cancelLoopTimer() {
+    if (this.loopTimer) {
+      clearTimeout(this.loopTimer);
+      this.loopTimer = null;
+    }
+  }
+
+  private rearmLoopTimer() {
+    this.cancelLoopTimer();
+    if (this.room.transport.state !== "playing" || !this.room.track) return;
+    const endServerTime = this.room.transport.serverTimeAtTrackZero + this.room.track.durationSec * 1000;
+    const delay = Math.max(0, endServerTime - LEAD_MS - now());
+    this.loopTimer = setTimeout(() => this.loopBack(endServerTime), delay);
+  }
+
+  private loopBack(endServerTime: number) {
+    this.loopTimer = null;
+    if (this.room.transport.state !== "playing" || !this.room.track) return;
+    // Seamless when the boundary is still comfortably ahead (the normal case: this fires LEAD_MS
+    // early); a boundary too close or already past (a SEEK beyond the end, or a room found stuck
+    // from before this timer existed) restarts with the standard lead instead — a
+    // serverTimeAtTrackZero in the past would start mid-track.
+    const zero = endServerTime > now() + 100 ? endServerTime : now() + LEAD_MS;
+    this.room.transport = { state: "playing", serverTimeAtTrackZero: zero };
+    this.dirty = true;
+    this.flush();
+    this.syncModeToScenePlan();
+    this.rearmSceneTimer();
+    this.rearmLoopTimer();
   }
 
   /**
@@ -347,12 +388,16 @@ export class Room {
     // an existing PLAYER record (a host demoted by this exact gap before this fix landed) be promoted
     // back once it presents the room's real hostKey.
     const wantsHost = msg.kind === "host" && (msg.hostKey === this.hostKey || existing?.kind === "host" || this.room.hostClientIds.length === 0);
+    // A viewer (v4, the /screen projector) is read-only: plays is forced false whatever the JOIN
+    // says, it never lands in hostClientIds, and it must not be coerced to "player" — that made
+    // every projector a phantom speaker that stole a stem in ORCHESTRA and padded the player count.
+    const isViewer = !wantsHost && msg.kind === "viewer";
     const rec: ClientRecord = existing
-      ? { ...existing, connected: true, name: msg.name ?? existing.name, device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.plays }
+      ? { ...existing, connected: true, name: msg.name ?? existing.name, device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.kind === "viewer" ? false : existing.plays }
       : {
           id: msg.clientId,
-          kind: wantsHost ? "host" : "player",
-          plays: wantsHost ? msg.plays : true,
+          kind: wantsHost ? "host" : isViewer ? "viewer" : "player",
+          plays: wantsHost ? msg.plays : !isViewer,
           name: msg.name ?? `Phone ${this.joinCounter + 1}`,
           device,
           joinIndex: this.joinCounter++,
@@ -470,6 +515,7 @@ export class Room {
         this.setTrack(track);
         this.room.transport = { state: "stopped" };
         this.cancelSceneTimer();
+        this.cancelLoopTimer();
         this.replan();
         return;
       }
@@ -484,11 +530,13 @@ export class Room {
           this.flush();
           this.syncModeToScenePlan();
           this.rearmSceneTimer();
+          this.rearmLoopTimer();
         } else if (msg.action === "PAUSE" && this.room.transport.state === "playing") {
           this.room.transport = { state: "paused", trackTimeAtPause: trackTimeSec(this.room.transport, t) };
           this.dirty = true;
           this.flush();
           this.cancelSceneTimer();
+          this.cancelLoopTimer();
         }
         return;
       }
