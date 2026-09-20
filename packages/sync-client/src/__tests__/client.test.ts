@@ -169,7 +169,7 @@ describe("a viewer client (protocol v4, for /screen)", () => {
       expect(players.map((c) => c.id)).not.toContain("vw-screen-01"); // and does not count itself
 
       // HEALTH reaches it: the "Synced ±N ms" tile is a median over these
-      await waitFor(() => healthSeen !== null, 4000, "HEALTH at a viewer");
+      await waitFor(() => healthSeen !== null, 4000); // HEALTH at a viewer
       expect(Object.keys(healthSeen!).length).toBeGreaterThan(0);
 
       // and it has a clock of its own, so it can render the playhead without asking anyone
