@@ -66,6 +66,24 @@ describe("planner", () => {
     }
   });
 
+  test("STROBE locks to the track's tempo: period = beats × groups, duty = 1/groups, staggered phases", () => {
+    const four = [client(0), client(1), client(2), client(3)];
+    const r = room(four, { kind: "STROBE", params: { groups: 4, beatsPerSwitch: 1 } });
+    r.track = { ...r.track!, bpm: 120 }; // one beat = 500 ms
+    const a = plan(r);
+    for (const [i, v] of Object.values(a).entries()) {
+      expect(v!.pattern).toMatchObject({ kind: "strobe", periodMs: 2000, duty: 0.25 });
+      expect(v!.pattern!.phaseMs).toBe(i * 500); // each group takes exactly one beat, back to back
+    }
+  });
+
+  test("STROBE without a bpm keeps the free-running period param", () => {
+    const r = room([client(0)], { kind: "STROBE", params: { periodMs: 700, duty: 0.5 } });
+    r.track = { ...r.track!, bpm: undefined };
+    const a = plan(r);
+    expect(a["c0-00000000"]!.pattern).toMatchObject({ periodMs: 700, duty: 0.5 });
+  });
+
   test("STEREO splits by position with drums+bass left, vocals+other right", () => {
     const a = plan(room([client(0, { position: { x: 0.1, y: 0.5 } }), client(1, { position: { x: 0.9, y: 0.5 } })], { kind: "STEREO", params: {} }));
     expect(audible(a["c0-00000000"]!.gainsDb)).toEqual(["bass", "drums"]);

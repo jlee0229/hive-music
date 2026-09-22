@@ -94,7 +94,14 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         const group = c.joinIndex % p.groups;
         const role = STEMS[group % STEMS.length]!;
         const a = base(c, `strobe ${group + 1}`, role, gains(room, stems), applyAtServerTime);
-        a.pattern = { kind: "strobe", periodMs: p.periodMs, phaseMs: Math.round((group / p.groups) * p.periodMs), duty: p.duty, rampMs: 10 };
+        // Beat-locked when the track's tempo is known: each group is audible for beatsPerSwitch
+        // beats and a full rotation of all groups is groups·beatsPerSwitch beats; duty 1/groups
+        // hands the song from group to group with no overlap and no gap. Patterns evaluate on
+        // track time, so beat 0 sits at track zero. No bpm → the free-running period, as before.
+        const beatMs = room.track?.bpm ? 60000 / room.track.bpm : null;
+        const periodMs = beatMs ? Math.min(8000, Math.max(100, Math.round(beatMs * p.beatsPerSwitch * p.groups))) : p.periodMs;
+        const duty = beatMs ? 1 / p.groups : p.duty;
+        a.pattern = { kind: "strobe", periodMs, phaseMs: Math.round((group / p.groups) * periodMs), duty, rampMs: 10 };
         out[c.id] = a;
         break;
       }

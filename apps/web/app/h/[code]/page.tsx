@@ -16,6 +16,7 @@ import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
 import { HiveMap } from "@/components/HiveMap";
 import { ModeChips } from "@/components/ModeChips";
+import { StrobeControls } from "@/components/StrobeControls";
 import { VibeBox } from "@/components/VibeBox";
 import { SceneStrip } from "@/components/SceneStrip";
 import { HostCalibrate } from "@/components/HostCalibrate";
@@ -435,6 +436,7 @@ function HostRoom({
         <TransportBar room={room} clock={client.clock} host={client.host} />
 
         <ModeChips current={room.mode.kind} host={client.host} />
+        {room.mode.kind === "STROBE" ? <StrobeControls mode={room.mode} bpm={room.track?.bpm ?? null} host={client.host} /> : null}
 
         <VibeBox host={client.host} />
         <SceneStrip room={room} clock={client.clock} />

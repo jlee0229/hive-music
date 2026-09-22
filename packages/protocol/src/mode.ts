@@ -13,6 +13,11 @@ export const ModeParamsSchema = z.object({
   duty: z.number().min(0.05).max(1).optional(),
   /** STROBE: number of phase groups the phones are split into. */
   groups: z.number().int().min(1).max(8).optional(),
+  /**
+   * STROBE: beats each group stays audible when the track's tempo is known — 2 = half note,
+   * 1 = quarter, 0.5 = eighth, 0.25 = sixteenth (4/4 assumed). Ignored without a bpm.
+   */
+  beatsPerSwitch: z.number().min(0.25).max(4).optional(),
   /** Any mode: global per-stem trim in dB applied on top of the mode's gains. */
   stemGainsDb: z.record(z.string(), z.number().min(-60).max(12)).optional(),
 });
@@ -27,7 +32,7 @@ export type Mode = z.infer<typeof ModeSchema>;
 export const DEFAULT_MODE: Mode = { kind: "UNISON", params: {} };
 
 /** Fills mode-specific defaults so the planner and the UI agree on what "unset" means. */
-export function resolveModeParams(mode: Mode): Required<Pick<ModeParams, "axis" | "spanMs" | "periodMs" | "duty" | "groups">> & ModeParams {
+export function resolveModeParams(mode: Mode): Required<Pick<ModeParams, "axis" | "spanMs" | "periodMs" | "duty" | "groups" | "beatsPerSwitch">> & ModeParams {
   const p = mode.params ?? {};
   return {
     ...p,
@@ -36,5 +41,6 @@ export function resolveModeParams(mode: Mode): Required<Pick<ModeParams, "axis" 
     periodMs: p.periodMs ?? STROBE_DEFAULT_PERIOD_MS,
     duty: p.duty ?? STROBE_DEFAULT_DUTY,
     groups: p.groups ?? 2,
+    beatsPerSwitch: p.beatsPerSwitch ?? 1,
   };
 }

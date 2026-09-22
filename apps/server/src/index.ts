@@ -139,3 +139,35 @@ manager.attachServer(server);
 await manager.loadLibrary();
 
 console.log(`[hive-server] listening on http://localhost:${server.port} (protocol v${PROTOCOL_VERSION}, cors ${CORS_ORIGIN})`);
+
+/**
+ * Tempo backfill: tracks uploaded before BPM detection existed have no `bpm` in meta.json, so the
+ * beat-locked STROBE would fall back to a free-running flash for them. Runs after startup, off the
+ * request path; each patched meta is written back so the work happens once per track, ever.
+ */
+void (async () => {
+  const { parseWav } = await import("./upload/wav");
+  const { detectBpm } = await import("./upload/bpm");
+  let patched = 0;
+  for (const entry of manager.getLibrary()) {
+    if (entry.bpm || entry.generated) continue;
+    try {
+      const metaPath = `${FIXTURES_DIR}/tracks/${entry.id}/meta.json`;
+      const stem = entry.stems.includes("mix") ? "mix" : entry.stems[0];
+      if (!stem) continue;
+      const bytes = new Uint8Array(await Bun.file(`${FIXTURES_DIR}/tracks/${entry.id}/${stem}.wav`).arrayBuffer());
+      const wav = parseWav(bytes);
+      const bpm = detectBpm(wav.channels[0]!, wav.sampleRate);
+      if (bpm === null) continue;
+      const meta = await Bun.file(metaPath).json();
+      await Bun.write(metaPath, JSON.stringify({ ...meta, bpm }, null, 2) + "\n");
+      patched++;
+    } catch (err) {
+      console.warn(`[hive-server] bpm backfill failed for ${entry.id}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  if (patched > 0) {
+    await manager.reloadLibrary();
+    console.log(`[hive-server] bpm backfill: detected tempo for ${patched} track(s)`);
+  }
+})();
