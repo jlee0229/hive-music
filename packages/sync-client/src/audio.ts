@@ -31,6 +31,7 @@ const LOAD_RETRY_BASE_MS = 1000;
 const LOAD_RETRY_MAX_MS = 30_000;
 import type { AudioEngine, AudioEngineContext } from "./client";
 import { renderClick } from "./calibration/click";
+import { pitchShiftMono } from "./pitch";
 import { CalibrationCancelledError, runAsReference, type CalibrationPlan } from "./calibration/reference";
 import { Scheduler, type BufferLike, type CtxLike } from "./scheduler";
 import type { CalibrationProgress, CalibrationResult, HiveCalibration } from "./index";
@@ -68,6 +69,15 @@ export function createBrowserAudioEngine(
   let loadedTrackId: string | null = null;
   let loadingTrackId: string | null = null;
   let wakeLock: WakeLockSentinelLike | null = null;
+  /**
+   * CHOIR (docs/05): the as-decoded stems, plus rendered pitch variants keyed `${trackId}:${semi}`.
+   * The cache is cleared on every track change — one pitched copy of a 3-minute mono track is
+   * ~35 MB of Float32, so only the current track's variants are worth keeping on a phone.
+   */
+  let originalBuffers: Map<string, BufferLike> | null = null;
+  let appliedPitchSemitones = 0;
+  const pitchedCache = new Map<string, Map<string, BufferLike>>();
+  let pitchJobKey: string | null = null;
   /*
    * Read live, never cached. `ctx.outputLatency` is not a constant of the device: on iOS it changes when
    * the audio session does — a calibration run switches to play-and-record, a Bluetooth speaker or a
@@ -258,6 +268,9 @@ export function createBrowserAudioEngine(
       );
       if (loadingTrackId !== track.id) return; // SET_TRACK landed again while we were decoding
       const map = new Map<string, BufferLike>(buffers);
+      originalBuffers = map;
+      appliedPitchSemitones = 0;
+      pitchedCache.clear(); // pitched copies are ~35MB each; only the current track earns them
       scheduler?.setBuffers(map, track.id);
       loadedTrackId = track.id;
       loadFailures.delete(track.id);
@@ -268,6 +281,7 @@ export function createBrowserAudioEngine(
       lastReadyAnnounceAt = performance.now();
       send({ type: "AUDIO_READY", trackId: track.id });
       reschedule(true, "track loaded");
+      void ensurePitchedBuffers(); // a CHOIR assignment may already be waiting for this track
     } catch (err) {
       const previous = loadFailures.get(track.id);
       loadFailures.set(track.id, { attempts: (previous?.attempts ?? 0) + 1, atMs: performance.now() });
@@ -275,6 +289,54 @@ export function createBrowserAudioEngine(
       setState("unlocked");
     } finally {
       if (loadingTrackId === track.id) loadingTrackId = null;
+    }
+  }
+
+  /**
+   * CHOIR: swap the scheduler onto buffers rendered at the assignment's pitch. The render is slow
+   * (seconds of chunked WSOLA for a full song), so the phone keeps playing the current buffers and
+   * hard-resyncs onto the pitched ones the moment they are ready — the same resync path a late
+   * joiner takes. Renders are cached per (track, semitone); the room's 2 Hz snapshots make this
+   * re-entrant, so an in-flight render key blocks duplicates.
+   */
+  async function ensurePitchedBuffers(): Promise<void> {
+    if (!ctx || !scheduler || !loadedTrackId || !originalBuffers) return;
+    if (typeof ctx.createBuffer !== "function") return; // test fakes have no buffer factory
+    const trackId = loadedTrackId;
+    const want = lastAssignment?.pitchSemitones ?? 0;
+    if (want === appliedPitchSemitones) return;
+    if (want === 0) {
+      scheduler.setBuffers(originalBuffers, trackId);
+      appliedPitchSemitones = 0;
+      reschedule(true, "pitch cleared");
+      return;
+    }
+    const key = `${trackId}:${want}`;
+    let pitched = pitchedCache.get(key);
+    if (!pitched) {
+      if (pitchJobKey === key) return; // already rendering this exact variant
+      pitchJobKey = key;
+      try {
+        const rendered = new Map<string, BufferLike>();
+        for (const [stem, raw] of originalBuffers) {
+          const src = raw as AudioBuffer;
+          const shifted = await pitchShiftMono(src.getChannelData(0), want);
+          if (loadedTrackId !== trackId) return; // track changed mid-render; buffers are stale
+          const out = ctx.createBuffer(1, shifted.length, src.sampleRate);
+          out.copyToChannel(shifted as Float32Array<ArrayBuffer>, 0);
+          rendered.set(stem, out);
+        }
+        pitchedCache.set(key, rendered);
+        pitched = rendered;
+      } finally {
+        if (pitchJobKey === key) pitchJobKey = null;
+      }
+    }
+    // Only apply if this variant is still what the (possibly newer) assignment wants.
+    if (loadedTrackId === trackId && (lastAssignment?.pitchSemitones ?? 0) === want) {
+      scheduler.setBuffers(pitched, trackId);
+      appliedPitchSemitones = want;
+      reschedule(true, "pitch ready");
     }
   }
 
@@ -459,6 +521,7 @@ export function createBrowserAudioEngine(
         void loadTrack(room);
         return;
       }
+      void ensurePitchedBuffers(); // CHOIR: assignment pitch may have changed with this snapshot
       reschedule(false, "room state");
     },
 

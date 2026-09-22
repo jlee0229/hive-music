@@ -54,6 +54,18 @@ describe("planner", () => {
     expect(a["c1-00000000"]).not.toBeNull();
   });
 
+  test("CHOIR rotates pitch steps by joinIndex, full mix audible, timeline untouched", () => {
+    const five = [client(0), client(1), client(2), client(3), client(4)];
+    const a = plan(room(five, { kind: "CHOIR", params: {} }));
+    expect(Object.values(a).map((v) => v!.pitchSemitones)).toEqual([0, 12, -12, 7, 0]); // wraps at 4
+    expect(Object.values(a).map((v) => v!.label)).toEqual(["choir", "soprano", "basso", "tenor", "choir"]);
+    for (const v of Object.values(a)) {
+      expect(audible(v!.gainsDb)).toEqual([...STEMS].sort()); // everyone plays the whole mix
+      expect(v!.delayMs).toBe(0); // pitch is a client-side render, never a schedule change
+      expect(v!.pattern).toBeNull();
+    }
+  });
+
   test("STEREO splits by position with drums+bass left, vocals+other right", () => {
     const a = plan(room([client(0, { position: { x: 0.1, y: 0.5 } }), client(1, { position: { x: 0.9, y: 0.5 } })], { kind: "STEREO", params: {} }));
     expect(audible(a["c0-00000000"]!.gainsDb)).toEqual(["bass", "drums"]);

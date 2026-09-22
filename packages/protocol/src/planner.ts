@@ -1,4 +1,4 @@
-import { ROLE_COLORS, STEMS, WAVE_SWELL_PERIOD_MS, type Role } from "./constants";
+import { CHOIR_STEPS, ROLE_COLORS, STEMS, WAVE_SWELL_PERIOD_MS, type Role } from "./constants";
 import { resolveModeParams } from "./mode";
 import type { Assignment, ClientRecord, RoomState, StemRole } from "./room";
 
@@ -95,6 +95,18 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         const role = STEMS[group % STEMS.length]!;
         const a = base(c, `strobe ${group + 1}`, role, gains(room, stems), applyAtServerTime);
         a.pattern = { kind: "strobe", periodMs: p.periodMs, phaseMs: Math.round((group / p.groups) * p.periodMs), duty: p.duty, rampMs: 10 };
+        out[c.id] = a;
+        break;
+      }
+      case "CHOIR": {
+        // Everyone plays the full mix, but each phone sings at its own pitch: octaves and a fifth
+        // rotated by joinIndex, so the crowd stacks back into one consonant chord. The shift itself
+        // happens client-side (time-stretch + resample), keeping the shared timeline untouched.
+        const step = CHOIR_STEPS[c.joinIndex % CHOIR_STEPS.length]!;
+        const label = step === 0 ? "choir" : step === 12 ? "soprano" : step === -12 ? "basso" : "tenor";
+        const role = step === 0 ? "unison" : step === 12 ? "vocals" : step === -12 ? "bass" : "other";
+        const a = base(c, label, role, gains(room, stems), applyAtServerTime);
+        a.pitchSemitones = step;
         out[c.id] = a;
         break;
       }

@@ -59,6 +59,12 @@ export const AssignmentSchema = z.object({
   pattern: PatternSchema.nullable(),
   /** If set, apply the new gains/pattern exactly at this server time (scene boundaries). */
   applyAtServerTime: z.number().nullable(),
+  /**
+   * CHOIR: shift this phone's copy of the song by this many semitones (time-stretched client-side,
+   * never a playbackRate change — that would also change speed and break the shared timeline).
+   * Absent/0 = play as recorded.
+   */
+  pitchSemitones: z.number().int().min(-24).max(24).optional(),
 });
 export type Assignment = z.infer<typeof AssignmentSchema>;
 

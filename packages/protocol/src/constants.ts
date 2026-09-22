@@ -75,8 +75,14 @@ export const CALIBRATION_COUNTDOWN_MS = 3000;
 export const NUDGE_RANGE_MS = 100;
 
 // ---- modes, stems, roles, colors -------------------------------------------
-export const MODES = ["UNISON", "ORCHESTRA", "STEREO", "WAVE", "STROBE"] as const;
+export const MODES = ["UNISON", "ORCHESTRA", "STEREO", "WAVE", "STROBE", "CHOIR"] as const;
 export type ModeKind = (typeof MODES)[number];
+
+/**
+ * CHOIR: the pitch each phone sings at, in semitones, rotated by joinIndex. Octaves plus a fifth
+ * stack back into one consonant sound whatever the song — different voices, one chord.
+ */
+export const CHOIR_STEPS = [0, 12, -12, 7] as const;
 
 /** Canonical stem order. A non-separated track is a one-stem track named "mix". */
 export const STEMS = ["drums", "bass", "vocals", "other"] as const;
