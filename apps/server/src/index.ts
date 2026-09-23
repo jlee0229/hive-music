@@ -147,20 +147,22 @@ console.log(`[hive-server] listening on http://localhost:${server.port} (protoco
  */
 void (async () => {
   const { parseWav } = await import("./upload/wav");
-  const { detectBpm } = await import("./upload/bpm");
+  const { detectBpm, BPM_ALGORITHM_VERSION } = await import("./upload/bpm");
   let patched = 0;
   for (const entry of manager.getLibrary()) {
-    if (entry.bpm || entry.generated) continue;
+    if (entry.generated) continue;
     try {
       const metaPath = `${FIXTURES_DIR}/tracks/${entry.id}/meta.json`;
+      const meta = await Bun.file(metaPath).json();
+      // Re-analyze when the detector improved, not just when bpm is missing.
+      if (meta.bpm && meta.bpmVersion === BPM_ALGORITHM_VERSION) continue;
       const stem = entry.stems.includes("mix") ? "mix" : entry.stems[0];
       if (!stem) continue;
       const bytes = new Uint8Array(await Bun.file(`${FIXTURES_DIR}/tracks/${entry.id}/${stem}.wav`).arrayBuffer());
       const wav = parseWav(bytes);
       const bpm = detectBpm(wav.channels[0]!, wav.sampleRate);
       if (bpm === null) continue;
-      const meta = await Bun.file(metaPath).json();
-      await Bun.write(metaPath, JSON.stringify({ ...meta, bpm }, null, 2) + "\n");
+      await Bun.write(metaPath, JSON.stringify({ ...meta, bpm, bpmVersion: BPM_ALGORITHM_VERSION }, null, 2) + "\n");
       patched++;
     } catch (err) {
       console.warn(`[hive-server] bpm backfill failed for ${entry.id}:`, err instanceof Error ? err.message : err);
@@ -168,6 +170,6 @@ void (async () => {
   }
   if (patched > 0) {
     await manager.reloadLibrary();
-    console.log(`[hive-server] bpm backfill: detected tempo for ${patched} track(s)`);
+    console.log(`[hive-server] bpm backfill: (re)analyzed tempo for ${patched} track(s) at v${BPM_ALGORITHM_VERSION}`);
   }
 })();
