@@ -141,11 +141,13 @@ describe("mode switches are gain changes", () => {
     }
   });
 
-  test("STROBE gives each group a different phase and no delay", () => {
+  test("STROBE gives each group a different phase and no delay (beat-locked: the fixture has a bpm)", () => {
+    // 120 BPM, beatsPerSwitch default 1, 2 groups → the rotation is 2 beats = 1000 ms, and the
+    // explicit periodMs param is ignored: with a tempo known, the strobe follows the song.
     const r = room(4, { kind: "STROBE", params: { groups: 2, periodMs: 500, duty: 0.5 } });
     const patterns = Object.keys(r.clients).map((id) => assignmentFor(r, id).pattern!);
-    expect(patterns.every((p) => p.kind === "strobe" && p.periodMs === 500)).toBe(true);
-    expect(new Set(patterns.map((p) => p.phaseMs))).toEqual(new Set([0, 250]));
+    expect(patterns.every((p) => p.kind === "strobe" && p.periodMs === 1000 && p.duty === 0.5)).toBe(true);
+    expect(new Set(patterns.map((p) => p.phaseMs))).toEqual(new Set([0, 500]));
     expect(Object.keys(r.clients).every((id) => assignmentFor(r, id).delayMs === 0)).toBe(true);
   });
 

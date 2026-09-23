@@ -110,6 +110,16 @@ export function createBrowserAudioEngine(
   /** Calibration clicks dropped because their instant had already passed (diagnostics). */
   let clicksSkipped = 0;
   /**
+   * Silence watchdog (the "connected but silent" phone): iOS can leave a context claiming
+   * 'running' with a frozen audio clock and never fire statechange, and a missed suspend event
+   * leaves the UI on the playing screen while nothing sounds. The watchdog detects both and routes
+   * them through the existing Tap-to-resume recovery; a zombie context is rebuilt on that tap.
+   */
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  let watchdogLastCtxTime = -1;
+  let watchdogStalledTicks = 0;
+  let zombieSuspected = false;
+  /**
    * Per-track load failures, for backoff. A failed load is retried — a phone that gives up on the first
    * flaky download is a phone that is silent for the whole set — but not on every snapshot: `ROOM_STATE`
    * arrives at 2 Hz, so an unconditional retry means 12 phones × 2 Hz × 4 stems ≈ 96 requests a second
@@ -190,8 +200,51 @@ export function createBrowserAudioEngine(
       bindContextState(ctx);
       scheduler = new Scheduler({ ctx: ctx as unknown as CtxLike, clock, mapper, now: host.now });
       scheduler.setMuted(muted);
+      startWatchdog();
     }
     return ctx;
+  }
+
+  function startWatchdog(): void {
+    if (watchdogTimer) return;
+    watchdogTimer = setInterval(() => {
+      if (!ctx || !scheduler) return;
+      const s = ctx.state as AudioContextState | "interrupted";
+      if (s === "suspended" || s === "interrupted") {
+        // A missed statechange event: the UI must fall back to Tap to resume, not play-screen silence.
+        watchdogLastCtxTime = -1;
+        watchdogStalledTicks = 0;
+        if (state === "ready" || state === "unlocked") setState("locked");
+        return;
+      }
+      if (s !== "running") {
+        watchdogLastCtxTime = -1;
+        watchdogStalledTicks = 0;
+        return;
+      }
+      // Zombie detection: 'running' but the audio clock is frozen (iOS after interruptions/route
+      // changes). One free resume() attempt; still frozen a tick later → Tap to resume, and that
+      // tap rebuilds the context because resume() provably does nothing here.
+      const t = ctx.currentTime;
+      if (watchdogLastCtxTime >= 0 && t - watchdogLastCtxTime < 0.1) {
+        watchdogStalledTicks++;
+        if (watchdogStalledTicks === 1) void ctx.resume().catch(() => {});
+        if (watchdogStalledTicks >= 2) {
+          zombieSuspected = true;
+          watchdogStalledTicks = 0;
+          setState("locked");
+        }
+      } else {
+        watchdogStalledTicks = 0;
+      }
+      watchdogLastCtxTime = t;
+      // Self-heal: the room is playing, this phone is ready, the context runs — but nothing is
+      // scheduled. Whatever dropped the branches (a swallowed error, a missed snapshot), rebuild.
+      const shouldPlay = lastRoom?.transport.state === "playing" && !!loadedTrackId && lastRoom.track?.id === loadedTrackId;
+      if (shouldPlay && state === "ready" && !scheduler.playing && clock.offsetMs !== null) {
+        reschedule(true, "watchdog: silent while the transport is playing");
+      }
+    }, 2000);
   }
 
   function bindContextState(current: AudioContext): void {
@@ -422,7 +475,26 @@ export function createBrowserAudioEngine(
      * Must be called from inside a tap. Everything WebKit cares about happens before the first await.
      */
     async unlock(): Promise<void> {
+      if (zombieSuspected && ctx) {
+        // The watchdog saw 'running' with a frozen clock and resume() changed nothing — this
+        // context will never make sound again. Rebuild it inside the tap; the decoded AudioBuffers
+        // are context-independent and are re-attached below.
+        zombieSuspected = false;
+        try {
+          ctx.onstatechange = null;
+          void ctx.close();
+        } catch {
+          /* already closed */
+        }
+        ctx = null;
+        scheduler = null;
+      }
       const context = ensureContext();
+      if (loadedTrackId && originalBuffers && scheduler) {
+        // No-op on a normal unlock (same buffers); after a zombie rebuild it re-points the fresh
+        // scheduler at the decoded stems, keeping the active pitch variant when one was rendered.
+        scheduler.setBuffers(pitchedCache.get(`${loadedTrackId}:${appliedPitchSemitones}`) ?? originalBuffers, loadedTrackId);
+      }
       const nav = navigator as unknown as AudioSessionNavigator;
       // Without this, the iOS silent switch mutes Web Audio and the phone looks broken but healthy.
       if (nav.audioSession) {
