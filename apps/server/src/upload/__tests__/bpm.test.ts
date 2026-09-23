@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectBpm } from "../bpm";
+import { detectBeatGrid, detectBpm } from "../bpm";
 
 const RATE = 44100;
 
@@ -48,6 +48,18 @@ describe("detectBpm", () => {
     const bpm = detectBpm(out, RATE);
     expect(bpm).not.toBeNull();
     expect(Math.abs(bpm! - 130)).toBeLessThan(2);
+  });
+
+  test("beat offset: a click track starting 0.3s in reports its grid phase", () => {
+    const inner = clickTrack(128, 30);
+    const pad = Math.round(RATE * 0.3);
+    const shifted = new Float32Array(inner.length + pad);
+    shifted.set(inner, pad);
+    const grid = detectBeatGrid(shifted, RATE);
+    expect(grid).not.toBeNull();
+    expect(Math.abs(grid!.bpm - 128)).toBeLessThan(1.5);
+    // the first beat is at 0.3s; allow one envelope frame (~12 ms) plus refinement slack
+    expect(Math.abs(grid!.beatOffsetSec - 0.3)).toBeLessThan(0.03);
   });
 
   test("silence and too-short audio return null", () => {

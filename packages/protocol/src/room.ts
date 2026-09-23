@@ -26,6 +26,8 @@ export const TrackInfoSchema = z.object({
   /** Stem names in canonical order, e.g. ["drums","bass","vocals","other"]; a plain file is ["mix"]. */
   stems: z.array(z.string().min(1)).min(1).max(6),
   bpm: z.number().positive().optional(),
+  /** Beat-grid phase: seconds from track time 0 to the first beat. STROBE switches land here. */
+  beatOffsetSec: z.number().min(0).optional(),
 });
 export type TrackInfo = z.infer<typeof TrackInfoSchema>;
 

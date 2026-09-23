@@ -179,7 +179,7 @@ export class Room {
   }
 
   private setTrack(t: LibraryEntry) {
-    const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm };
+    const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
     this.room.track = info;
   }
 

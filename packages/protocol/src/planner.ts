@@ -101,7 +101,10 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         const beatMs = room.track?.bpm ? 60000 / room.track.bpm : null;
         const periodMs = beatMs ? Math.min(8000, Math.max(100, Math.round(beatMs * p.beatsPerSwitch * p.groups))) : p.periodMs;
         const duty = beatMs ? 1 / p.groups : p.duty;
-        a.pattern = { kind: "strobe", periodMs, phaseMs: Math.round((group / p.groups) * periodMs), duty, rampMs: 10 };
+        // Anchor the whole rotation to the song's beat grid: switches land ON the drum hits, not
+        // wherever track time 0 happened to fall inside the bar (intros and pickups shift it).
+        const gridMs = beatMs ? Math.round((room.track?.beatOffsetSec ?? 0) * 1000) : 0;
+        a.pattern = { kind: "strobe", periodMs, phaseMs: gridMs + Math.round((group / p.groups) * periodMs), duty, rampMs: 10 };
         out[c.id] = a;
         break;
       }

@@ -24,9 +24,24 @@ const PRIOR_WIDTH_OCTAVES = 0.8;
 const MAX_ANALYSIS_SEC = 120;
 
 /** Bump to force the startup backfill to re-analyze every track with the current algorithm. */
-export const BPM_ALGORITHM_VERSION = 2;
+export const BPM_ALGORITHM_VERSION = 3;
 
+export interface BeatGrid {
+  bpm: number;
+  /**
+   * Where the beat grid sits relative to track time 0, seconds in [0, beat): songs open with
+   * intros and pickups, so beat 1 is almost never at 0:00. The strobe anchors its switches here —
+   * on the drum hits, not somewhere between them.
+   */
+  beatOffsetSec: number;
+}
+
+/** Back-compat convenience (tests, quick checks): just the tempo. */
 export function detectBpm(samples: Float32Array, sampleRate: number): number | null {
+  return detectBeatGrid(samples, sampleRate)?.bpm ?? null;
+}
+
+export function detectBeatGrid(samples: Float32Array, sampleRate: number): BeatGrid | null {
   const usable = Math.min(samples.length, sampleRate * MAX_ANALYSIS_SEC);
   const frames = Math.floor(usable / HOP);
   const frameRate = sampleRate / HOP;
@@ -94,5 +109,29 @@ export function detectBpm(samples: Float32Array, sampleRate: number): number | n
 
   const bpm = (60 * frameRate) / lag;
   if (!Number.isFinite(bpm) || bpm < MIN_BPM || bpm > MAX_BPM) return null;
-  return Math.round(bpm * 10) / 10;
+
+  // Beat phase: fold the onset envelope by the beat period and find the phase where the onsets
+  // pile up — that is where the drums actually hit. Circular parabolic refinement takes the
+  // estimate below one envelope frame (~12 ms), well inside the strobe's 10 ms ramp.
+  const periodFrames = lag;
+  const bins = Math.max(1, Math.floor(periodFrames));
+  const fold = new Float32Array(bins);
+  for (let f = 1; f < frames; f++) {
+    const phase = Math.floor(f % periodFrames);
+    if (phase < bins) fold[phase] = fold[phase]! + flux[f]!;
+  }
+  let bestBin = 0;
+  for (let i = 1; i < bins; i++) if (fold[i]! > fold[bestBin]!) bestBin = i;
+  const p0 = fold[(bestBin - 1 + bins) % bins]!;
+  const p1 = fold[bestBin]!;
+  const p2 = fold[(bestBin + 1) % bins]!;
+  const pd = p0 - 2 * p1 + p2;
+  const binOffset = pd !== 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (p0 - p2)) / pd)) : 0;
+  const beatSec = 60 / bpm;
+  // The fold anchors phase to frame 0; onset flux marks a beat one frame after the energy rises,
+  // so pull half a hop back toward the true attack.
+  let beatOffsetSec = (((bestBin + binOffset) * HOP) / sampleRate - HOP / (2 * sampleRate)) % beatSec;
+  if (beatOffsetSec < 0) beatOffsetSec += beatSec;
+
+  return { bpm: Math.round(bpm * 10) / 10, beatOffsetSec: Math.round(beatOffsetSec * 10000) / 10000 };
 }

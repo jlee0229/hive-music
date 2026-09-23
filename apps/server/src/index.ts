@@ -147,7 +147,7 @@ console.log(`[hive-server] listening on http://localhost:${server.port} (protoco
  */
 void (async () => {
   const { parseWav } = await import("./upload/wav");
-  const { detectBpm, BPM_ALGORITHM_VERSION } = await import("./upload/bpm");
+  const { detectBeatGrid, BPM_ALGORITHM_VERSION } = await import("./upload/bpm");
   let patched = 0;
   for (const entry of manager.getLibrary()) {
     if (entry.generated) continue;
@@ -160,9 +160,9 @@ void (async () => {
       if (!stem) continue;
       const bytes = new Uint8Array(await Bun.file(`${FIXTURES_DIR}/tracks/${entry.id}/${stem}.wav`).arrayBuffer());
       const wav = parseWav(bytes);
-      const bpm = detectBpm(wav.channels[0]!, wav.sampleRate);
-      if (bpm === null) continue;
-      await Bun.write(metaPath, JSON.stringify({ ...meta, bpm, bpmVersion: BPM_ALGORITHM_VERSION }, null, 2) + "\n");
+      const grid = detectBeatGrid(wav.channels[0]!, wav.sampleRate);
+      if (grid === null) continue;
+      await Bun.write(metaPath, JSON.stringify({ ...meta, bpm: grid.bpm, beatOffsetSec: grid.beatOffsetSec, bpmVersion: BPM_ALGORITHM_VERSION }, null, 2) + "\n");
       patched++;
     } catch (err) {
       console.warn(`[hive-server] bpm backfill failed for ${entry.id}:`, err instanceof Error ? err.message : err);

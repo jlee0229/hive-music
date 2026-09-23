@@ -77,6 +77,13 @@ describe("planner", () => {
     }
   });
 
+  test("STROBE anchors to the beat grid: beatOffsetSec shifts every phase onto the drum hits", () => {
+    const r = room([client(0), client(1)], { kind: "STROBE", params: { groups: 2, beatsPerSwitch: 1 } });
+    r.track = { ...r.track!, bpm: 120, beatOffsetSec: 0.25 }; // first beat 250 ms into the song
+    const a = plan(r);
+    expect(Object.values(a).map((v) => v!.pattern!.phaseMs)).toEqual([250, 750]);
+  });
+
   test("STROBE without a bpm keeps the free-running period param", () => {
     const r = room([client(0)], { kind: "STROBE", params: { periodMs: 700, duty: 0.5 } });
     r.track = { ...r.track!, bpm: undefined };

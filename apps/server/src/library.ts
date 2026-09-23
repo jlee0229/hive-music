@@ -18,6 +18,7 @@ export async function loadLibrary(fixturesDir: string): Promise<LibraryEntry[]> 
         durationSec: meta.durationSec,
         stems: meta.stems,
         bpm: meta.bpm,
+        beatOffsetSec: meta.beatOffsetSec,
         energy: meta.energy,
         clickTimesSec: meta.clickTimesSec,
         dropSec: meta.dropSec,

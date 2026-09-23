@@ -1,7 +1,7 @@
 // Builds fixtures/tracks/<id>/meta.json for an uploaded track the same way fixtures/gen-synthetic.ts
 // does for the synthetic one: per-second energy[], a detected dropSec, a detected bpm, durationSec.
 import { detectDropFromEnergy, energyCurve } from "../vibe/energy";
-import { BPM_ALGORITHM_VERSION, detectBpm } from "./bpm";
+import { BPM_ALGORITHM_VERSION, detectBeatGrid } from "./bpm";
 import type { NormalizedStem } from "./convert";
 
 export interface UploadedTrackMeta {
@@ -14,6 +14,8 @@ export interface UploadedTrackMeta {
   dropSec?: number;
   /** Detected tempo; drives the beat-locked STROBE. Absent when detection found nothing usable. */
   bpm?: number;
+  /** Where the beat grid sits relative to track time 0 (seconds): the strobe switches land here. */
+  beatOffsetSec?: number;
   /** Which detector produced `bpm`; the startup backfill re-analyzes anything older. */
   bpmVersion?: number;
   generated: false;
@@ -37,7 +39,7 @@ export function buildTrackMeta(id: string, title: string, stemNames: string[], s
     durationSec,
   );
   const dropSec = detectDropFromEnergy(energy);
-  const bpm = detectBpm(mixdown(stems), sampleRate);
+  const grid = detectBeatGrid(mixdown(stems), sampleRate);
   return {
     id,
     title,
@@ -46,7 +48,7 @@ export function buildTrackMeta(id: string, title: string, stemNames: string[], s
     stems: stemNames,
     energy,
     ...(dropSec !== null ? { dropSec } : {}),
-    ...(bpm !== null ? { bpm, bpmVersion: BPM_ALGORITHM_VERSION } : {}),
+    ...(grid !== null ? { bpm: grid.bpm, beatOffsetSec: grid.beatOffsetSec, bpmVersion: BPM_ALGORITHM_VERSION } : {}),
     generated: false,
   };
 }
