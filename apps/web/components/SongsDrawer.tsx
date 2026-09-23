@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { TrackLibraryEntry } from "@hive/protocol";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 
@@ -27,6 +27,8 @@ export function SongsDrawer({
   onClose: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const shown = query.trim() ? tracks.filter((t) => t.title.toLowerCase().includes(query.trim().toLowerCase())) : tracks;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: "var(--stage)" }}>
@@ -39,8 +41,22 @@ export function SongsDrawer({
             picking one pauses the show
           </span>
         </div>
+        <label className="flex h-11 shrink-0 items-center gap-2.5 rounded-2xl border px-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search the library"
+            aria-label="Search the library"
+            className="grow bg-transparent text-[15px] outline-none"
+            style={{ color: "var(--text)" }}
+          />
+        </label>
         <div className="flex min-h-0 grow flex-col gap-2 overflow-y-auto">
-          {tracks.map((t) => (
+          {shown.map((t) => (
             <button
               key={t.id}
               onClick={() => onSelect(t.id)}

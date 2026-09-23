@@ -3,19 +3,21 @@ import { test, expect } from "./fixtures";
 
 test.use({ mockScenario: "join.json" });
 
-test("F2: library search filters the list", async ({ page }) => {
+test("F2: library search filters the Songs drawer list", async ({ page }) => {
   await page.goto("/h/BZQ7");
   await expect(page.getByText("Synthetic 60")).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Songs" }).click();
+  await expect(page.getByRole("button", { name: /Synthetic 60/ })).toBeVisible();
 
   await page.getByPlaceholder("Search the library").fill("nonexistent-track-xyz");
-  await expect(page.getByText("Synthetic 60")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Synthetic 60/ })).toHaveCount(0);
 
   await page.getByPlaceholder("Search the library").fill("synthetic");
-  await expect(page.getByText("Synthetic 60")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Synthetic 60/ })).toBeVisible();
 });
 
-test("F2: the QR decodes to the join URL", async ({ page }) => {
-  await page.goto("/h/BZQ7");
+test("F2: the QR page decodes to the join URL", async ({ page }) => {
+  await page.goto("/qr/BZQ7");
   const canvas = page.locator('canvas[aria-label^="QR code"]');
   await expect(canvas).toBeVisible();
 

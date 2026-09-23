@@ -12,7 +12,6 @@ import { getHostKey, setHostKey } from "@/lib/hive/storage";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
-import { QrCode } from "@/components/QrCode";
 import { TransportBar } from "@/components/TransportBar";
 import { HiveMap } from "@/components/HiveMap";
 import { ModeChips } from "@/components/ModeChips";
@@ -128,7 +127,6 @@ function HostRoom({
 }) {
   const [speakerOn, setSpeakerOn] = useState(false);
   const speakerOnInitialised = useRef(false);
-  const [query, setQuery] = useState("");
   const [tracks, setTracks] = useState<TrackLibraryEntry[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [startAnywayReady, setStartAnywayReady] = useState(false);
@@ -140,7 +138,6 @@ function HostRoom({
   const [uploadPhase, setUploadPhase] = useState<"analyzing" | "uploading" | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [tracksVersion, setTracksVersion] = useState(0);
-  const uploadInputRef = useRef<HTMLInputElement>(null);
   const [hostToast, setHostToast] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
   /**
@@ -195,8 +192,7 @@ function HostRoom({
 
   useEffect(() => {
     let cancelled = false;
-    const q = query.trim();
-    fetch(`${apiUrl()}/tracks${q ? `?q=${encodeURIComponent(q)}` : ""}`)
+    fetch(`${apiUrl()}/tracks`)
       .then((r) => r.json())
       .then((d: { tracks: TrackLibraryEntry[] }) => {
         if (!cancelled) setTracks(d.tracks);
@@ -205,7 +201,7 @@ function HostRoom({
     return () => {
       cancelled = true;
     };
-  }, [query, tracksVersion]);
+  }, [tracksVersion]);
 
   // Auto-pick the first library track once the room exists and has none — and actually push it
   // to the server (host.setTrack), not just the local radio state: the mock scenarios always
@@ -366,15 +362,14 @@ function HostRoom({
     }
   }
 
-  const [joinUrl, setJoinUrl] = useState(`/j/${roomCode}`);
-  useEffect(() => {
-    setJoinUrl(`${window.location.origin}/j/${roomCode}`);
-  }, [roomCode]);
   const playerCount = room ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected).length : 0;
   const connectedPlayers = room ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected) : [];
   const allReady = !!room?.track && connectedPlayers.every((c) => c.audioReadyTrackId === room.track!.id);
   const canStart = !!room?.track && (allReady || startAnywayReady || connectedPlayers.length === 0);
-  const showStage = !!room?.track && room.transport.state !== "stopped";
+  // One host screen: the stage is the whole UI (no lobby detour). Song picking/changing lives in
+  // the Songs drawer, joining in the Join QR code page, and Start appears whenever the transport
+  // is stopped. `room.track` is auto-picked seconds after the room exists (effect above).
+  const showStage = !!room?.track;
   const calibrationActive = room ? room.calibration.state === "countdown" || room.calibration.state === "running" || room.calibration.state === "failed" : false;
   const showCalibrate = calibrationActive && !calibrateDismissed;
 
@@ -433,7 +428,34 @@ function HostRoom({
           </button>
         </div>
 
-        <TransportBar room={room} clock={client.clock} host={client.host} />
+        {room.transport.state === "stopped" ? (
+          <div className="flex flex-col gap-2.5">
+            <span className="text-center text-[15px]" style={{ color: "var(--muted)" }}>
+              Up next: <span className="font-semibold" style={{ color: "var(--text)" }}>{room.track!.title}</span>
+            </span>
+            <button
+              onClick={startHive}
+              disabled={!selectedTrackId || !canStart}
+              className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
+              style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
+            >
+              {!selectedTrackId
+                ? "Pick a track"
+                : allReady || connectedPlayers.length === 0
+                  ? "Start the hive"
+                  : startAnywayReady
+                    ? "Start anyway"
+                    : "Waiting for phones to load…"}
+            </button>
+            {audio.state === "locked" && speakerOn ? (
+              <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
+                Tap the speaker toggle again if this phone doesn&apos;t make sound once the show starts.
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <TransportBar room={room} clock={client.clock} host={client.host} />
+        )}
 
         <ModeChips current={room.mode.kind} host={client.host} />
         {room.mode.kind === "STROBE" ? <StrobeControls mode={room.mode} bpm={room.track?.bpm ?? null} host={client.host} /> : null}
@@ -510,7 +532,7 @@ function HostRoom({
             uploadError={uploadError}
             onSelect={(id) => {
               setShowSongs(false);
-              selectTrack(id); // SET_TRACK stops the transport server-side: back to the lobby, Start plays it
+              selectTrack(id); // SET_TRACK stops the transport server-side; the stage shows Start for the new song
             }}
             onUpload={(f) => void onUploadFile(f)}
             onClose={() => setShowSongs(false)}
@@ -522,143 +544,14 @@ function HostRoom({
     );
   }
 
-  // Lobby
+  // The moment between the room existing and the first track being auto-picked (well under a
+  // second): a splash, never a separate lobby screen.
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4.5" style={{ padding: safeAreaPadding(52, 24, 28) }}>
-      <div className="flex items-center justify-between">
-        <span className="font-display text-xl font-bold">Your hive</span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={exitHive}
-            aria-label="Exit the hive"
-            className="rounded-full border px-3 py-1.5 text-xs font-semibold"
-            style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
-          >
-            ← Exit
-          </button>
-          <span className="font-mono rounded-full px-3 py-1.5 text-xs font-semibold tracking-widest" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
-            HOST
-          </span>
-        </div>
-      </div>
-
-      <ReconnectBanner connection={connection} />
-      <ProtocolMismatchBanner show={protocolMismatch} />
-      {hostToast ? (
-        <div
-          role="alert"
-          className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium"
-          style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
-        >
-          <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--ringer-fg)" }} />
-          {hostToast}
-        </div>
-      ) : null}
-
-      <div className="flex flex-col items-center gap-3">
-        <span className="font-display text-[60px] leading-none font-extrabold tracking-[0.14em]">{roomCode}</span>
-        <div className="flex h-[220px] w-[220px] items-center justify-center rounded-[20px]" style={{ background: "#FFFFFF" }}>
-          <QrCode value={joinUrl} size={172} />
-        </div>
-        <span className="font-mono text-sm" style={{ color: "var(--muted)" }}>
-          {joinUrl.replace(/^https?:\/\//, "")}
-        </span>
-      </div>
-
-      <div className="flex items-center justify-between rounded-2xl border px-4 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-        <span className="text-[15px] font-semibold">{playerCount} joined</span>
-        <div className="flex gap-1.5">
-          {Array.from({ length: Math.min(playerCount, 8) }).map((_, i) => (
-            <span key={i} className="h-3 w-3 rounded-full" style={{ background: "var(--muted)" }} />
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-2.5">
-        <label className="flex h-12 items-center gap-2.5 rounded-2xl border px-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search the library"
-            aria-label="Search the library"
-            className="grow bg-transparent text-[15px] outline-none"
-            style={{ color: "var(--text)" }}
-          />
-        </label>
-        {tracks.map((t) => (
-          <label
-            key={t.id}
-            className="flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3"
-            style={{ background: "var(--surface)", borderColor: selectedTrackId === t.id ? "var(--primary-fill)" : "var(--border)" }}
-          >
-            <input
-              type="radio"
-              name="track"
-              checked={selectedTrackId === t.id}
-              onChange={() => selectTrack(t.id)}
-              className="h-5 w-5"
-              style={{ accentColor: "var(--primary-fill)" }}
-            />
-            <span className="flex grow flex-col gap-0.5">
-              <span className="text-[15px] font-semibold">{t.title}</span>
-              <span className="text-xs" style={{ color: "var(--muted)" }}>
-                {t.stems.length} parts · {Math.round(t.durationSec)}s · {t.stems.join(" ")}
-              </span>
-            </span>
-          </label>
-        ))}
-        <input
-          ref={uploadInputRef}
-          type="file"
-          accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void onUploadFile(f);
-            e.target.value = ""; // same file can be picked again after an error
-          }}
-        />
-        <button
-          onClick={() => uploadInputRef.current?.click()}
-          disabled={uploadPhase !== null}
-          className="flex items-center justify-center gap-2 rounded-2xl border border-dashed px-3.5 py-3 text-[15px] font-semibold disabled:opacity-60"
-          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
-        >
-          {uploadPhase === "analyzing" ? "Analyzing…" : uploadPhase === "uploading" ? "Uploading…" : "+ Upload a song"}
-        </button>
-        {uploadError ? (
-          <p className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
-            {uploadError}
-          </p>
-        ) : null}
-      </div>
-
-      <div className="grow" />
-
-      <button
-        onClick={startHive}
-        disabled={!selectedTrackId || !canStart}
-        className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
-        style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
-      >
-        {!selectedTrackId
-          ? "Pick a track"
-          : allReady || connectedPlayers.length === 0
-            ? "Start the hive"
-            : startAnywayReady
-              ? "Start anyway"
-              : "Waiting for phones to load…"}
-      </button>
-      {audio.state === "locked" && speakerOn ? (
-        <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
-          Tap the speaker toggle again if this phone doesn&apos;t make sound once the show starts.
-        </p>
-      ) : null}
-      <Creators />
+    <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
+      <span className="font-display text-[60px] leading-none font-extrabold tracking-[0.14em]">{roomCode}</span>
+      <span className="text-[15px]" style={{ color: "var(--muted)" }}>
+        Setting up your hive…
+      </span>
     </main>
   );
 }

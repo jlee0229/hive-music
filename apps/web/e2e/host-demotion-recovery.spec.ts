@@ -12,10 +12,10 @@ test("F2: a stale hostKey demotes then self-recovers to host without looping", a
 
   await page.goto("/h/BZQ7");
 
-  // Recovers: reaches the normal host Lobby (POST /rooms re-claims the room's real key), not
+  // Recovers: reaches the normal host stage (POST /rooms re-claims the room's real key), not
   // stuck showing a player-side view or the "lost host control" error.
   await expect(page.getByText("Synthetic 60")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText("Your hive")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Join QR code" })).toBeVisible();
 
   const storedKey = await page.evaluate(() => localStorage.getItem("hive:hostKey:BZQ7"));
   expect(storedKey).not.toBe("stale-key-from-before-the-restart");

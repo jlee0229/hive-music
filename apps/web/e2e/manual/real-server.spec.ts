@@ -36,7 +36,7 @@ test("real server: host lobby, player join/ready, start, map, tuning", async ({ 
   await expect(playerPage.getByText("Synced", { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(playerPage.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
 
-  await expect(hostPage.getByText("1 joined")).toBeVisible({ timeout: 10_000 });
+  await expect(hostPage.getByText("1 players")).toBeVisible({ timeout: 10_000 });
   await expect(hostPage.getByRole("button", { name: /Start the hive|Start anyway/ })).toBeEnabled({ timeout: 15_000 });
   await hostPage.getByRole("button", { name: /Start the hive|Start anyway/ }).click();
 

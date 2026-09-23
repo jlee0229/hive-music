@@ -50,7 +50,7 @@ test("real engine: join reaches Ready with real audio state, host starts real pl
   await expect(playerPage.getByText("4 / 4 parts")).toBeVisible({ timeout: 20_000 });
   await expect(playerPage.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
 
-  await expect(hostPage.getByText("1 joined")).toBeVisible({ timeout: 10_000 });
+  await expect(hostPage.getByText("1 players")).toBeVisible({ timeout: 10_000 });
   await expect(hostPage.getByRole("button", { name: /Start the hive|Start anyway/ })).toBeEnabled({ timeout: 20_000 });
   await hostPage.getByRole("button", { name: /Start the hive|Start anyway/ }).click();
 
