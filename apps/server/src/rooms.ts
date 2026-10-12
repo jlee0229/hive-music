@@ -28,6 +28,7 @@ import {
 } from "@hive/protocol";
 import { currentScene, nextScene } from "./scene-timer";
 import { loadLibrary, type LibraryEntry } from "./library";
+import { HostKeys, safeEqual } from "./host-key";
 
 const now = () => performance.timeOrigin + performance.now();
 
@@ -82,9 +83,11 @@ export class Room {
     private server: Bun.Server<Conn>,
     private onEmpty: () => void,
     private getLibrary: () => LibraryEntry[],
+    /** The manager passes a signed key (host-key.ts); a bare Room (tests) gets an unguessable random one. */
+    hostKey: string = crypto.randomUUID(),
   ) {
     this.code = code;
-    this.hostKey = crypto.randomUUID();
+    this.hostKey = hostKey;
     this.room = {
       code,
       protocolVersion: PROTOCOL_VERSION,
@@ -632,7 +635,16 @@ export class RoomManager {
   private server: Bun.Server<Conn> | null = null;
   private library: LibraryEntry[] = [];
 
-  constructor(private opts: { fixturesDir: string; fixedCode?: string }) {}
+  private keys: HostKeys;
+
+  /**
+   * `hostKeySecret` signs every hostKey (host-key.ts). Give it a value that survives restarts and a
+   * host can bring their room back under the same code after a deploy; leave it out and keys are
+   * only good for the life of this process.
+   */
+  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string }) {
+    this.keys = new HostKeys(opts.hostKeySecret);
+  }
 
   attachServer(server: Bun.Server<Conn>) {
     this.server = server;
@@ -665,7 +677,8 @@ export class RoomManager {
     return code;
   }
 
-  private spawn(code: string): Room {
+  /** `hostKey` is only ever a key `this.keys.verify()` accepted for this code (a restore); otherwise a fresh one is issued. */
+  private spawn(code: string, hostKey?: string): Room {
     if (!this.server) throw new Error("RoomManager.attachServer must be called before spawning rooms");
     const room: Room = new Room(
       code,
@@ -675,33 +688,55 @@ export class RoomManager {
         this.rooms.delete(code);
       },
       () => this.library,
+      hostKey ?? this.keys.issue(code, now()),
     );
     this.rooms.set(code, room);
     return room;
   }
 
+  /** A room code this server could have dealt: exactly ROOM_CODE_LENGTH characters of ROOM_CODE_ALPHABET. */
+  private isDealtCode(code: string): boolean {
+    return code.length === ROOM_CODE_LENGTH && [...code].every((ch) => ROOM_CODE_ALPHABET.includes(ch));
+  }
+
+  /** True when `hostKey` is a key this server issued for `code` and may still re-create that room. */
+  private canRestore(code: string, hostKey: string | undefined): hostKey is string {
+    return !!hostKey && (this.isDealtCode(code) || code === this.opts.fixedCode) && this.keys.verify(code, hostKey, now());
+  }
+
   /**
-   * POST /rooms {code?} — a fixed code always resolves to the same room (including a *bare* call with
-   * no code, per docs/02-protocol.md §6: "a fixed code survives a restart" — a restart issuing a fresh
-   * hostKey is fine, since the host re-creates and presents it, but the code the printed QR encodes
-   * must not change). A requested code that is neither an existing room nor the fixed code is rejected.
+   * POST /rooms {code?, hostKey?}.
+   *
+   * - no code → a new room under a random code, with a freshly issued hostKey.
+   * - code of an EXISTING room → the caller must already hold that room's hostKey; it is echoed back
+   *   (the host page's reload path). Anyone else gets `NOT_HOST` and **no key**: this call used to
+   *   hand the key to whoever knew the 4-character code, which is everyone at the party (audit SG-01).
+   * - code of a room that does NOT exist, with a hostKey this server issued for that code → the room
+   *   is re-created under the same code and the same key (`restored: true`). Rooms live in memory, so
+   *   this is what keeps a party's QR alive across a deploy/restart or the idle timeout. An existing
+   *   room can never be taken this way, and a made-up key verifies for nothing.
+   * - anything else → `unknown room code`.
+   *
+   * ROOM_FIXED_CODE (single-room demo mode, not used in production) is deliberately different: the
+   * fixed room belongs to whoever opens the host page, so every call resolves to it and returns its
+   * key — including a bare call, per docs/02-protocol.md §6 ("a fixed code survives a restart").
    */
-  createRoom(requestedCode?: string): { code: string; hostKey: string } | { error: string } {
+  createRoom(requestedCode?: string, presentedKey?: string): { code: string; hostKey: string; restored?: boolean } | { error: string; status: number } {
+    const fixed = this.opts.fixedCode;
     if (requestedCode) {
       const upper = requestedCode.toUpperCase();
       const existing = this.rooms.get(upper);
-      if (existing) return { code: upper, hostKey: existing.hostKey };
-      if (this.opts.fixedCode && upper === this.opts.fixedCode) {
-        const room = this.spawn(upper);
-        return { code: upper, hostKey: room.hostKey };
+      if (existing) {
+        if (upper === fixed || (typeof presentedKey === "string" && safeEqual(presentedKey, existing.hostKey))) return { code: upper, hostKey: existing.hostKey };
+        return { error: "NOT_HOST", status: 403 };
       }
-      return { error: "unknown room code" };
+      if (this.canRestore(upper, presentedKey)) return { code: upper, hostKey: this.spawn(upper, presentedKey).hostKey, restored: true };
+      if (fixed && upper === fixed) return { code: upper, hostKey: this.spawn(upper).hostKey };
+      return { error: "unknown room code", status: 400 };
     }
-    if (this.opts.fixedCode) {
-      const existing = this.rooms.get(this.opts.fixedCode);
-      if (existing) return { code: this.opts.fixedCode, hostKey: existing.hostKey };
-      const room = this.spawn(this.opts.fixedCode);
-      return { code: this.opts.fixedCode, hostKey: room.hostKey };
+    if (fixed) {
+      const room = this.rooms.get(fixed) ?? this.spawn(fixed);
+      return { code: fixed, hostKey: room.hostKey };
     }
     const code = this.randomCode();
     const room = this.spawn(code);
@@ -728,7 +763,11 @@ export class RoomManager {
       const upper = msg.roomCode.toUpperCase();
       let room = this.rooms.get(upper);
       if (!room) {
-        if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
+        // The host's own socket reconnecting after a restart / the idle timeout brings the room back
+        // under its old code, exactly like POST /rooms {code, hostKey} does: the signed key is the
+        // proof. Players reconnecting to a vanished room cannot — they get NO_ROOM until the host is back.
+        if (msg.kind === "host" && this.canRestore(upper, msg.hostKey)) room = this.spawn(upper, msg.hostKey);
+        else if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
         else return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
       }
       return room.join(ws, msg);

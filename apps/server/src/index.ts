@@ -22,7 +22,31 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...corsHeaders } });
 }
 
-const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE });
+/**
+ * The secret that signs hostKeys (host-key.ts). It has to outlive the process for a host to bring
+ * their room back after a deploy: HOST_KEY_SECRET if set, otherwise a random one kept beside the
+ * uploaded tracks — the one directory production mounts on a persistent volume. The file is named
+ * `.env.*` so the repo's .gitignore already covers it, and no route can reach it (/audio only serves
+ * `<dir>/<name>.wav`). If neither works, keys are per-process and a restart simply ends the rooms.
+ */
+async function resolveHostKeySecret(): Promise<string | undefined> {
+  if (process.env.HOST_KEY_SECRET) return process.env.HOST_KEY_SECRET;
+  const path = `${FIXTURES_DIR}/tracks/.env.hostkey`;
+  try {
+    const file = Bun.file(path);
+    if (await file.exists()) {
+      const stored = (await file.text()).trim();
+      if (stored.length >= 32) return stored;
+    }
+    const fresh = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
+    await Bun.write(path, fresh);
+    return fresh;
+  } catch {
+    return undefined;
+  }
+}
+
+const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret() });
 
 const server = Bun.serve<Conn>({
   port: PORT,
@@ -40,10 +64,13 @@ const server = Bun.serve<Conn>({
     }
 
     if (req.method === "POST" && url.pathname === "/rooms") {
-      const body = (await req.json().catch(() => ({}))) as { code?: string };
-      const result = manager.createRoom(body.code);
-      if ("error" in result) return json({ error: result.error }, 400);
-      return json({ code: result.code, hostKey: result.hostKey, joinUrl: `${WEB_URL}/j/${result.code}` });
+      // {code?, hostKey?} — see RoomManager.createRoom for the contract. Anything that is not a short
+      // string is treated as absent rather than trusted.
+      const body = ((await req.json().catch(() => null)) ?? {}) as { code?: unknown; hostKey?: unknown };
+      const str = (v: unknown, max: number) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
+      const result = manager.createRoom(str(body.code, 8), str(body.hostKey, 64));
+      if ("error" in result) return json({ error: result.error }, result.status);
+      return json({ code: result.code, hostKey: result.hostKey, joinUrl: `${WEB_URL}/j/${result.code}`, ...(result.restored ? { restored: true } : {}) });
     }
 
     const roomMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)$/);
