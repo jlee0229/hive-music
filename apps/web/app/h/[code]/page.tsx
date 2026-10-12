@@ -10,7 +10,7 @@ import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
 import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
 import { classifyHostClaim } from "@/lib/hive/host-claim";
-import { planStart, showTuningScreen, tuningNote } from "@/lib/hive/start-flow";
+import { planStart, showTuningScreen, tuningCancelLabel, tuningNote } from "@/lib/hive/start-flow";
 import { HOST_TOAST_MS, hostErrorText } from "@/lib/hive/host-errors";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
@@ -208,6 +208,8 @@ function HostRoom({
    * the transitions are observed from room snapshots and must not re-render or re-arm on their own.
    */
   const autoStartRef = useRef(false);
+  /** The same fact as autoStartRef, as state: only for what the tuning screen's button says. */
+  const [autoStarting, setAutoStarting] = useState(false);
   const autoStartSawTuningRef = useRef(false);
   const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -398,6 +400,7 @@ function HostRoom({
   const finishAutoStart = useCallback(() => {
     if (!autoStartRef.current) return;
     autoStartRef.current = false;
+    setAutoStarting(false);
     autoStartSawTuningRef.current = false;
     if (autoStartTimerRef.current) {
       clearTimeout(autoStartTimerRef.current);
@@ -477,6 +480,7 @@ function HostRoom({
       return;
     }
     autoStartRef.current = true;
+    setAutoStarting(true);
     autoStartSawTuningRef.current = false;
     // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
     // the party on the countdown screen; worst case the show starts on table compensation.
@@ -520,7 +524,14 @@ function HostRoom({
   if (showCalibrate && room) {
     return (
       <main className="mx-auto min-h-dvh max-w-md">
-        <HostCalibrate room={room} clock={client.clock} host={client.host} onClose={() => setCalibrateDismissed(true)} micError={micError} />
+        <HostCalibrate
+          room={room}
+          clock={client.clock}
+          host={client.host}
+          onClose={() => setCalibrateDismissed(true)}
+          micError={micError}
+          cancelLabel={tuningCancelLabel({ autoStart: autoStarting })}
+        />
       </main>
     );
   }
