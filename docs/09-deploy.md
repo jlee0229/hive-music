@@ -1,5 +1,11 @@
 # 09 · Deploy runbook (human, ~20 minutes, once)
 
+> **Historical — do not follow this to deploy.** These are the one-time setup notes from the hackathon. Since then:
+> the app is `playhivemusic-api` (not `hivemusic-server`), the repo is `piar1243/hive-music-official`, nothing deploys on
+> merge, `ROOM_FIXED_CODE` is not set in production, the lobby is gone, and uploads **do** survive a redeploy (volume).
+> Deploy, verify and roll back with [13-operations.md](13-operations.md). Kept as the record of how the Fly app and the
+> Vercel project were first created.
+
 Owner: the human. After this, every merge to `main` deploys the server automatically and Vercel builds every push.
 
 ## A. Fly.io — the Bun server (`apps/server`)

@@ -1,5 +1,9 @@
 # HiveMusic — Sync Engine (`@hive/sync-client`)
 
+> Design doc from the original build (September 2026). The reasoning stands, but details have moved since: there is no
+> lobby screen, no fixed room code and no nudge slider, and the app runs in production (see the doc table in the
+> [README](../README.md)). Where this page and the code disagree, the code is right.
+
 Owner: backend agent
 
 `@hive/sync-client` is the headless browser engine: WebSocket + reconnect, clock model, AudioContext, stem preload, scheduling, drift correction, pattern gain automation, calibration click emit/listen, wake lock, device detection. `apps/web` never creates its own AudioContext or WebSocket; it calls this API through the `useHiveClient` hook it owns. The public surface is frozen at IC0 in `packages/sync-client/src/index.ts`; `createHiveClient` throws "not implemented" until B2–B4 fill it in, and `createStubClient` (`src/stub.ts`) speaks the full protocol with no audio so the frontend can build against the mock. Wire contract: [02-protocol.md](02-protocol.md). Calibration internals: [04-calibration.md](04-calibration.md).

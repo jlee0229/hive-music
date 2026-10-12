@@ -1,5 +1,9 @@
 # HiveMusic — Calibration
 
+> Design doc from the original build (September 2026). The reasoning stands, but details have moved since: there is no
+> lobby screen, no fixed room code and no nudge slider, and the app runs in production (see the doc table in the
+> [README](../README.md)). Where this page and the code disagree, the code is right.
+
 Owner: backend agent (engine, server, rig); frontend agent (Host · Calibrate and Player · Calibrating screens)
 
 Output latency is the one error term we cannot read reliably from the browser, so we estimate it in two tiers: a per-browser-family table plus a human nudge (Tier 1), and a click measurement in which the host phone listens to every player (Tier 2). The same cross-correlation code is also the measuring instrument that produces the evidence for sync gates B3/B4. Scheduling terms are defined in [03-sync-engine.md](03-sync-engine.md); messages and the `room.calibration` state in [02-protocol.md](02-protocol.md).

@@ -1,5 +1,9 @@
 # HiveMusic — Architecture
 
+> Design doc from the original build (September 2026). The reasoning stands, but details have moved since: there is no
+> lobby screen, no fixed room code and no nudge slider, and the app runs in production (see the doc table in the
+> [README](../README.md)). Where this page and the code disagree, the code is right.
+
 Owner: both
 
 One Bun server owns the timeline and the room. One Next.js app renders host and player screens. One headless engine (`@hive/sync-client`) does every clock, audio and WebSocket thing in the browser. One shared package (`@hive/protocol`) holds the contract and the pure planning functions that both the real server and the mock server run. Read [00-context.md](00-context.md) first; the wire contract is [02-protocol.md](02-protocol.md) and the code under `packages/protocol/src/` is its source of truth.
@@ -15,7 +19,7 @@ One Bun server owns the timeline and the room. One Next.js app renders host and 
 | Contract + planner | `packages/protocol` | backend (v1 written before the agents start) | `constants`, `messages`, `room`, `mode`, `pattern`, `health`, `scene`, `rest`, `planner`, `mock-server` + `__tests__/` |
 | Audio fixtures | `fixtures/` | backend | `gen-synthetic.ts` → `fixtures/tracks/synthetic-60s/{drums,bass,vocals,other}.wav` + `meta.json` (`energy[60]`, `clickTimesSec`, `dropSec`, `bpm`); demo tracks in the same layout |
 | Vibe service | `apps/server/src/vibe/` | backend | One `messages.parse` call with `zodOutputFormat(ScenePlanCoreSchema)`; `rules.ts` fallback; scene timer |
-| Infra | `infra/` | backend | `fly.toml` (app `hivemusic-server`, `ewr` (Newark; Fly retired `bos`), always-on, `/health` checks), `Dockerfile` |
+| Infra | `fly.toml`, `infra/` | backend | `fly.toml` in the repo root (app `playhivemusic-api`, `ewr` (Newark; Fly retired `bos`), always-on, `/health` checks), `Dockerfile` |
 
 ## Package graph
 
@@ -163,7 +167,7 @@ Server-only state (never on the wire): `hostKey`; per-client health record (`Hea
   │ host phone   │── HTTPS (pages) ──────────▶│ Vercel · apps/web             │
   │ player phones│                            └───────────────────────────────┘
   │              │── WSS /ws + HTTPS REST ───▶┌───────────────────────────────┐
-  │              │   GET /audio/*.wav (CORS)  │ Fly.io ewr · hivemusic-server │
+  │              │   GET /audio/*.wav (CORS)  │ Fly.io ewr · playhivemusic-api│
   └──────────────┘                            │ always-on, 1 machine,         │
                                               │ PING every 20 s, /health 15 s │
                                               └───────────────────────────────┘
