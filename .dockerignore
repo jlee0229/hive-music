@@ -1,14 +1,36 @@
-node_modules
-**/node_modules
+# Build context for infra/Dockerfile (context = repo root). The image needs exactly: the root
+# manifests + lockfile, the four workspace package.json files (so the frozen lockfile resolves),
+# apps/server, packages/protocol, fixtures/gen-synthetic.ts and infra/. Everything else stays out —
+# smaller upload to the Fly builder, and nothing personal can be baked into a public image.
+
 .git
+.github
 .turbo
-evidence
-apps/web/.next
-apps/web/out
-fixtures/tracks/**/*.wav
-# personal music dropped into the local library (metadata included): never bake into an image
-fixtures/tracks/baby
+.vercel
+.claude
 .tunnels
+**/node_modules
+**/.next
+**/__tests__
 *.log
+*.md
 .env
-.env.local
+.env.*
+
+docs
+agents
+evidence
+presentation
+scripts
+
+# the web app and the browser engine are not part of the server image (manifests only)
+apps/web/**
+!apps/web/package.json
+packages/sync-client/**
+!packages/sync-client/package.json
+apps/server/scripts
+
+# Tracks never come from the build context: production's live on the hive_tracks volume, and a
+# developer's fixtures/tracks holds their own music. The entrypoint generates the synthetic pair.
+fixtures/tracks
+fixtures/README.md
