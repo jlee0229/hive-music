@@ -86,9 +86,18 @@ describe("SG-10: a vibe plan belongs to one song", () => {
     room.destroy();
   });
 
-  test("a plan that lands after the room was destroyed arms nothing", () => {
-    const { room, host } = party("SM04");
+  test("destroy() takes every kind of timer with it, and a plan that lands afterwards arms nothing", () => {
+    const { room, host, guest } = party("SM04");
+    // one of each: scene timer (plan with a boundary ahead), loop timer (playing), calibration timers,
+    // a retained-disconnect timer, the trailing ROOM_STATE flush, and the two intervals
+    room.acceptScenePlan(planFor("armed"));
     room.handle(host.ws, { type: "TRANSPORT", action: "PLAY" });
+    room.handle(guest.ws, { type: "AUDIO_READY", trackId: "song-a" });
+    room.handle(host.ws, { type: "CALIBRATION_START", referenceClientId: "host-sm-00001" });
+    room.disconnect(guest.ws);
+    room.handle(host.ws, { type: "SET_MODE", mode: "WAVE", params: {} });
+    expect(jest.getTimerCount()).toBeGreaterThanOrEqual(6);
+    room.acceptScenePlan(planFor("armed again")); // SET_MODE cleared the plan; put a scene timer back
     room.destroy();
     expect(jest.getTimerCount()).toBe(0);
     expect(room.acceptScenePlan(planFor("too late"))).toBe(false);
