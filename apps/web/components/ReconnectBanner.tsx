@@ -9,7 +9,7 @@ export function ReconnectBanner({ connection }: { connection: ConnectionState })
       className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium"
       style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
     >
-      <span className="inline-block h-2 w-2 animate-pulse rounded-full" style={{ background: "var(--ringer-fg)" }} />
+      <span className="inline-block h-2 w-2 animate-pulse rounded-full motion-reduce:animate-none" style={{ background: "var(--ringer-fg)" }} />
       Reconnecting to the hive…
     </div>
   );
