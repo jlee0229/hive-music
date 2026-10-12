@@ -1,14 +1,19 @@
 // Scale characterisation of ROOM_STATE (audit scale-net). No server, no sockets: the rooms are built by
 // apps/server/scripts/room-state-size.ts with the real planner, so these are the bytes on the wire.
 //
-// The property worth pinning is the first one: an assignment depends only on (mode, track, that
-// client's own record). That is what makes a per-recipient snapshot — a player receives the room-level
-// state plus its own record, and only hosts/viewers receive the roster — a pure server-side change:
+// The property worth pinning is the first one: the server plans centrally and stamps each record
+// with its finished assignment, so a per-recipient snapshot — a player receives the room-level state
+// plus its own record, and only hosts/viewers receive the roster — is a pure server-side change:
 // the message still validates against today's RoomStateSchema and the engine computes nothing from
-// anyone else's record. If a future mode ever reads a neighbour (say, "the phone to my left"), this
-// test is where that shows up.
+// anyone else's record.
+//
+// (This used to assert something stronger: that plan() of a client alone equals its assignment in
+// the full room. The planner now reads the roster on purpose — a lone phone plays every stem,
+// STROBE deals groups over the phones present, auto-placed phones share one layout — so that claim
+// is false by design. What per-recipient delivery needs is weaker and is what is tested here: the
+// assignment travels in the record, and a client never has to re-plan.)
 import { describe, expect, test } from "bun:test";
-import { MODES, RoomStateSchema, parseServerMessage, plan, type RoomState } from "@hive/protocol";
+import { MODES, RoomStateSchema, parseServerMessage, withAssignments, type RoomState } from "@hive/protocol";
 import { buildRoom } from "../../scripts/room-state-size";
 
 const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v));
@@ -23,15 +28,20 @@ function playerView(room: RoomState, id: string): RoomState {
 }
 
 describe("ROOM_STATE at scale", () => {
-  test("an assignment depends only on the mode, the track and the client's own record", () => {
+  test("every speaker's finished assignment travels in its own record, in every mode", () => {
     for (const mode of MODES) {
       for (const stems of [1, 4]) {
         for (const seed of [1, 2, 3]) {
-          const room = buildRoom(40, mode, stems, seed);
-          const full = plan(room);
-          for (const id of Object.keys(room.clients)) {
-            const alone = plan({ ...room, clients: { [id]: room.clients[id]! } });
-            expect(alone[id]).toEqual(full[id]!);
+          const room = withAssignments(buildRoom(40, mode, stems, seed));
+          for (const c of Object.values(room.clients)) {
+            const view = playerView(room, c.id);
+            const parsed = parseServerMessage(JSON.stringify({ type: "ROOM_STATE", room: view }));
+            expect(parsed?.type).toBe("ROOM_STATE");
+            if (parsed?.type !== "ROOM_STATE") continue;
+            // The one-record view carries exactly what the full roster says about this client:
+            // nothing the engine consumes has to be recomputed from anyone else's record.
+            expect(parsed.room.clients[c.id]!.assignment).toEqual(room.clients[c.id]!.assignment);
+            if (c.plays) expect(parsed.room.clients[c.id]!.assignment).not.toBeNull();
           }
         }
       }

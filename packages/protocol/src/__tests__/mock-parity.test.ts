@@ -39,7 +39,11 @@ describe("mock ↔ server parity: REST", () => {
   test("GET /tracks: sorted like the server, urls follow the request origin, beatOffsetSec is carried", async () => {
     const res = TrackLibraryResponseSchema.parse(await fetch(`http://127.0.0.1:${PORT}/tracks`).then((r) => r.json()));
     expect(res.tracks.length).toBeGreaterThan(0);
-    const titles = res.tracks.map((t) => t.title);
+    // Order is (meta.order, title); `order` is not on the wire, and a developer's local library may
+    // pin a real song to the top. The generated fixtures never set it, so among those the order is
+    // by title on any machine — and they must come out contiguous, after anything pinned.
+    const titles = res.tracks.filter((t) => t.generated).map((t) => t.title);
+    expect(titles.length).toBeGreaterThan(0);
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b))); // was filesystem scan order
     for (const t of res.tracks) for (const u of Object.values(t.urls)) expect(u.startsWith(`http://127.0.0.1:${PORT}/audio/`)).toBe(true); // was hard-coded localhost
     expect((await post("/tracks")).status).toBe(501); // was 200 with the library: any method matched
