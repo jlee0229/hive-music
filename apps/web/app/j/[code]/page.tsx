@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ROLE_COLORS, HEALTH_COLORS } from "@hive/protocol";
 import { detectDevice } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
+import { apiUrl } from "@/lib/hive/client";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { getPlayerName, setPlayerName } from "@/lib/hive/storage";
 import { selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
@@ -33,14 +34,46 @@ function settledWithin(p: Promise<unknown>, ms: number): Promise<void> {
   });
 }
 
+/**
+ * The path segment as a room code: URL-decoded, upper-cased, with everything a code cannot contain
+ * removed — so a pasted "bz q7" or "BZ-Q7" still lands in the right hive.
+ */
+function normalizeCode(raw: string): string {
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    /* a stray % in the URL: use it as it came */
+  }
+  return decoded.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** The server's JOIN schema (3–8 characters); anything else can never be a hive. */
+const isPossibleCode = (code: string) => code.length >= 3 && code.length <= 8;
+
+const hiveNotFound = (code: string) => ({
+  heading: "Hive not found",
+  detail: code ? `No hive is running at code ${code}. Check the code with the host.` : "This link has no hive code in it. Ask the host for the code.",
+});
+
+/** How often, and for how long, a "not found" screen looks again in case the hive has just been started. */
+const RECHECK_MS = 4000;
+const RECHECK_LIMIT = 30;
+
 export default function PlayerPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = use(params);
-  const roomCode = code.toUpperCase();
+  const roomCode = normalizeCode(code);
+  const possibleCode = isPossibleCode(roomCode);
 
   const [name, setName] = useState(() => getPlayerName());
   const [joinRequested, setJoinRequested] = useState(false);
   const [joining, setJoining] = useState(false);
-  const [removed, setRemoved] = useState<{ heading: string; detail: string } | null>(null);
+  // A code of the wrong shape is refused by the server's schema, not answered with NO_ROOM — the
+  // join then hung on "Syncing…" for good. Say so up front instead.
+  const [removed, setRemoved] = useState<{ heading: string; detail: string } | null>(() => (possibleCode ? null : hiveNotFound(roomCode)));
+  // Asked before the tap: a guest with a wrong code or an old QR used to type a name and tap
+  // "join" before learning there was nothing to join. null = not known (yet, or the lookup failed).
+  const [exists, setExists] = useState<boolean | null>(null);
   const [resuming, setResuming] = useState(false);
   const device = detectDevice();
 
@@ -62,10 +95,41 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     };
     return client.on("error", (code) => {
       if (code === "KICKED") leave("Removed from hive", "The host removed this phone.");
-      if (code === "NO_ROOM") leave("Hive not found", `No hive is running at code ${roomCode}.`);
+      if (code === "NO_ROOM") {
+        const gone = hiveNotFound(roomCode);
+        leave(gone.heading, gone.detail);
+      }
+      // The server refused the JOIN itself (before any room state): nothing will ever arrive.
+      if (code === "BAD_MESSAGE" && !client.room) leave("Couldn't join", "Something went wrong joining this hive. Go back and try again.");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
+
+  useEffect(() => {
+    if (!possibleCode || joinRequested) return;
+    let cancelled = false;
+    let checks = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async () => {
+      let found: boolean | null = null;
+      try {
+        const res = await fetch(`${apiUrl()}/rooms/${roomCode}`);
+        found = res.ok ? true : res.status === 404 ? false : null;
+      } catch {
+        found = null; // offline or the server is down: the join itself will say so
+      }
+      if (cancelled) return;
+      setExists(found);
+      // Not there *yet* is possible (the host is a moment behind the guest), so keep looking for a
+      // while; the screen returns to the join form by itself when the hive appears.
+      if (found === false && ++checks < RECHECK_LIMIT) timer = setTimeout(check, RECHECK_MS);
+    };
+    void check();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [roomCode, possibleCode, joinRequested]);
 
   // Set synchronously (before any await) so a tap on the button and the bubbled tap on the
   // full-screen container behind it — the "unlock target is the whole screen" requirement —
@@ -142,8 +206,10 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const ctxState = client.audio.ctxState;
   const contextStalled = ctxState === "suspended" || ctxState === "interrupted";
 
+  const gone = removed ?? (exists === false && !joinRequested ? hiveNotFound(roomCode) : null);
+
   let view: View = "join";
-  if (removed) view = "removed";
+  if (gone) view = "removed";
   // audio.state is still "locked" between the join tap and the moment unlock() resolves; that is
   // the join in progress ("Joining…"), not an interruption — showing "Tap to resume" there flashed
   // the interruption screen at every guest on every join.
@@ -166,8 +232,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   if (view === "removed") {
     body = (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="font-display text-3xl font-bold">{removed!.heading}</h1>
-        <p style={{ color: "var(--muted)" }}>{removed!.detail}</p>
+        <h1 className="font-display text-3xl font-bold">{gone!.heading}</h1>
+        <p style={{ color: "var(--muted)" }}>{gone!.detail}</p>
         <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>
