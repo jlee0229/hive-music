@@ -36,7 +36,9 @@ function rawLagSamples(st: SoundTouch): number {
 
 /** Pure mono in / mono out (soundtouchjs works in stereo frames internally; we mirror the channel). */
 export async function pitchShiftMono(input: Float32Array, semitones: number): Promise<Float32Array> {
-  if (semitones === 0) return input;
+  // A non-finite shift is no shift: ±Infinity makes the stretcher's tempo 0 or Infinity and the
+  // pull loop below then spins forever without yielding, freezing the tab.
+  if (semitones === 0 || !Number.isFinite(semitones)) return input;
   const st = new SoundTouch();
   st.tempo = 1.0;
   st.pitchSemitones = semitones;
@@ -72,7 +74,13 @@ export async function pitchShiftMono(input: Float32Array, semitones: number): Pr
     const from = Math.min(skip, frames);
     skip -= from;
     const take = Math.min(frames - from, input.length - written);
-    for (let i = 0; i < take; i++) out[written + i] = chunk[(from + i) * 2]!;
+    for (let i = 0; i < take; i++) {
+      // soundtouchjs's quick seek can pick overlap offset -1 at the start of its buffer and read
+      // one frame before it: a NaN in the render. Hold the previous sample instead (v - v is 0
+      // only for finite v).
+      const v = chunk[(from + i) * 2]!;
+      out[written + i] = v - v === 0 ? v : written + i > 0 ? out[written + i - 1]! : 0;
+    }
     written += take;
     if (written >= input.length) break;
     sinceYield += take;

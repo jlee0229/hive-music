@@ -132,3 +132,22 @@ describe("pitchShiftMono renders the whole clip (ENGINE-DSP-21)", () => {
     expect((await pitchShiftMono(new Float32Array(0), 12)).length).toBe(0);
   });
 });
+
+describe("pitchShiftMono never emits or hangs on non-finite numbers (ENGINE-DSP-22)", () => {
+  test("every rendered sample is finite (soundtouchjs's quick seek can pick offset -1)", async () => {
+    // -14 st on this signal is a deterministic hit: unfixed, sample 719952 of the raw render is NaN.
+    // The same path is live at CHOIR's -12 (102 negative seek offsets in a 4-minute render).
+    const out = await pitchShiftMono(musicLike(20), -14);
+    let bad = 0;
+    for (let i = 0; i < out.length; i++) if (!Number.isFinite(out[i]!)) bad++;
+    expect(bad).toBe(0);
+  });
+
+  test("a non-finite shift is a pass-through, not an endless synchronous loop", async () => {
+    const input = musicLike(0.5);
+    // Unfixed, +Infinity never returns: tempo becomes 0 and the stretcher stops consuming input.
+    expect(await pitchShiftMono(input, Number.POSITIVE_INFINITY)).toBe(input);
+    expect(await pitchShiftMono(input, Number.NEGATIVE_INFINITY)).toBe(input);
+    expect(await pitchShiftMono(input, Number.NaN)).toBe(input);
+  });
+});
