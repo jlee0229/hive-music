@@ -679,7 +679,17 @@ export function createBrowserAudioEngine(
       if (room.track && room.track.id !== loadedTrackId && room.track.id !== loadingTrackId && !loadBackoffHolds(room.track.id)) {
         if (loadedTrackId && room.track.id !== loadedTrackId) {
           loadedTrackId = null; // SET_TRACK to something else: drop the old buffers' claim
-          scheduler?.stopAll("track changed");
+          /*
+           * A playlist advance arrives LEAD_MS before the old song ends, with the new one already
+           * "playing" from a start a few seconds ahead. The old song's last moments are allowed to play
+           * out (the scheduler bounds how long); a manual SET_TRACK stops the transport, and is a cut.
+           */
+          const t = room.transport;
+          const handover =
+            t.state === "playing" && scheduler && clock.offsetMs !== null
+              ? scheduler.ctxTimeForServerTime(t.serverTimeAtTrackZero, assignment, useOutputLatency())
+              : undefined;
+          scheduler?.stopAll("track changed", handover);
         }
         void loadTrack(room);
         return;

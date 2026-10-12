@@ -90,6 +90,12 @@ export const STOP_FADE_SEC = 0.01;
 export const DRIFT_CHECK_INTERVAL_MS = 1000;
 /** A hard resync starts this far ahead, leaving room to build the new branch. */
 export const RESYNC_START_MARGIN_SEC = 0.05;
+/**
+ * How long a branch that is being replaced may keep sounding while it waits for its successor's start,
+ * seconds. Long enough for the server's LEAD_MS (the end of a song, a restart from the top), far too
+ * short for "the old song plays on for five seconds after the host skipped it".
+ */
+export const HANDOVER_MAX_SEC = 2;
 
 export const gainFromDb = (db: number): number => (db <= -60 ? 0 : 10 ** (db / 20));
 
@@ -173,6 +179,8 @@ interface Branch {
   endsAtCtx: number;
   /** Ctx time up to which this branch's pattern gain has a curve written; −Infinity when it has none. */
   patternEndCtx: number;
+  /** Length of the audio this branch was built from, seconds. */
+  durationSec: number;
   /**
    * Content-seconds consumed beyond nominal because `playbackRate !== 1` (B9e). Positive = this branch
    * has eaten *more* of the track than wall time says, i.e. it is further along.
@@ -341,13 +349,16 @@ export class Scheduler {
      */
     if (assignment === null) {
       const wasPlaying = this.playing;
-      if (wasPlaying) this.stopAll("no assignment: this device is not a speaker");
+      if (wasPlaying || this.retiring.length > 0) this.stopAll("no assignment: this device is not a speaker");
       return { action: wasPlaying ? "stopped" : "idle", decision: null, reason: "assignment is null" };
     }
 
     if (transport.state !== "playing" || !opts.trackId || opts.trackId !== this.trackId || this.buffers.size === 0) {
       const wasPlaying = this.playing;
-      if (wasPlaying) this.stopAll("transport is not playing, or the track is not loaded");
+      // A paused or stopped room is silent, including a tail that was being allowed to play out. (A
+      // track that is merely not loaded yet leaves that tail alone: that is the playlist advance.)
+      const tailToSilence = transport.state !== "playing" && this.retiring.length > 0;
+      if (wasPlaying || tailToSilence) this.stopAll("transport is not playing, or the track is not loaded");
       this.applied = null;
       return { action: wasPlaying ? "stopped" : "idle", decision: null, reason: transport.state };
     }
@@ -422,7 +433,13 @@ export class Scheduler {
     }
 
     const restarted = this.playing;
-    if (restarted) this.stopAll("rescheduling");
+    /*
+     * A start that is still ahead — the server restarting the song on its own end, the next play from
+     * the top — is a hand-over, not a cut: what is sounding runs up to the new start. Stopping it "now"
+     * put LEAD_MS of silence in front of every loop the server had scheduled to be seamless, and took
+     * the last 600 ms off every song.
+     */
+    if (restarted) this.stopAll("rescheduling", decision.mode === "scheduled" ? decision.whenCtx : undefined);
     this.applied = key; // set before startBranch: the drift check reads it
     this.startBranch(decision, assignment);
     this.startDriftCheck();
@@ -456,6 +473,7 @@ export class Scheduler {
       stopped: false,
       endsAtCtx: Infinity,
       patternEndCtx: -Infinity,
+      durationSec: this.durationSec,
       slewSec: 0,
       slewRate: 1,
       slewAtCtx: decision.whenCtx,
@@ -488,14 +506,40 @@ export class Scheduler {
     return branch;
   }
 
-  /** Stops every branch with a short fade so a pause does not click. */
-  stopAll(_reason = "stop"): void {
+  /**
+   * Stops every branch with a short fade so a pause does not click.
+   *
+   * With `handoverCtx`, a branch that is already sounding is instead allowed to run until that instant
+   * (or its own natural end, whichever is first) — provided that is no more than HANDOVER_MAX_SEC away.
+   * It stops being "the music" at once: `playing` is false and the timers stop; it is only still audible.
+   */
+  stopAll(_reason = "stop", handoverCtx?: number): void {
+    const pattern = this.assignment?.pattern ?? null;
     this.patternKey = null;
     const at = this.deps.ctx.currentTime;
-    for (const branch of this.branches) this.fadeOutAndStop(branch, at, STOP_FADE_SEC);
+    for (const branch of this.branches) {
+      const naturalEnd = branch.startCtxForZero - branch.slewSec + branch.durationSec;
+      const until = handoverCtx === undefined ? at : Math.min(handoverCtx, naturalEnd);
+      const sounding = !branch.stopped && at >= branch.startedAtCtx;
+      if (sounding && until > at + STOP_FADE_SEC && until - at <= HANDOVER_MAX_SEC) {
+        // Its pattern has to be written out to the end now: the top-up timer is about to stop.
+        if (pattern) this.writePatternWindow(pattern, branch, until + STOP_FADE_SEC);
+        this.fadeOutAndStop(branch, until, STOP_FADE_SEC);
+        this.retiring.push(branch);
+      } else {
+        this.fadeOutAndStop(branch, at, STOP_FADE_SEC);
+      }
+    }
     this.branches = [];
-    for (const branch of this.retiring) this.cutShort(branch, at, STOP_FADE_SEC);
-    this.retiring = [];
+    if (handoverCtx === undefined) {
+      for (const branch of this.retiring) this.cutShort(branch, at, STOP_FADE_SEC);
+      this.retiring = [];
+    } else {
+      // A tail already waiting for an earlier hand-over must not outlast this one (the successor's
+      // start just moved): two starts in a row would otherwise leave it playing over the second.
+      this.retiring = this.retiring.filter((b) => b.endsAtCtx > at);
+      for (const branch of this.retiring) this.cutShort(branch, Math.max(at, handoverCtx), STOP_FADE_SEC);
+    }
     this.stopPatternAutomation();
     this.stopDriftCheck();
   }
@@ -650,6 +694,8 @@ export class Scheduler {
     for (const branch of this.branches) this.fadeOutAndStop(branch, ctxNow, 0); // stops before it ever starts
     this.branches = [];
     if (!decision) return this.stopAll("past the end of the track");
+    // …and a tail that was waiting for the old start instant follows the new one if it is earlier.
+    for (const branch of this.retiring) this.cutShort(branch, decision.whenCtx, STOP_FADE_SEC);
     this.applied = { ...this.applied, timingShiftMs: this.netTimingShiftMs(assignment, useOutputLatency) };
     this.startBranch(decision, assignment);
     this.lastDecision = decision;
@@ -789,12 +835,13 @@ export class Scheduler {
    *  - evaluated at the track position that will actually be sounding at each instant, so the curve
    *    stays aligned to the music rather than to the moment the tick happened to run.
    */
-  private writePatternWindow(pattern: Pattern, target?: Branch): void {
+  private writePatternWindow(pattern: Pattern, target?: Branch, untilCtx?: number): void {
     const branch = target ?? this.branches.find((b) => !b.stopped);
     if (!branch || branch.stopped) return;
     const origin = Math.max(this.deps.ctx.currentTime, branch.startedAtCtx);
     const startCtx = Math.max(origin, branch.patternEndCtx + PATTERN_CURVE_GAP_SEC);
-    const durationSec = origin + PATTERN_LOOKAHEAD_MS / 1000 - startCtx;
+    // `untilCtx`: write out to a fixed instant instead of the usual horizon (a branch being handed over).
+    const durationSec = (untilCtx ?? origin + PATTERN_LOOKAHEAD_MS / 1000) - startCtx;
     if (durationSec < PATTERN_MIN_WINDOW_SEC) return; // already written far enough ahead
 
     const fromMs = (branch.startOffsetSec + (startCtx - branch.startedAtCtx)) * 1000;
