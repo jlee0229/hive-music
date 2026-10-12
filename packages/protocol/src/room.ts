@@ -94,7 +94,8 @@ export const ClientRecordSchema = z.object({
 export type ClientRecord = z.infer<typeof ClientRecordSchema>;
 
 export const CalibrationResultSchema = z.object({
-  residualMs: z.number(),
+  /** Finite: this is added to `calibratedOffsetMs`, and an Infinity there serializes as null (see messages.ts). */
+  residualMs: z.number().finite(),
   confidence: z.number().min(0).max(1),
 });
 export const CalibrationStateSchema = z.object({

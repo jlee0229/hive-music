@@ -76,3 +76,45 @@ describe("PROTO-01 · a client id that names an Object.prototype key", () => {
     host.close(); victim.close(); attacker.close();
   });
 });
+
+describe("PROTO-02 · 1e999 is valid JSON and parses to Infinity", () => {
+  const INF = [
+    '{"type":"CLIENT_STATUS","rttMs":1,"syncErrMs":1,"outputLatencyMs":1e999,"audioState":"ready"}',
+    '{"type":"CLIENT_STATUS","rttMs":1e999,"syncErrMs":1,"outputLatencyMs":null,"audioState":"ready"}',
+    '{"type":"CLIENT_STATUS","rttMs":1,"syncErrMs":-1e999,"outputLatencyMs":null,"audioState":"ready"}',
+    '{"type":"TRANSPORT","action":"SEEK","trackTimeSec":1e999}',
+    '{"type":"NTP_REQUEST","t0":1e999}',
+    '{"type":"CALIBRATION_REPORT","measurements":[{"clientId":"x","residualMs":1e999,"confidence":0.9}]}',
+  ];
+
+  test("no client message field accepts a non-finite number", () => {
+    for (const raw of INF) expect(parseClientMessage(raw), raw).toBeNull();
+    // the finite versions of the same messages still parse
+    for (const raw of INF) expect(parseClientMessage(raw.replace(/-?1e999/, "12.5")), raw).not.toBeNull();
+  });
+
+  test("an Infinity outputLatency cannot reach calibratedOffsetMs and null out compensationMs for the room", async () => {
+    const { host, victim } = await hostAndVictim();
+    const attacker = new Raw(PORT);
+    await attacker.open();
+    // browserFamily "other" has no latency-table row, so the calibration base falls through to the
+    // phone's own reported outputLatencyMs — the number under attack
+    attacker.sendRaw(JSON.stringify({ type: "JOIN", clientId: "attacker-inf-0001", roomCode: "BZQ7", kind: "player", plays: true, device: { ...device, browserFamily: "other" }, protocolVersion: PROTOCOL_VERSION }));
+    await attacker.next("WELCOME");
+    attacker.forget();
+    attacker.sendRaw(INF[0]!);
+    await attacker.next("ERROR", (m) => m.code === "BAD_MESSAGE");
+
+    host.forget();
+    victim.forget();
+    host.send({ type: "CALIBRATION_START", referenceClientId: "host-0000-aaaa" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.state === "countdown");
+    host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "attacker-inf-0001", residualMs: 3, confidence: 0.9 }] });
+    const done = await victim.next("ROOM_STATE", (m) => m.room.calibration.state === "done");
+    expect(Number.isFinite(done.room.clients["attacker-inf-0001"]!.assignment!.compensationMs)).toBe(true);
+    expect(victim.unparsable).toEqual([]);
+    host.send({ type: "CALIBRATION_CANCEL" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.state === "idle");
+    host.close(); victim.close(); attacker.close();
+  });
+});

@@ -16,6 +16,15 @@ export const ClickSpecSchema = z.object({
 export type ClickSpec = z.infer<typeof ClickSpecSchema>;
 export const DEFAULT_CLICK_SPEC: ClickSpec = { kind: "click", burstMs: 2, chirpFromHz: 2000, chirpToHz: 6000, chirpMs: 20, gain: 0.8 };
 
+/**
+ * A number a client may send. `z.number()` alone accepts ±Infinity, and `1e999` is valid JSON that
+ * `JSON.parse` turns into exactly that; `JSON.stringify` then writes it back out as `null`. So an
+ * Infinity that reaches room state (an `outputLatencyMs` used as a calibration base, a SEEK target)
+ * leaves the server as `"compensationMs":null` and fails the schema on every phone. Fields with both
+ * a min and a max are already safe; everything else a client can send goes through this.
+ */
+const finite = () => z.number().finite();
+
 export const AudioStateSchema = z.enum(["locked", "unlocked", "loading", "ready"]);
 
 /**
@@ -58,7 +67,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("NTP_REQUEST"),
-    t0: z.number(),
+    t0: finite(),
     probeGroupId: z.number().int().optional(),
     probeGroupIndex: z.union([z.literal(0), z.literal(1)]).optional(),
   }),
@@ -66,7 +75,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("TRANSPORT"),
     action: z.enum(["PLAY", "PAUSE", "SEEK"]),
-    trackTimeSec: z.number().min(0).optional(),
+    trackTimeSec: finite().min(0).optional(),
   }),
   z.object({ type: z.literal("SET_MODE"), mode: z.enum(MODES), params: ModeParamsSchema.default({}) }),
   z.object({ type: z.literal("ASSIGN"), clientId: ClientRefSchema, role: StemRoleSchema.nullable() }),
@@ -77,9 +86,9 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("AUDIO_READY"), trackId: z.string() }),
   z.object({
     type: z.literal("CLIENT_STATUS"),
-    rttMs: z.number().nullable(),
-    syncErrMs: z.number().nullable(),
-    outputLatencyMs: z.number().nullable(),
+    rttMs: finite().nullable(),
+    syncErrMs: finite().nullable(),
+    outputLatencyMs: finite().nullable(),
     audioState: AudioStateSchema,
   }),
   z.object({ type: z.literal("CALIBRATION_START"), referenceClientId: ClientRefSchema }),
