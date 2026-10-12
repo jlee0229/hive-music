@@ -103,6 +103,20 @@ export function HiveMap({
     return () => cancelAnimationFrame(raf);
   }, [clock]);
 
+  // A finger that lands on a dot must drag the dot, never scroll the page. `touch-action: none` on
+  // the dot says so declaratively; this says it again for engines that ignore touch-action on SVG
+  // children. It has to be a native, non-passive listener — React's onTouchStart is passive.
+  const interactive = !!host;
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg || !interactive) return;
+    const onTouchStart = (e: TouchEvent) => {
+      if ((e.target as Element | null)?.closest?.("g[data-client-id]")) e.preventDefault();
+    };
+    svg.addEventListener("touchstart", onTouchStart, { passive: false });
+    return () => svg.removeEventListener("touchstart", onTouchStart);
+  }, [interactive]);
+
   const roles = cyclableRoles(room);
 
   /**
@@ -213,7 +227,11 @@ export function HiveMap({
       // Square at every width: the flex parent may squeeze the width (a 320-375 px phone), and with a
       // fixed height the drawing was letterboxed inside a taller box — a dragged dot then landed up
       // to 15 px away from the finger, because the drag maths divides by the box, not the drawing.
-      style={{ touchAction: "none", maxWidth: "100%", height: "auto", aspectRatio: "1 / 1" }}
+      // touch-action: the map is a screen-wide square in the middle of a page that scrolls, so its
+      // background lets a vertical swipe through (pan-y) and only the dots — the things one drags —
+      // claim the gesture (touch-action: none on each <g>, plus the touchstart guard above for
+      // engines that do not apply touch-action to SVG children).
+      style={{ touchAction: host ? "pan-y" : "auto", maxWidth: "100%", height: "auto", aspectRatio: "1 / 1" }}
     >
       <defs>
         <pattern id="hive-map-dots" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -251,7 +269,7 @@ export function HiveMap({
             onPointerMove={(e) => onPointerMove(e, client.id)}
             onPointerUp={(e) => onPointerUp(e, client.id)}
             onPointerCancel={endGesture}
-            style={{ cursor: host ? "pointer" : "default" }}
+            style={{ cursor: host ? "pointer" : "default", touchAction: host ? "none" : "auto" }}
           >
             <circle cx={cx} cy={cy} r={metrics.ring} fill="none" stroke={ringColor} strokeWidth={metrics.ringWidth} />
             <circle
