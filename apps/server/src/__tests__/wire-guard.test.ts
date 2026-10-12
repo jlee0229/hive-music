@@ -60,8 +60,10 @@ describe("SG-05: nothing a client sends can make ROOM_STATE unreadable or unboun
 
   test("JSON 1e999 (Infinity) is refused in every numeric field instead of reaching room state", () => {
     const { room, host, guest } = party();
-    // the premise: zod alone lets it through
-    expect(parseClientMessage('{"type":"TRANSPORT","action":"PLAY","trackTimeSec":1e999}')).not.toBeNull();
+    // Two layers refuse this now: the schema (z.number() became finite-only in the protocol audit,
+    // PROTO-02) and the server's own guard. When this test was written the schema let it through;
+    // what matters, and what is asserted below, is that neither a host nor a guest can get it in.
+    expect(parseClientMessage('{"type":"TRANSPORT","action":"PLAY","trackTimeSec":1e999}')).toBeNull();
 
     const poison = [
       '{"type":"TRANSPORT","action":"PLAY","trackTimeSec":1e999}',
