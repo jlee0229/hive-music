@@ -1,15 +1,19 @@
 /**
- * Spawns the @hive/protocol mock server for a Playwright test, bound to the port baked into
- * apps/web/.env.local (NEXT_PUBLIC_WS_URL / NEXT_PUBLIC_API_URL), so the already-running `next dev`
- * talks to whichever scenario the test starts. One mock at a time; tests run serially (see playwright.config.ts).
+ * Spawns the @hive/protocol mock server for a Playwright test on HIVE_MOCK_PORT (default 8080) —
+ * the same port playwright.config.ts bakes into the web server it starts (NEXT_PUBLIC_WS_URL /
+ * NEXT_PUBLIC_API_URL), so the app talks to whichever scenario the test starts. One mock at a time;
+ * tests run serially (see playwright.config.ts). The port is an env var because 8080 is routinely
+ * taken on a dev machine, and because several checkouts must be able to run the suite at once.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
 const MOCK_SERVER = path.join(REPO_ROOT, "packages/protocol/src/mock-server.ts");
-export const MOCK_PORT = 8080;
+export const MOCK_PORT = Number(process.env.HIVE_MOCK_PORT ?? 8080);
 export const MOCK_URL = `http://localhost:${MOCK_PORT}`;
+/** Absolute path when `bun` is not on PATH (a fresh Windows shell after a winget install). */
+const BUN_BIN = process.env.BUN_BIN ?? "bun";
 
 export interface MockHandle {
   process: ChildProcess;
@@ -18,7 +22,7 @@ export interface MockHandle {
 
 export async function startMock(scenarioName: string): Promise<MockHandle> {
   const scenarioPath = path.join(REPO_ROOT, "apps/web/mocks/scenarios", scenarioName);
-  const child = spawn("bun", ["run", MOCK_SERVER, "--scenario", scenarioPath], {
+  const child = spawn(BUN_BIN, ["run", MOCK_SERVER, "--scenario", scenarioPath], {
     env: { ...process.env, PORT: String(MOCK_PORT) },
     stdio: "pipe",
   });
