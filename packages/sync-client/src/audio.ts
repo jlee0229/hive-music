@@ -718,6 +718,16 @@ export function createBrowserAudioEngine(
               ? scheduler.ctxTimeForServerTime(t.serverTimeAtTrackZero, assignment, useOutputLatency())
               : undefined;
           scheduler?.stopAll("track changed", handover);
+          /*
+           * Release the old song *now*, not when the new one has finished decoding. Decoded PCM is the
+           * biggest thing a phone holds for us (a 4-minute stereo stem is ~85 MB, a CHOIR copy ~40 MB
+           * more), and keeping it through the next download and decode meant two songs in memory at the
+           * moment the tab is already at its peak — which is when iOS kills it.
+           */
+          originalBuffers = null;
+          pitchedCache.clear();
+          appliedPitchSemitones = 0;
+          scheduler?.clearBuffers();
         }
         void loadTrack(room);
         return;
@@ -813,6 +823,11 @@ export function createBrowserAudioEngine(
         slewPpm: scheduler?.lastSlewPpm ?? 0,
         slewEnabled: scheduler?.slewEnabled ?? false,
         resyncCount: scheduler?.resyncCount ?? 0,
+        // Decoded buffers this engine keeps reachable: originals, CHOIR copies, and the scheduler's set.
+        buffersHeld:
+          (originalBuffers?.size ?? 0) +
+          [...pitchedCache.values()].reduce((n, m) => n + m.size, 0) +
+          (scheduler?.bufferCount ?? 0),
       };
     },
 

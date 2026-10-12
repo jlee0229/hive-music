@@ -273,6 +273,20 @@ export class Scheduler {
     this.durationSec = Math.max(0, ...[...buffers.values()].map((b) => b.duration));
   }
 
+  /**
+   * Lets go of the decoded audio (a track change). Branches that are still sounding keep their own
+   * reference through their source nodes, so the tail of the old song is unaffected.
+   */
+  get bufferCount(): number {
+    return this.buffers.size;
+  }
+
+  clearBuffers(): void {
+    this.buffers = new Map();
+    this.trackId = null;
+    this.durationSec = 0;
+  }
+
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.master.gain.setTargetAtTime(muted ? 0 : 1, this.deps.ctx.currentTime, GAIN_RAMP_TC_SEC);
