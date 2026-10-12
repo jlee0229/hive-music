@@ -172,6 +172,10 @@ const VARIANTS: Record<string, Variant> = {
   floorWindow: { name: "proposal A: all probes, min-RTT over 30 s", make: () => new FloorWindowEstimator() },
   floorAged: { name: "proposal B: A + age-aware pick, 3-probe start", make: () => new FloorWindowEstimator({ agePpm: 50, minFirst: 3 }) },
   floorHold: { name: "proposal C: B + RTT-floor hold-over", make: () => new FloorWindowEstimator({ agePpm: 50, minFirst: 3, hold: true }) },
+  // The same estimators with the steady cadence cut from 1 pair/s to 1 pair per 5 s (the burst is kept):
+  // 80 % fewer NTP messages for the server to answer once a phone has settled.
+  currentSlow: { name: "current, 1 pair per 5 s", make: () => new ClockModel({ pairs: true }), steadyHz: 0.2 },
+  floorHoldSlow: { name: "proposal C, 1 pair per 5 s", make: () => new FloorWindowEstimator({ agePpm: 50, minFirst: 3, hold: true }), steadyHz: 0.2 },
 };
 
 // ---- the simulation -------------------------------------------------------------------------------------
