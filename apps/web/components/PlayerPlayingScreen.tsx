@@ -5,7 +5,6 @@ import type { AudioState, ClientRecord, Pattern, RoomState } from "@hive/protoco
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
 import { beatPhase, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
-import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { AdSlot } from "@/components/AdSlot";
 import { Creators } from "@/components/Creators";
@@ -148,6 +147,8 @@ export function PlayerPlayingScreen({
   const label = assignment?.label ?? "Unison";
   // Light ink on the one dark fill (bass) is only ~4:1, so its small print is not faded further.
   const soft = ink === DARK ? 0.8 : 1;
+  const duration = room.track?.durationSec;
+  const shownSec = duration ? Math.min(trackSec, Math.floor(duration)) : trackSec;
 
   let statusLine: React.ReactNode;
   if (audioState !== "ready") {
@@ -158,20 +159,28 @@ export function PlayerPlayingScreen({
     statusLine = <span>Muted</span>;
   } else {
     statusLine = (
-      <span>
-        {room.track?.title ?? "—"} · {formatTrackTime(trackSec)}
-      </span>
+      <>
+        <span className="min-w-0 truncate">{room.track?.title ?? "—"}</span>
+        <span className="shrink-0">&nbsp;· {formatTrackTime(shownSec)}</span>
+      </>
     );
   }
 
   return (
     <main
       ref={mainRef}
-      className="relative flex h-dvh flex-col justify-between overflow-hidden"
+      className="relative flex h-dvh flex-col gap-2 overflow-hidden"
       style={{
         background: roleColor,
         color: ink,
-        padding: safeAreaPadding(52, 24, 28),
+        // Scaled down on short viewports (a phone in landscape is ~375 px tall); the safe-area
+        // insets are always added on top.
+        padding: [
+          "calc(min(52px, 6dvh) + env(safe-area-inset-top, 0px))",
+          "calc(24px + env(safe-area-inset-right, 0px))",
+          "calc(min(28px, 4dvh) + env(safe-area-inset-bottom, 0px))",
+          "calc(24px + env(safe-area-inset-left, 0px))",
+        ].join(" "),
         overscrollBehavior: "none",
         touchAction: "manipulation",
       }}
@@ -189,7 +198,7 @@ export function PlayerPlayingScreen({
       <svg
         ref={ringsRef}
         className="pointer-events-none absolute"
-        style={{ left: -105, top: 122, transformOrigin: "center", transition: "transform 60ms linear" }}
+        style={{ left: "calc(50% - 300px)", top: "calc(50% - 300px)", transformOrigin: "center", transition: "transform 60ms linear" }}
         width="600"
         height="600"
         viewBox="0 0 600 600"
@@ -201,18 +210,33 @@ export function PlayerPlayingScreen({
         <circle cx="300" cy="300" r="280" stroke="currentColor" strokeOpacity="0.07" strokeWidth="2" />
       </svg>
 
-      <div className="relative flex items-center justify-between">
+      <div className="relative flex shrink-0 items-center justify-between">
         <span className="font-mono text-[13px] tracking-widest" style={{ opacity: soft }}>
           HIVE · {roomCode}
         </span>
       </div>
 
-      <div className="relative flex flex-col items-center gap-2.5">
-        <span className="text-[13px] tracking-[0.22em]" style={{ opacity: soft }}>
+      {/* The middle takes whatever height is left and clips inside itself, so the controls below
+          are never pushed off a no-scroll screen. */}
+      <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-2.5 overflow-hidden text-center">
+        <span className="shrink-0 text-[13px] tracking-[0.22em]" style={{ opacity: soft }}>
           YOU ARE
         </span>
-        <span className="font-display text-[76px] leading-none font-extrabold tracking-tight uppercase">{label}</span>
-        <span className="text-[15px]" style={{ opacity: soft }}>
+        <span
+          className="font-display shrink-0 leading-none font-extrabold tracking-tight whitespace-nowrap uppercase"
+          // One line, sized to the label: this face runs ~0.63em per capital on average and
+          // ~0.72em for a word of wide ones ("DRUMS"), so 0.76em a character always fits and
+          // "SOPRANO" / "STROBE 3" are no longer cropped on a 320 px phone. A 76 px word needs no
+          // help from the OS text-size setting, which would only push it back off the screen.
+          style={{
+            fontSize: `min(76px, 20dvh, calc((100vw - 48px) / ${(Math.max(label.length, 4) * 0.76).toFixed(2)}))`,
+            WebkitTextSizeAdjust: "100%",
+            textSizeAdjust: "100%",
+          }}
+        >
+          {label}
+        </span>
+        <span className="flex max-w-full shrink-0 justify-center text-[15px]" style={{ opacity: soft }}>
           {statusLine}
         </span>
       </div>
@@ -220,18 +244,21 @@ export function PlayerPlayingScreen({
       {/* No nudge slider here anymore: timing is automatic (live latency + the tuning moment), and
           a visible correction control read as "this app needs fixing". The host still has a
           per-player nudge in the player sheet for emergencies. */}
-      <div className="relative flex flex-col gap-3 rounded-[20px] p-4" style={{ background: "rgba(11,15,20,0.6)", color: "#F1F5F9" }}>
+      <div className="relative flex shrink-0 flex-col gap-3 rounded-[20px] p-4" style={{ background: "rgba(11,15,20,0.6)", color: "#F1F5F9" }}>
         <ReconnectBanner connection={connection} />
         <button
           onClick={() => client.audio.setMuted(!muted)}
           aria-pressed={muted}
-          className="flex h-12 items-center justify-center rounded-xl border font-semibold"
+          className="flex h-12 shrink-0 items-center justify-center rounded-xl border font-semibold"
           style={{ borderColor: "var(--border)", background: muted ? "#F1F5F9" : "transparent", color: muted ? "#0B0F14" : "#F1F5F9" }}
         >
           {muted ? "Unmute my phone" : "Mute my phone"}
         </button>
-        <AdSlot dark />
-        <Creators dark />
+        {/* Landscape phones have no room for the footer; drop it whole rather than crop it. */}
+        <div className="flex flex-col gap-3 [@media(max-height:480px)]:hidden">
+          <AdSlot dark />
+          <Creators dark />
+        </div>
       </div>
     </main>
   );
