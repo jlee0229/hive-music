@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from "@hive/protocol";
-import { Room, type Conn } from "../rooms";
+import { MAX_ROOM_OBSERVERS, Room, type Conn } from "../rooms";
 
 /**
  * Audit SG-11. docs/02-protocol.md (v4): "HEALTH 1 Hz to hosts **and viewers**" — a /screen display's
@@ -49,6 +49,34 @@ describe("SG-11: viewers receive HEALTH", () => {
     room.handle(viewer.ws, { type: "KICK", clientId: "play-vh-00001" });
     expect(room.room.clients["play-vh-00001"]).toBeDefined();
     expect(viewer.sent.some((m) => m.type === "ERROR" && m.code === "NOT_HOST")).toBe(true);
+    room.destroy();
+  });
+
+  test("the host's own /screen tab (same browser, so the host's client id, no key) is an observer: it gets HEALTH without taking it from the host", () => {
+    const room = new Room("VHL2", fakeServer(), () => {}, () => []);
+    const host = fakeWs();
+    room.join(host.ws, join(room, "host-vh-00002", "host"));
+    const screen = fakeWs();
+    // what apps/web/app/screen sends today: kind "player", and the browser's shared hive:clientId
+    room.join(screen.ws, { ...join(room, "host-vh-00002", "player"), plays: false });
+    expect(screen.sent.find((m) => m.type === "WELCOME")).toMatchObject({ isHost: false });
+
+    const publish = () => (room as unknown as { publishHealth(): void }).publishHealth();
+    publish();
+    expect(host.sent.filter((m) => m.type === "HEALTH")).toHaveLength(1);
+    expect(screen.sent.filter((m) => m.type === "HEALTH")).toHaveLength(1);
+
+    room.disconnect(screen.ws); // closing the screen tab is not the host leaving, and stops its HEALTH
+    publish();
+    expect(room.room.clients["host-vh-00002"]!.connected).toBe(true);
+    expect(host.sent.filter((m) => m.type === "HEALTH")).toHaveLength(2);
+    expect(screen.sent.filter((m) => m.type === "HEALTH")).toHaveLength(1);
+
+    // observers are capped: they are not client records, so nothing else would bound them
+    const extra = Array.from({ length: MAX_ROOM_OBSERVERS + 3 }, () => fakeWs());
+    for (const s of extra) room.join(s.ws, { ...join(room, "host-vh-00002", "player"), plays: false });
+    expect(extra.filter((s) => s.sent.some((m) => m.type === "WELCOME"))).toHaveLength(MAX_ROOM_OBSERVERS);
+    expect(extra.filter((s) => s.sent.some((m) => m.type === "ERROR" && m.code === "ROOM_FULL"))).toHaveLength(3);
     room.destroy();
   });
 });

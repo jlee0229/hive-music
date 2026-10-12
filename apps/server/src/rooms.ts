@@ -47,6 +47,8 @@ const TRACK_ADVANCE_LEAD_MS = 5000;
  * unbounded room is an amplifier that takes the whole process down (audit SG-04).
  */
 export const MAX_ROOM_CLIENTS = 256;
+/** Identity-less read-only sockets per room (Room.observe). */
+export const MAX_ROOM_OBSERVERS = 8;
 
 /**
  * A room nobody has joined yet lives this long. The idle timer used to be armed only when the last
@@ -128,6 +130,8 @@ export class Room {
    * race: when the newest closes, the client is still here on the one before it (audit SG-03).
    */
   private standby = new Map<string, WS[]>();
+  /** Read-only sockets with no client identity (see observe()). They watch; that includes HEALTH. */
+  private observers = new Set<WS>();
   health = new Map<string, HealthRecord>();
   joinCounter = 0;
   dirty = false;
@@ -245,6 +249,9 @@ export class Room {
       const s = this.sockets.get(c.id);
       if (s) send(s, { type: "HEALTH", serverTime: t, clients });
     }
+    // Observers too: HEALTH needs no credential (any viewer gets it), and the usual observer is the
+    // host's own /screen tab, whose sync tile is made of these numbers.
+    for (const s of this.observers) send(s, { type: "HEALTH", serverTime: t, clients });
   }
 
   private tickPing() {
@@ -564,15 +571,20 @@ export class Room {
    * host's record is left exactly as it was.
    */
   private observe(ws: WS, claimedId: string) {
+    // Observers are not client records, so MAX_ROOM_CLIENTS does not see them; a handful covers the
+    // honest case (a host's extra tabs) and keeps this from being an uncapped way into the fan-out.
+    if (this.observers.size >= MAX_ROOM_OBSERVERS) return send(ws, { type: "ERROR", code: "ROOM_FULL", message: "too many displays on this hive" });
     ws.data.clientId = null;
     ws.data.roomCode = this.code;
     ws.data.host = false;
     ws.subscribe(this.code);
+    this.observers.add(ws);
     send(ws, { type: "WELCOME", clientId: claimedId, roomCode: this.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: false });
     send(ws, { type: "ROOM_STATE", room: this.room });
   }
 
   disconnect(ws: WS) {
+    this.observers.delete(ws);
     const id = ws.data.clientId;
     if (!id) return;
     // A duplicate/stale socket for the same clientId (e.g. a reconnect that raced the old socket's
