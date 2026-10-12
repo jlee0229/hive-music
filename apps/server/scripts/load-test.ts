@@ -278,7 +278,9 @@ class LoadClient {
         if (!this.firstOwnStateAt && raw.includes(this.clientId)) this.firstOwnStateAt = at;
         // The mode sits ahead of the client map, so the marker is always in the first couple of KB.
         const a = currentAction;
-        if (a && this.seenAction !== a && raw.slice(0, 2000).includes(a.marker)) {
+        // Only phones that were already in the room when the host acted: a later joiner's first snapshot
+        // also carries the marker, and would be counted as a seconds-late delivery.
+        if (a && this.seenAction !== a && this.welcomeAt < a.sentAt && raw.slice(0, 2000).includes(a.marker)) {
           this.seenAction = a;
           a.latencies.push(at - a.sentAt);
         }
