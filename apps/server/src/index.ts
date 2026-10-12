@@ -4,7 +4,7 @@ import { PROTOCOL_VERSION, VibeRequestSchema, type ScenePlan } from "@hive/proto
 import { directScene } from "./vibe/director";
 import { withUrls } from "./library";
 import { RoomManager, type Conn } from "./rooms";
-import { handleUploadTracks } from "./upload/route";
+import { MAX_UPLOAD_BYTES, handleUploadTracks } from "./upload/route";
 import { RateLimiter, callerKey } from "./rate-limit";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -49,11 +49,16 @@ async function resolveHostKeySecret(): Promise<string | undefined> {
 
 // Per-caller budgets (one address = one NAT = possibly a whole party, hence generous).
 const roomCreations = new RateLimiter(Number(process.env.ROOMS_PER_MINUTE ?? 30), 60_000);
+const uploads = new RateLimiter(Number(process.env.UPLOADS_PER_10_MIN ?? 30), 600_000);
 
 const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret() });
 
 const server = Bun.serve<Conn>({
   port: PORT,
+  // Bun's default is 128 MB for any route. Only POST /tracks has a real body; the handler refuses
+  // an over-limit Content-Length itself (with a JSON error), this is the backstop for a body that
+  // arrives without one.
+  maxRequestBodySize: MAX_UPLOAD_BYTES + 1024 * 1024,
   async fetch(req, srv) {
     const url = new URL(req.url);
 
@@ -124,6 +129,7 @@ const server = Bun.serve<Conn>({
     }
 
     if (url.pathname === "/tracks" && req.method === "POST") {
+      if (!uploads.allow(callerKey(req, srv))) return json({ error: "too many uploads — try again in a few minutes" }, 429);
       return handleUploadTracks(req, manager, FIXTURES_DIR, url.origin, corsHeaders);
     }
 
@@ -182,8 +188,10 @@ console.log(`[hive-server] listening on http://localhost:${server.port} (protoco
  * request path; each patched meta is written back so the work happens once per track, ever.
  */
 void (async () => {
+  const { rename } = await import("node:fs/promises");
   const { parseWav } = await import("./upload/wav");
   const { detectBeatGrid, BPM_ALGORITHM_VERSION } = await import("./upload/bpm");
+  const BACKFILL_ANALYSIS_SEC = 150; // bpm.ts analyses at most 120 s (MAX_ANALYSIS_SEC); a margin on top
   let patched = 0;
   for (const entry of manager.getLibrary()) {
     if (entry.generated) continue;
@@ -194,11 +202,17 @@ void (async () => {
       if (meta.bpm && meta.bpmVersion === BPM_ALGORITHM_VERSION) continue;
       const stem = entry.stems.includes("mix") ? "mix" : entry.stems[0];
       if (!stem) continue;
+      // The detector looks at the first two minutes only, so only those are decoded: a whole
+      // 10-minute stem is another 106 MB as Float32 — per track, at every boot after a detector
+      // bump, in the process that is about to host every party (audit SG-07).
       const bytes = new Uint8Array(await Bun.file(`${FIXTURES_DIR}/tracks/${entry.id}/${stem}.wav`).arrayBuffer());
-      const wav = parseWav(bytes);
+      const wav = parseWav(bytes, { truncateSec: BACKFILL_ANALYSIS_SEC });
       const grid = detectBeatGrid(wav.channels[0]!, wav.sampleRate);
-      if (grid === null) continue;
-      await Bun.write(metaPath, JSON.stringify({ ...meta, bpm: grid.bpm, beatOffsetSec: grid.beatOffsetSec, bpmVersion: BPM_ALGORITHM_VERSION }, null, 2) + "\n");
+      if (grid === null || !Number.isFinite(grid.bpm) || !Number.isFinite(grid.beatOffsetSec)) continue;
+      // Temp file + rename: a crash (or an OOM kill) mid-write must not leave a truncated meta.json
+      // where a good one was — that is the file that makes this directory a track at all.
+      await Bun.write(`${metaPath}.tmp`, JSON.stringify({ ...meta, bpm: grid.bpm, beatOffsetSec: grid.beatOffsetSec, bpmVersion: BPM_ALGORITHM_VERSION }, null, 2) + "\n");
+      await rename(`${metaPath}.tmp`, metaPath);
       patched++;
     } catch (err) {
       console.warn(`[hive-server] bpm backfill failed for ${entry.id}:`, err instanceof Error ? err.message : err);

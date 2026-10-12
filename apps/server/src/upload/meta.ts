@@ -39,7 +39,11 @@ export function buildTrackMeta(id: string, title: string, stemNames: string[], s
     durationSec,
   );
   const dropSec = detectDropFromEnergy(energy);
-  const grid = detectBeatGrid(mixdown(stems), sampleRate);
+  const detected = detectBeatGrid(mixdown(stems), sampleRate);
+  // meta.json is trusted by every room that ever loads this track: a NaN here is `null` on disk and
+  // an unparsable ROOM_STATE on every phone, so nothing non-finite leaves this function.
+  const grid = detected && Number.isFinite(detected.bpm) && detected.bpm > 0 && Number.isFinite(detected.beatOffsetSec) && detected.beatOffsetSec >= 0 ? detected : null;
+  for (let i = 0; i < energy.length; i++) if (!Number.isFinite(energy[i])) energy[i] = 0;
   return {
     id,
     title,
