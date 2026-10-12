@@ -238,6 +238,16 @@ function HostRoom({
     return () => clearTimeout(t);
   }, [hostToast]);
 
+  // The drawers and the phone sheet are made of controls too. When the socket drops they fold
+  // away, so the host is looking at the banner and the greyed stage rather than tapping a list that
+  // cannot answer.
+  useEffect(() => {
+    if (connection !== "reconnecting" && connection !== "closed") return;
+    setShowSongs(false);
+    setShowPlayers(false);
+    setSheetClientId(null);
+  }, [connection]);
+
   // A demotion remounts HostRoom under a fresh key (see HostPage); this client's socket is
   // otherwise never closed, so the old, now-demoted connection would sit in the room as a zombie
   // player forever without this.
@@ -502,6 +512,8 @@ function HostRoom({
   // the Songs drawer, joining in the Join QR code page, and Start appears whenever the transport
   // is stopped. `room.track` is auto-picked seconds after the room exists (effect above).
   const showStage = !!room?.track;
+  // Not connected right now (a drop the engine is retrying, or a socket closed for good).
+  const offline = connection !== "open";
   const showCalibrate = showTuningScreen({ calibrationState, startedHere: tuningStartedHere, dismissed: calibrateDismissed });
   const tuneNote = tuningNote({ calibrationState, micBlocked });
 
@@ -560,6 +572,16 @@ function HostRoom({
           </button>
         </div>
 
+        {/* Everything below sends a command over the socket, and a command sent while the socket is
+            down is dropped, not queued — a tap during a Wi-Fi blip used to do nothing, silently. So
+            while it is down the controls are visibly off (the banner above says why); nothing stale
+            is replayed when it comes back. */}
+        <fieldset
+          disabled={offline}
+          data-testid="host-controls"
+          className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0"
+          style={offline ? { opacity: 0.45, pointerEvents: "none" } : undefined}
+        >
         {room.transport.state === "stopped" ? (
           <div className="flex flex-col gap-2.5">
             <span className="line-clamp-2 text-center text-[15px] [overflow-wrap:anywhere]" style={{ color: "var(--muted)" }}>
@@ -648,6 +670,7 @@ function HostRoom({
             Players
           </button>
         </div>
+        </fieldset>
 
         {sheetClientId && room.clients[sheetClientId] ? (
           <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} showParts={partsApply(room)} onClose={() => setSheetClientId(null)} />
