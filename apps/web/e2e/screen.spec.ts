@@ -76,3 +76,32 @@ test("/screen never takes over the identity this browser already has in the room
   expect(room.clients["this-browsers-own-id-0001"], "the projector joined under this browser's player/host id").toBeUndefined();
   expect(Object.values(room.clients).filter((c) => c.kind === "viewer")).toHaveLength(1);
 });
+
+for (const projector of [
+  { width: 1280, height: 720 },
+  { width: 1920, height: 1080 },
+  { width: 1024, height: 768 },
+]) {
+  test(`/screen fits a ${projector.width}x${projector.height} projector without scrolling`, async ({ page }) => {
+    await page.setViewportSize(projector);
+    await page.goto("/screen/BZQ7");
+    const map = page.getByRole("img", { name: /^Hive map/ });
+    await expect(map).toBeVisible({ timeout: 10_000 });
+
+    // Nobody can scroll a projector: everything has to be on the one screen.
+    const overflow = await page.evaluate(() => ({
+      x: document.documentElement.scrollWidth - window.innerWidth,
+      y: document.documentElement.scrollHeight - window.innerHeight,
+    }));
+    expect(overflow).toEqual({ x: 0, y: 0 });
+    await expect(map).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole("img", { name: /QR code/ })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByText("Mode", { exact: true })).toBeInViewport({ ratio: 1 });
+  });
+}
+
+test("/screen for a code with no hive says so instead of connecting forever", async ({ page }) => {
+  await page.goto("/screen/ZZZZ");
+  await expect(page.getByRole("heading", { name: "Hive not found" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Connecting…")).toHaveCount(0);
+});
