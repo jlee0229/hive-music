@@ -8,6 +8,12 @@ export const PROTOCOL_VERSION = 4 as const;
 // ---- timeline & scheduling --------------------------------------------------
 /** PLAY is scheduled this far ahead so every phone can line up on the same instant. */
 export const LEAD_MS = 600;
+/**
+ * Gap between songs when the playlist auto-advances: long enough for most phones to download and decode
+ * the next track's stems (they arrive in the same ROOM_STATE that moves the transport), so the room comes
+ * in together instead of straggling. Slower phones still join mid-song when ready.
+ */
+export const TRACK_ADVANCE_LEAD_MS = 5000;
 /** Hard resync (20 ms crossfade) when |playhead error| exceeds this. */
 export const RESYNC_THRESHOLD_MS = 10;
 export const RESYNC_CROSSFADE_MS = 20;

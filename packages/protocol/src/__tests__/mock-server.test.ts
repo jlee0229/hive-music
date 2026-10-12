@@ -21,7 +21,17 @@ class Fake {
     };
   }
   open() { return new Promise<void>((r) => (this.ws.readyState === 1 ? r() : (this.ws.onopen = () => r()))); }
-  send(m: ClientMessage) { this.ws.send(JSON.stringify(m)); }
+  send(m: ClientMessage) {
+    this.ws.send(JSON.stringify(m));
+    /*
+     * PROTO-12: a real phone decodes the room's track and says so, and the tuning moment only schedules
+     * speakers that have (connected + AUDIO_READY for the current track) — on the real server always, on
+     * the mock since it was brought into line. These tests used to join players that never announced
+     * anything and still expected them in the calibration order; that was the mock's divergence, not
+     * behaviour worth pinning. The assertions are unchanged — the fake player is simply a complete one.
+     */
+    if (m.type === "JOIN" && m.kind === "player") this.ws.send(JSON.stringify({ type: "AUDIO_READY", trackId: "synthetic-60s" } satisfies ClientMessage));
+  }
   /**
    * Drop the inbox. `next()` searches history first, so a predicate that was ALSO true earlier in the
    * conversation (e.g. `calibratedOffsetMs === null`, true before anything was measured) resolves off a
@@ -226,17 +236,60 @@ describe("P0-6 · the calibration accumulation base matches what the client was 
     });
     await Promise.all([host.next("WELCOME"), ios.next("WELCOME")]);
     await host.next("ROOM_STATE", (m) => !!m.room.clients["p06-ios-0001"]);
-    // even if it reports an outputLatency, the table row wins — the engine is not subtracting it
-    ios.send({ type: "CLIENT_STATUS", rttMs: 20, syncErrMs: 10, outputLatencyMs: 99, audioState: "ready" });
-    await host.next("HEALTH", (m) => m.clients["p06-ios-0001"]?.outputLatencyMs === 99, 2500);
+    // it reports no live outputLatency (Safari often has none): the table row is what the engine subtracts
+    ios.send({ type: "CLIENT_STATUS", rttMs: 20, syncErrMs: 10, outputLatencyMs: null, audioState: "ready" });
+    await host.next("HEALTH", (m) => m.clients["p06-ios-0001"]?.rttMs === 20, 2500);
 
     host.send({ type: "CALIBRATION_START", referenceClientId: "p06-host-02" });
     await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("p06-ios-0001"));
     host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "p06-ios-0001", residualMs: -12, confidence: 0.9 }] });
     const done = await host.next("ROOM_STATE", (m) => typeof m.room.clients["p06-ios-0001"]?.calibratedOffsetMs === "number");
     expect(done.room.clients["p06-ios-0001"]!.calibratedOffsetMs).toBe(60 - 12); // ios-safari table row
+    host.send({ type: "CALIBRATION_CANCEL" });
     host.ws.close();
     ios.ws.close();
+  }, 15_000);
+
+  test("PROTO-12 · a phone that reports a live outputLatency drops the table guess, and calibration accumulates on the live value", async () => {
+    /*
+     * This is the case the test above used to assert the opposite of ("even if it reports an
+     * outputLatency, the table row wins", expecting 60 − 12). The real server changed that deliberately
+     * (apps/server live-latency.test.ts): a reported ctx.outputLatency nulls tableLatencyMs — one-way —
+     * so the phone subtracts its own live value and the guess leaves compensationMs in the same snapshot.
+     * The mock had not followed, so the e2e suite ran against latency semantics production no longer has.
+     */
+    const host = new Fake();
+    const android = new Fake();
+    await Promise.all([host.open(), android.open()]);
+    host.send({ type: "JOIN", clientId: "p06-host-03", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    android.send({
+      type: "JOIN", clientId: "p06-live-0001", roomCode: "BZQ7", kind: "player", plays: true,
+      device: { userAgent: "android", platform: "android", browserFamily: "android-chrome" },
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    await Promise.all([host.next("WELCOME"), android.next("WELCOME")]);
+    const joined = await host.next("ROOM_STATE", (m) => !!m.room.clients["p06-live-0001"]?.assignment);
+    expect(joined.room.clients["p06-live-0001"]!.tableLatencyMs).toBe(45);
+    expect(joined.room.clients["p06-live-0001"]!.assignment!.compensationMs).toBe(45);
+
+    // a zero or absent report changes nothing
+    android.send({ type: "CLIENT_STATUS", rttMs: 20, syncErrMs: 10, outputLatencyMs: 0, audioState: "ready" });
+    await host.next("HEALTH", (m) => m.clients["p06-live-0001"]?.outputLatencyMs === 0, 2500);
+    expect(mock.room.clients["p06-live-0001"]!.tableLatencyMs).toBe(45);
+
+    host.forget();
+    android.send({ type: "CLIENT_STATUS", rttMs: 20, syncErrMs: 10, outputLatencyMs: 52, audioState: "ready" });
+    const live = await host.next("ROOM_STATE", (m) => m.room.clients["p06-live-0001"]?.tableLatencyMs === null);
+    expect(live.room.clients["p06-live-0001"]!.assignment!.compensationMs).toBe(0); // never both: the phone subtracts 52 itself
+
+    host.send({ type: "CALIBRATION_START", referenceClientId: "p06-host-03" });
+    await host.next("ROOM_STATE", (m) => m.room.calibration.order.includes("p06-live-0001"));
+    host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "p06-live-0001", residualMs: 7, confidence: 0.9 }] });
+    const done = await host.next("ROOM_STATE", (m) => typeof m.room.clients["p06-live-0001"]?.calibratedOffsetMs === "number");
+    expect(done.room.clients["p06-live-0001"]!.calibratedOffsetMs).toBe(52 + 7);
+    host.send({ type: "CALIBRATION_CANCEL" });
+    host.ws.close();
+    android.ws.close();
   }, 15_000);
 });
 

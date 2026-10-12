@@ -3,18 +3,26 @@
  * Same schemas, same planner, same routes. Drives itself from a scenario file:
  *   bun run mock --scenario apps/web/mocks/scenarios/party-12.json   (or MOCK_SCENARIO=...)
  * Ports: PORT (default 8080). WebSocket at /ws. REST: /health /rooms /rooms/:code /tracks /audio/:id/:stem.wav /rooms/:code/vibe
+ *
+ * Parity with apps/server is the point of this file — the whole e2e suite runs against it. What is
+ * deliberately different, and only this: one room (the scenario's), a fixed `hostKey`, seeded `mock-*`
+ * players with synthetic health and fake calibration results, a fixed rules-only `/vibe` plan, no
+ * `POST /tracks` upload (501), no idle TTL, no ping timeout, a fixed 2 Hz publish tick instead of the
+ * server's leading-edge coalescer, and a short audio cache lifetime. Everything else must behave like
+ * `apps/server/src/rooms.ts`; `scripts/parity-probe.ts` runs the same probes against both.
  */
 import { z } from "zod";
 import {
-  BROWSER_FAMILIES, CALIBRATION_CLICK_INTERVAL_MS, CALIBRATION_COUNTDOWN_MS, HEALTH_HZ, LEAD_MS, MODES,
-  PROTOCOL_VERSION, ROOM_STATE_MAX_HZ, STARTER_LATENCY_TABLE_MS, STEMS,
+  BROWSER_FAMILIES, CALIBRATION_CLICK_INTERVAL_MS, CALIBRATION_COUNTDOWN_MS, DISCONNECT_RETENTION_MS, HEALTH_HZ, LEAD_MS, MODES,
+  PROTOCOL_VERSION, ROOM_STATE_MAX_HZ, STARTER_LATENCY_TABLE_MS, STEMS, TRACK_ADVANCE_LEAD_MS,
 } from "./constants";
 import { DEFAULT_CLICK_SPEC, parseClientMessage, type ClientMessage, type ServerMessage } from "./messages";
 import { ModeParamsSchema } from "./mode";
 import { withAssignments } from "./planner";
 import { IDLE_CALIBRATION, StemRoleSchema, trackTimeSec, type ClientRecord, type RoomState, type TrackInfo } from "./room";
-import type { TrackLibraryEntry } from "./rest";
-import { ScenePlanCoreSchema, type ScenePlan } from "./scene";
+import { VibeRequestSchema, type TrackLibraryEntry } from "./rest";
+import { ScenePlanCoreSchema, type Scene, type ScenePlan } from "./scene";
+import { currentScene, loopRestartZero, nextInRotation, nextScene } from "./timeline";
 import type { HealthLevel } from "./constants";
 import type { AudioState } from "./health";
 
@@ -50,25 +58,34 @@ const now = () => performance.timeOrigin + performance.now();
 const HEALTH_SYNC_ERR: Record<HealthLevel, number | null> = { good: 3, warn: 12, bad: 38, unknown: null };
 
 // ---- track library (fixtures) ----------------------------------------------
-async function loadLibrary(fixturesDir: string, origin: string): Promise<TrackLibraryEntry[]> {
-  const out: TrackLibraryEntry[] = [];
+type LibraryEntry = Omit<TrackLibraryEntry, "urls">;
+
+/** Mirrors apps/server/src/library.ts: same fields (incl. `beatOffsetSec`), same order (`order`, then title). */
+async function loadLibrary(fixturesDir: string): Promise<LibraryEntry[]> {
+  const out: Array<LibraryEntry & { _order: number }> = [];
   const glob = new Bun.Glob("*/meta.json");
   try {
     for await (const rel of glob.scan({ cwd: `${fixturesDir}/tracks` })) {
       const meta = await Bun.file(`${fixturesDir}/tracks/${rel}`).json();
-      const urls: Record<string, string> = {};
-      for (const s of meta.stems as string[]) urls[s] = `${origin}/audio/${meta.id}/${s}.wav`;
-      out.push({ id: meta.id, title: meta.title, durationSec: meta.durationSec, stems: meta.stems, bpm: meta.bpm, urls, energy: meta.energy, clickTimesSec: meta.clickTimesSec, dropSec: meta.dropSec, generated: meta.generated });
+      out.push({
+        id: meta.id, title: meta.title, durationSec: meta.durationSec, stems: meta.stems, bpm: meta.bpm, beatOffsetSec: meta.beatOffsetSec,
+        energy: meta.energy, clickTimesSec: meta.clickTimesSec, dropSec: meta.dropSec, generated: meta.generated,
+        _order: typeof meta.order === "number" ? meta.order : Number.MAX_SAFE_INTEGER,
+      });
     }
   } catch {
     /* no fixtures dir: fall through */
   }
-  if (out.length === 0) {
-    const urls: Record<string, string> = {};
-    for (const s of STEMS) urls[s] = `${origin}/audio/synthetic-60s/${s}.wav`;
-    out.push({ id: "synthetic-60s", title: "Synthetic 60", durationSec: 60, stems: [...STEMS], bpm: 120, urls, generated: true });
-  }
-  return out;
+  out.sort((a, b) => a._order - b._order || a.title.localeCompare(b.title));
+  if (out.length === 0) return [{ id: "synthetic-60s", title: "Synthetic 60", durationSec: 60, stems: [...STEMS], bpm: 120, generated: true }];
+  return out.map(({ _order, ...entry }) => entry);
+}
+
+/** URLs are built per request from the request's own origin, so localhost, 127.0.0.1 and a LAN IP all work. */
+function withUrls(entry: LibraryEntry, origin: string): TrackLibraryEntry {
+  const urls: Record<string, string> = {};
+  for (const stem of entry.stems) urls[stem] = `${origin}/audio/${entry.id}/${stem}.wav`;
+  return { ...entry, urls };
 }
 
 // ---- server -----------------------------------------------------------------
@@ -85,7 +102,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
   const fixturesDir = opts.fixturesDir ?? `${import.meta.dir}/../../../fixtures`;
   const log = opts.quiet ? () => {} : (...a: unknown[]) => console.log("[mock]", ...a);
 
-  let library: TrackLibraryEntry[] = [];
+  let library: LibraryEntry[] = [];
   const hostKey = "mock-host-key";
   let room: RoomState = {
     code: scenario.roomCode,
@@ -104,6 +121,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
   const sockets = new Map<string, Bun.ServerWebSocket<{ clientId: string | null }>>();
   let dirty = false;
   let calibrationTimers: ReturnType<typeof setTimeout>[] = [];
+  let sceneTimer: ReturnType<typeof setTimeout> | null = null;
+  let loopTimer: ReturnType<typeof setTimeout> | null = null;
+  const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function seedPlayers() {
     scenario.players.forEach((p, i) => {
@@ -121,9 +141,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
     });
   }
 
-  function setTrack(t: TrackLibraryEntry | undefined) {
+  function setTrack(t: LibraryEntry | undefined) {
     if (!t) return;
-    const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm };
+    const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
     room.track = info;
     for (const c of Object.values(room.clients)) if (c.id.startsWith("mock-")) c.audioReadyTrackId = t.id;
   }
@@ -135,6 +155,60 @@ export function startMockServer(opts: MockServerOptions = {}) {
 
   function send(ws: Bun.ServerWebSocket<{ clientId: string | null }>, msg: ServerMessage) {
     ws.send(JSON.stringify(msg));
+  }
+
+  // ---- scene timer and loop timer: the same rules as apps/server (timeline.ts holds the math) ---------
+  function cancelSceneTimer() {
+    if (sceneTimer) clearTimeout(sceneTimer);
+    sceneTimer = null;
+  }
+  function rearmSceneTimer() {
+    cancelSceneTimer();
+    const armed = nextScene(room.scenePlan, room.transport, now());
+    if (!armed) return;
+    sceneTimer = setTimeout(() => {
+      room.mode = { kind: armed.scene.mode, params: armed.scene.params };
+      replan(armed.boundaryServerTime);
+      flush();
+      rearmSceneTimer();
+    }, Math.max(0, armed.fireAtServerTime - now()));
+  }
+  /** PLAY/SEEK or a freshly accepted plan: the scene at or before the position is the mode, immediately. */
+  function syncModeToScenePlan() {
+    if (!room.scenePlan || room.transport.state !== "playing") return;
+    const cur = currentScene(room.scenePlan, room.transport, now());
+    if (cur) {
+      room.mode = { kind: cur.mode, params: cur.params };
+      replan();
+    }
+  }
+  function cancelLoopTimer() {
+    if (loopTimer) clearTimeout(loopTimer);
+    loopTimer = null;
+  }
+  /** End of track: advance to the next song in the rotation, or restart the only one seamlessly. */
+  function rearmLoopTimer() {
+    cancelLoopTimer();
+    if (room.transport.state !== "playing" || !room.track) return;
+    const endServerTime = room.transport.serverTimeAtTrackZero + room.track.durationSec * 1000;
+    loopTimer = setTimeout(() => {
+      loopTimer = null;
+      if (room.transport.state !== "playing" || !room.track) return;
+      const next = nextInRotation(library, room.track.id);
+      if (next) {
+        setTrack(next);
+        room.scenePlan = null; // the vibe plan was authored for the song that just ended
+        room.transport = { state: "playing", serverTimeAtTrackZero: Math.max(now(), endServerTime) + TRACK_ADVANCE_LEAD_MS };
+        replan();
+      } else {
+        room.transport = { state: "playing", serverTimeAtTrackZero: loopRestartZero(endServerTime, now()) };
+        dirty = true;
+      }
+      flush();
+      syncModeToScenePlan();
+      rearmSceneTimer();
+      rearmLoopTimer();
+    }, Math.max(0, endServerTime - LEAD_MS - now()));
   }
 
   const server = Bun.serve<{ clientId: string | null }>({
@@ -149,6 +223,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
       }
       if (url.pathname === "/health") return json({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: now(), mock: true });
       if (url.pathname === "/rooms" && req.method === "POST") {
+        // One room only, but the same refusal as the real server for a code that is not it.
+        const body = (await req.json().catch(() => ({}))) as { code?: unknown };
+        if (typeof body.code === "string" && body.code && body.code.toUpperCase() !== room.code) return json({ error: "unknown room code" }, 400);
         return json({ code: room.code, hostKey, joinUrl: `${process.env.NEXT_PUBLIC_WEB_URL ?? "http://localhost:3000"}/j/${room.code}` });
       }
       const roomMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)$/);
@@ -158,25 +235,30 @@ export function startMockServer(opts: MockServerOptions = {}) {
       }
       const vibeMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)\/vibe$/);
       if (vibeMatch && req.method === "POST") {
-        const body = (await req.json().catch(() => ({}))) as { prompt?: string };
-        const prompt = String(body.prompt ?? "").slice(0, 500) || "untitled vibe";
+        if (vibeMatch[1]!.toUpperCase() !== room.code) return json({ error: "no such room" }, 404);
+        const parsed = VibeRequestSchema.safeParse(await req.json().catch(() => ({})));
+        if (!parsed.success) return json({ error: "bad prompt" }, 400);
         const dur = room.track?.durationSec ?? 60;
-        const scenePlan: ScenePlan = {
-          prompt, source: "rules", createdAtServerTime: now(),
-          scenes: [
-            { atTrackSec: 0, mode: "UNISON", params: {}, note: "open" },
-            { atTrackSec: Math.round(dur * 0.5), mode: "ORCHESTRA", params: {}, note: "build" },
-            { atTrackSec: Math.round(dur * 0.75), mode: "WAVE", params: { axis: "x", spanMs: 240 }, note: "drop" },
-          ],
-        };
+        const fixed: Scene[] = [
+          { atTrackSec: 0, mode: "UNISON", params: {}, note: "open" },
+          { atTrackSec: Math.round(dur * 0.5), mode: "ORCHESTRA", params: {}, note: "build" },
+          { atTrackSec: Math.round(dur * 0.75), mode: "WAVE", params: { axis: "x", spanMs: 240 }, note: "drop" },
+        ];
+        // strictly ascending and inside the track, whatever its length (a 1 s track used to yield 0, 1, 1)
+        const scenes = fixed.filter((sc, i) => i === 0 || (sc.atTrackSec < dur && sc.atTrackSec > fixed[i - 1]!.atTrackSec));
+        const scenePlan: ScenePlan = { prompt: parsed.data.prompt, source: "rules", createdAtServerTime: now(), scenes };
         room.scenePlan = scenePlan;
         dirty = true;
+        syncModeToScenePlan();
+        rearmSceneTimer();
+        flush();
         return json({ scenePlan });
       }
-      if (url.pathname === "/tracks") {
+      if (url.pathname === "/tracks" && req.method === "GET") {
         const q = (url.searchParams.get("q") ?? "").toLowerCase();
-        return json({ tracks: library.filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q)) });
+        return json({ tracks: library.filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q)).map((t) => withUrls(t, url.origin)) });
       }
+      if (url.pathname === "/tracks" && req.method === "POST") return json({ error: "uploads are not available on the mock server" }, 501);
       const audio = url.pathname.match(/^\/audio\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\.wav$/);
       if (audio) {
         const f = Bun.file(`${fixturesDir}/tracks/${audio[1]}/${audio[2]}.wav`);
@@ -189,8 +271,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
       // No legitimate client frame is near this (the largest is a 64-phone CALIBRATION_REPORT, ~6 KB);
       // Bun's default is 16 MB, which is 16 MB of JSON.parse per hostile frame.
       maxPayloadLength: MAX_CLIENT_FRAME_BYTES,
-      open(ws) {
-        ws.subscribe(room.code);
+      open() {
+        /* subscribed to the room once it JOINs: a socket that has not joined is told nothing */
       },
       message(ws, raw) {
         const msg = parseClientMessage(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
@@ -216,9 +298,23 @@ export function startMockServer(opts: MockServerOptions = {}) {
         // Re-plan, not just re-publish: the planner covers for a speaker that is not there (ORCHESTRA
         // folds its stem onto a partner, STEREO and STROBE close the gap), so who is connected is an input.
         replan();
+        // The record keeps its slot for the retention window, then goes — as on the real server.
+        clearDisconnectTimer(id);
+        disconnectTimers.set(id, setTimeout(() => {
+          disconnectTimers.delete(id);
+          delete room.clients[id];
+          room.hostClientIds = room.hostClientIds.filter((h) => h !== id);
+          replan();
+        }, DISCONNECT_RETENTION_MS));
       },
     },
   });
+
+  function clearDisconnectTimer(id: string) {
+    const t = disconnectTimers.get(id);
+    if (t) clearTimeout(t);
+    disconnectTimers.delete(id);
+  }
 
   const received: Partial<Record<ClientMessage["type"], number>> = {};
 
@@ -236,6 +332,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "JOIN": {
         if (msg.roomCode.toUpperCase() !== room.code) return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
         const existing = room.clients[msg.clientId];
+        // The user agent (up to 512 chars) is dead weight on every ROOM_STATE; never store it (as the server).
+        const device = { ...msg.device, userAgent: "" };
         /*
          * R-16/R-15. `hostClientIds.length === 0` is ported from `apps/server/src/rooms.ts`: a fixed-code
          * demo room re-spawned after a restart mints a fresh `hostKey`, which the host's stored key can
@@ -257,7 +355,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
               ...existing,
               connected: true,
               name: msg.name ?? existing.name,
-              device: msg.device,
+              device,
               /*
                * R-16: re-derive `kind` and `plays` on EVERY join, not only when the record is new. The old
                * code spread `...existing` and never consulted `wantsHost`, so a client demoted once — a
@@ -286,7 +384,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
               id: msg.clientId,
               kind: wantsHost ? "host" : isViewer ? "viewer" : "player",
               plays: wantsHost ? msg.plays : isViewer ? false : true,
-              name: msg.name ?? `Phone ${joinCounter + 1}`, device: msg.device,
+              name: msg.name ?? `Phone ${joinCounter + 1}`, device,
               joinIndex: joinCounter++, joinedAtServerTime: now(), position: null, pinnedRole: null, nudgeMs: 0,
               tableLatencyMs: STARTER_LATENCY_TABLE_MS[msg.device.browserFamily], calibratedOffsetMs: null,
               assignment: null, connected: true, audioReadyTrackId: null,
@@ -302,6 +400,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (rec.kind !== "host") room.hostClientIds = room.hostClientIds.filter((id) => id !== rec.id);
         ws.data.clientId = rec.id;
         sockets.set(rec.id, ws);
+        ws.subscribe(room.code);
+        clearDisconnectTimer(rec.id);
         health.set(rec.id, { rttMs: null, syncErrMs: null, outputLatencyMs: null, audioState: "locked", lastSeenServerTime: now() });
         send(ws, { type: "WELCOME", clientId: rec.id, roomCode: room.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: rec.kind === "host" });
         replan();
@@ -317,7 +417,17 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (me) health.get(me.id)!.lastSeenServerTime = now();
         return;
       case "CLIENT_STATUS":
-        if (me) health.set(me.id, { rttMs: msg.rttMs, syncErrMs: msg.syncErrMs, outputLatencyMs: msg.outputLatencyMs, audioState: msg.audioState, lastSeenServerTime: now() });
+        if (me) {
+          health.set(me.id, { rttMs: msg.rttMs, syncErrMs: msg.syncErrMs, outputLatencyMs: msg.outputLatencyMs, audioState: msg.audioState, lastSeenServerTime: now() });
+          // Live latency (as the server): a phone that reports its own ctx.outputLatency knows its output
+          // path better than the per-family table guess, so the guess is dropped — one-way — and the
+          // client subtracts the live value itself. Never both: the same snapshot removes it from
+          // compensationMs.
+          if (me.calibratedOffsetMs == null && me.tableLatencyMs != null && msg.outputLatencyMs != null && msg.outputLatencyMs > 0) {
+            me.tableLatencyMs = null;
+            replan();
+          }
+        }
         return;
       case "AUDIO_READY":
         if (me) { me.audioReadyTrackId = msg.trackId; dirty = true; }
@@ -325,12 +435,18 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "SET_PLAYS":
         if (me && me.kind === "host") { me.plays = msg.plays; replan(); }
         return;
-      case "SET_TRACK":
+      case "SET_TRACK": {
         if (!hostOnly()) return;
-        setTrack(library.find((t) => t.id === msg.trackId));
+        const track = library.find((t) => t.id === msg.trackId);
+        // An unknown id is an error and changes nothing — it used to stop the music silently.
+        if (!track) return send(ws, { type: "ERROR", code: "NO_TRACK", message: `unknown track ${msg.trackId}` });
+        setTrack(track);
         room.transport = { state: "stopped" };
+        cancelSceneTimer();
+        cancelLoopTimer();
         replan();
         return;
+      }
       case "TRANSPORT": {
         if (!hostOnly()) return;
         if (!room.track) return send(ws, { type: "ERROR", code: "NO_TRACK", message: "SET_TRACK first" });
@@ -338,16 +454,23 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (msg.action === "PLAY" || msg.action === "SEEK") {
           const from = msg.trackTimeSec ?? (room.transport.state === "paused" ? room.transport.trackTimeAtPause : 0);
           room.transport = { state: "playing", serverTimeAtTrackZero: t + LEAD_MS - from * 1000 };
+          dirty = true;
+          syncModeToScenePlan();
+          rearmSceneTimer();
+          rearmLoopTimer();
         } else if (msg.action === "PAUSE" && room.transport.state === "playing") {
           room.transport = { state: "paused", trackTimeAtPause: trackTimeSec(room.transport, t) };
+          dirty = true;
+          cancelSceneTimer();
+          cancelLoopTimer();
         }
-        dirty = true;
         return;
       }
       case "SET_MODE":
         if (!hostOnly()) return;
         room.mode = { kind: msg.mode, params: msg.params };
         room.scenePlan = null; // manual override clears the plan
+        cancelSceneTimer();
         replan();
         return;
       case "ASSIGN":
@@ -367,7 +490,10 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (room.clients[msg.clientId]) {
           const s = sockets.get(msg.clientId);
           if (s) { send(s, { type: "ERROR", code: "KICKED", message: "removed by host" }); s.close(); }
+          sockets.delete(msg.clientId);
+          clearDisconnectTimer(msg.clientId);
           delete room.clients[msg.clientId];
+          room.hostClientIds = room.hostClientIds.filter((id) => id !== msg.clientId);
           replan();
         }
         return;
@@ -381,8 +507,10 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (!hostOnly()) return;
         return resetCalibration(ws, msg.clientId);
       case "CALIBRATION_REPORT": {
-        // A cancelled run writes nothing, even if the reference's report was already in flight.
-        if (room.calibration.state === "idle") return;
+        // Only the reference phone measures; anyone else's "report" is noise (or an attack on the offsets).
+        if (!me || me.id !== room.calibration.referenceClientId) return;
+        // A cancelled or timed-out run writes nothing, even if the reference's report was already in flight.
+        if (room.calibration.state === "idle" || room.calibration.state === "failed") return;
         for (const m of msg.measurements) {
           const c = room.clients[m.clientId];
           if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored, as index.ts promises
@@ -460,7 +588,12 @@ export function startMockServer(opts: MockServerOptions = {}) {
 
   /** Simulated tuning moment: countdown, one click per speaker every CALIBRATION_CLICK_INTERVAL_MS, fake residuals for mock players. */
   function startCalibration(referenceClientId: string) {
-    const order = Object.values(room.clients).filter((c) => c.plays && c.id !== referenceClientId).map((c) => c.id);
+    // Only a speaker that is connected and has this track decoded can produce a click worth measuring
+    // (as the server): anyone else would be a silent slot in the schedule.
+    const order = Object.values(room.clients)
+      .filter((c) => c.plays && c.id !== referenceClientId && c.connected && c.audioReadyTrackId === room.track?.id)
+      .sort((a, b) => a.joinIndex - b.joinIndex)
+      .map((c) => c.id);
     const start = now() + CALIBRATION_COUNTDOWN_MS;
     room.calibration = { state: "countdown", referenceClientId, startServerTime: start, order, results: {} };
     dirty = true;
@@ -477,6 +610,13 @@ export function startMockServer(opts: MockServerOptions = {}) {
       room.calibration = { ...room.calibration, state: "running" };
       dirty = true;
     }, CALIBRATION_COUNTDOWN_MS));
+    // No report in time → failed (as the server): the reference never heard the clicks, or left.
+    calibrationTimers.push(setTimeout(() => {
+      if (room.calibration.state === "idle" || room.calibration.state === "done") return;
+      room.calibration = { ...room.calibration, state: "failed" };
+      dirty = true;
+      flush();
+    }, CALIBRATION_COUNTDOWN_MS + order.length * CALIBRATION_CLICK_INTERVAL_MS + 5000));
     // mock players "get measured" on schedule; real players are measured by the reference's CALIBRATION_REPORT
     order.forEach((id, i) => {
       if (!id.startsWith("mock-")) return;
@@ -529,10 +669,14 @@ export function startMockServer(opts: MockServerOptions = {}) {
   }
 
   const ready = (async () => {
-    library = await loadLibrary(fixturesDir, `http://localhost:${port}`);
+    library = await loadLibrary(fixturesDir);
     seedPlayers();
     setTrack(library.find((t) => t.id === scenario.trackId) ?? library[0]);
-    if (scenario.transport === "playing") room.transport = { state: "playing", serverTimeAtTrackZero: now() + LEAD_MS };
+    if (scenario.transport === "playing") {
+      room.transport = { state: "playing", serverTimeAtTrackZero: now() + LEAD_MS };
+      rearmSceneTimer();
+      rearmLoopTimer();
+    }
     if (scenario.transport === "paused") room.transport = { state: "paused", trackTimeAtPause: 12 };
     if (scenario.hostPlays) { /* hosts join live; flag honored on JOIN via SET_PLAYS */ }
     if (scenario.calibration) {
@@ -555,6 +699,10 @@ export function startMockServer(opts: MockServerOptions = {}) {
     stop() {
       clearInterval(stateTimer); clearInterval(healthTimer); clearInterval(pingTimer);
       clearCalibrationTimers();
+      cancelSceneTimer();
+      cancelLoopTimer();
+      for (const t of disconnectTimers.values()) clearTimeout(t);
+      disconnectTimers.clear();
       if (chaosTimer) clearTimeout(chaosTimer);
       server.stop(true);
     },
