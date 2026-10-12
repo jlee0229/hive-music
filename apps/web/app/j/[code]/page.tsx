@@ -18,6 +18,21 @@ import { Creators } from "@/components/Creators";
 
 type View = "join" | "resume" | "ready" | "playing" | "calibrating" | "removed";
 
+/** How long a tap waits for audio.unlock() before carrying on without it. */
+const UNLOCK_GRACE_MS = 3000;
+
+/** Resolves when `p` settles either way, or after `ms` — whichever is first. Never rejects. */
+function settledWithin(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    p.then(done, done);
+  });
+}
+
 export default function PlayerPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = use(params);
   const roomCode = code.toUpperCase();
@@ -63,8 +78,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     setJoining(true);
     setPlayerName(name);
     setJoinRequested(true);
+    // unlock() has to *start* inside this tap, but it must not gate the connection: when
+    // AudioContext.resume() never settles (WebKit with an interrupted audio session) or rejects,
+    // awaiting it meant connect() was never reached — the phone sat on a dead screen and the host
+    // never saw it. Give it a moment, then join regardless; a phone whose sound is still locked
+    // lands on "Tap to resume", where a fresh tap retries the unlock.
+    await settledWithin(client.audio.unlock(), UNLOCK_GRACE_MS);
     try {
-      await client.audio.unlock();
       await connect();
     } catch {
       // ERROR events / the reconnect banner surface anything that goes wrong.
@@ -78,16 +98,17 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   // audio.state goes back to "locked" mid-session. Resuming needs only unlock() (it re-resumes the
   // existing context and re-requests the wake lock); calling connect() again would open a second
   // socket for the same client on top of the one that never actually dropped.
+  const resumingRef = useRef(false);
   async function handleResume() {
-    if (resuming) return;
+    if (resumingRef.current) return;
+    resumingRef.current = true;
     setResuming(true);
-    try {
-      await client.audio.unlock();
-    } catch {
-      // stays on the resume screen; another tap retries
-    } finally {
-      setResuming(false);
-    }
+    // Bounded for the same reason as the join: a resume() that never settles would otherwise
+    // leave "Resuming…" up forever with every later tap ignored. Timing out hands the guest the
+    // tap target back, and each tap is a new gesture for the platform to honour.
+    await settledWithin(client.audio.unlock(), UNLOCK_GRACE_MS);
+    resumingRef.current = false;
+    setResuming(false);
   }
 
   const [flash, setFlash] = useState(false);
@@ -116,12 +137,21 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     };
   }, [client]);
 
+  // Not reactive on its own, but this component re-renders on every clock probe (1 Hz) and room
+  // snapshot, which is as fast as a guest needs the prompt. null with the stub engine.
+  const ctxState = client.audio.ctxState;
+  const contextStalled = ctxState === "suspended" || ctxState === "interrupted";
+
   let view: View = "join";
   if (removed) view = "removed";
   // audio.state is still "locked" between the join tap and the moment unlock() resolves; that is
   // the join in progress ("Joining…"), not an interruption — showing "Tap to resume" there flashed
   // the interruption screen at every guest on every join.
-  else if (joinRequested && audio.state === "locked") view = joining ? "join" : "resume";
+  //
+  // The context's own state is consulted as well as the engine's: while stems download the engine
+  // reports "loading" even if the context never started, which would park a phone on the playing
+  // screen in silence with no prompt.
+  else if (joinRequested && (audio.state === "locked" || contextStalled)) view = joining ? "join" : "resume";
   else if (joinRequested) {
     if (room?.calibration.state === "countdown" || room?.calibration.state === "running") view = "calibrating";
     else if (room?.transport.state === "playing") view = "playing";

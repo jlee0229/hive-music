@@ -44,6 +44,8 @@ function instrumentWebAudio() {
       super(options);
       H.ctxs.push(this);
       H.an.push(Orig.prototype.createAnalyser.call(this));
+      // With the autoplay flag a context is born running; a phone that needs the gesture is not.
+      if (w.__hangResume) void super.suspend();
     }
     resume(): Promise<void> {
       // __hangResume simulates WebKit leaving resume() pending (an interrupted audio session).
@@ -173,6 +175,33 @@ test("a phone the host removes goes silent, not just to a 'Removed' screen", asy
   await expect(page.getByRole("heading", { name: "Removed from hive" })).toBeVisible({ timeout: 10_000 });
   // The engine keeps its scheduled sources unless the page tears it down; a closed context is silent.
   await expect.poll(async () => (await audio(page)).ctxState, { timeout: 5_000 }).toBe("closed");
+
+  host.close();
+  await context.close();
+});
+
+test("a phone whose AudioContext.resume() never settles still joins the hive and is offered a retry", async ({ browser }) => {
+  const { code, host } = await playingRoom();
+  const { context, page } = await newPhone(browser, () => {
+    (window as unknown as { __hangResume: boolean }).__hangResume = true;
+  });
+
+  await tapJoin(page, code, "Stuck Phone");
+
+  // The host must see the phone even though its audio is not unlocked yet...
+  await expect
+    .poll(() => Object.values(host.state.room?.clients ?? {}).some((c) => c.name === "Stuck Phone" && c.connected), { timeout: 15_000 })
+    .toBe(true);
+  // ...and the guest gets a fresh gesture to try again, instead of a dead "Joining…" / "Resuming…".
+  await expect(page.getByText("Tap to resume")).toBeVisible({ timeout: 15_000 });
+
+  // Once the platform lets resume() through, one tap is enough.
+  await page.evaluate(() => {
+    (window as unknown as { __hangResume: boolean }).__hangResume = false;
+  });
+  await page.getByText("Tap to resume").click();
+  await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(async () => (await audio(page)).rms, { timeout: 15_000 }).toBeGreaterThan(0.01);
 
   host.close();
   await context.close();
