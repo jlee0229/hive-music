@@ -1,6 +1,7 @@
 import { CHOIR_STEPS, ROLE_COLORS, STEMS, WAVE_SWELL_PERIOD_MS, type Role } from "./constants";
+import { speakerLayout } from "./layout";
 import { resolveModeParams } from "./mode";
-import type { Assignment, ClientRecord, RoomState, StemRole } from "./room";
+import type { Assignment, ClientRecord, Position, RoomState, StemRole } from "./room";
 
 export const SILENT_DB = -60;
 
@@ -39,10 +40,14 @@ export function stemForClient(c: ClientRecord, roles: StemRole[]): StemRole | nu
   return roles[c.joinIndex % roles.length]!;
 }
 
-/** Projection of a client's position on the mode axis, 0..1; unplaced clients sit in the middle. */
-export function projection(c: ClientRecord, axis: "x" | "y"): number {
-  if (!c.position) return 0.5;
-  return axis === "x" ? c.position.x : c.position.y;
+/**
+ * Projection of a client's position on the mode axis, 0..1. `at` is the client's effective position —
+ * its auto-layout slot when the host has not placed it (see layout.ts); without one, the middle.
+ */
+export function projection(c: ClientRecord, axis: "x" | "y", at: Position | null = c.position): number {
+  const p = at ?? c.position;
+  if (!p) return 0.5;
+  return axis === "x" ? p.x : p.y;
 }
 
 function base(c: ClientRecord, label: string, role: Role, gainsDb: Record<string, number>, applyAt: number | null): Assignment {
@@ -61,6 +66,11 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
   const stems = allStems(room);
   const p = resolveModeParams(room.mode);
   const clients = Object.values(room.clients).sort((a, b) => a.joinIndex - b.joinIndex);
+  // Spatial modes read every speaker's *effective* position: where the host dragged it, or the shared
+  // auto-layout slot the Hive Map draws it at. Never "unplaced = the middle" — that made WAVE a no-op.
+  const spatial = room.mode.kind === "WAVE" || room.mode.kind === "STEREO";
+  const where: Record<string, Position> = spatial ? speakerLayout(room).positions : {};
+  const at = (c: ClientRecord): Position | null => (Object.hasOwn(where, c.id) ? where[c.id]! : c.position);
 
   for (const c of clients) {
     if (!c.plays) {
@@ -75,15 +85,16 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         break;
       }
       case "STEREO": {
-        // zone-based stem grouping: left = drums+bass, right = vocals+other; unplaced → alternate by joinIndex
-        const left = c.position ? c.position.x < 0.5 : c.joinIndex % 2 === 0;
+        // zone-based stem grouping: left = drums+bass, right = vocals+other, by which half of the map
+        // the dot is in (auto-layout slots alternate sides, so an untouched room still splits evenly)
+        const left = projection(c, "x", at(c)) < 0.5;
         const group = left ? ["drums", "bass"] : ["vocals", "other"];
         const audible = roles.length ? group.filter((s) => roles.includes(s as StemRole)) : stems;
         out[c.id] = base(c, left ? "left" : "right", left ? "drums" : "vocals", gains(room, audible.length ? audible : stems), applyAtServerTime);
         break;
       }
       case "WAVE": {
-        const proj = projection(c, p.axis);
+        const proj = projection(c, p.axis, at(c));
         const a = base(c, "wave", "unison", gains(room, stems), applyAtServerTime);
         a.delayMs = Math.round(p.spanMs * proj);
         a.pattern = { kind: "wave", periodMs: WAVE_SWELL_PERIOD_MS, phaseMs: Math.round(proj * WAVE_SWELL_PERIOD_MS) };

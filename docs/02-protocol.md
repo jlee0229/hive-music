@@ -151,7 +151,9 @@ Invariants the UI may rely on:
    stable under joins (`joinIndex % stems`), pins win, non-playing hosts get `null`, `UNISON` = every stem at 0 dB.
 3. Mode switches are **gain changes**, never reloads: phones hold all stems decoded from `SET_TRACK` on.
 4. Patterns are evaluated client-side with `evaluatePattern(pattern, trackTimeMs)` on the shared clock — no per-tick messages.
-5. `clients[id].position === null` means "not placed yet"; the planner treats it as the middle of the axis.
+5. `clients[id].position === null` means "not placed by hand". Such a speaker sits at its **auto-layout slot**:
+   `speakerLayout(room).positions[id]` (`packages/protocol/src/layout.ts`), a pure function of the room that the planner
+   uses for WAVE and STEREO and that the Hive Map must use to draw the dot — never a layout of the UI's own.
 
 ## 8. Sync-health, colors, constants
 

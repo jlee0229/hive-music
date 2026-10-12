@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION, ROLE_COLORS, STEMS } from "../constants";
+import { speakerLayout } from "../layout";
 import { compensationMs, plan, SILENT_DB, withAssignments } from "../planner";
 import { IDLE_CALIBRATION, type ClientRecord, type RoomState } from "../room";
 
@@ -98,11 +99,45 @@ describe("planner", () => {
   });
 
   test("WAVE delay grows along the axis up to spanMs and carries a wave pattern", () => {
-    const a = plan(room([client(0, { position: { x: 0, y: 0 } }), client(1, { position: { x: 1, y: 0 } }), client(2)], { kind: "WAVE", params: { axis: "x", spanMs: 300 } }));
+    const r3 = room([client(0, { position: { x: 0, y: 0 } }), client(1, { position: { x: 1, y: 0 } }), client(2)], { kind: "WAVE", params: { axis: "x", spanMs: 300 } });
+    const a = plan(r3);
     expect(a["c0-00000000"]!.delayMs).toBe(0);
     expect(a["c1-00000000"]!.delayMs).toBe(300);
-    expect(a["c2-00000000"]!.delayMs).toBe(150); // unplaced → middle
+    // Deliberately changed (PROTO-04): this used to assert 150 — "unplaced → the middle of the axis". That
+    // rule is the bug: the map draws an unplaced phone at an auto-layout slot, and the planner now reads the
+    // same slot. joinIndex 2 sits at x = 0.69.
+    expect(speakerLayout(r3).positions["c2-00000000"]!.x).toBe(0.69);
+    expect(a["c2-00000000"]!.delayMs).toBe(207);
     expect(a["c1-00000000"]!.pattern?.kind).toBe("wave");
+  });
+
+  test("WAVE sweeps a room nobody has dragged: auto-placed phones get distinct delays and swell phases", () => {
+    // host (joinIndex 0, not a speaker) + six guests, every position null — the state of every real party
+    const guests = [1, 2, 3, 4, 5, 6].map((i) => client(i));
+    const r = room([client(0, { kind: "host", plays: false }), ...guests], { kind: "WAVE", params: { axis: "x", spanMs: 240 } });
+    const a = plan(r);
+    const where = speakerLayout(r).positions;
+    const delays = guests.map((g) => a[g.id]!.delayMs);
+    // before the shared layout every one of these was 120 ms with phase 1000: no wave at all
+    expect(Math.max(...delays) - Math.min(...delays)).toBeGreaterThan(80);
+    expect(new Set(guests.map((g) => a[g.id]!.pattern!.phaseMs)).size).toBeGreaterThanOrEqual(4);
+    // and it is the position the map draws, not some other number
+    for (const g of guests) {
+      expect(a[g.id]!.delayMs).toBe(Math.round(240 * where[g.id]!.x));
+      expect(a[g.id]!.pattern!.phaseMs).toBe(Math.round(where[g.id]!.x * 2000));
+    }
+    // along y too
+    const ay = plan({ ...r, mode: { kind: "WAVE", params: { axis: "y", spanMs: 240 } } });
+    for (const g of guests) expect(ay[g.id]!.delayMs).toBe(Math.round(240 * where[g.id]!.y));
+  });
+
+  test("STEREO follows the dot: an auto-placed phone is on the side of the map it is drawn on", () => {
+    const guests = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => client(i));
+    const r = room([client(0, { kind: "host", plays: false }), ...guests], { kind: "STEREO", params: {} });
+    const a = plan(r);
+    const where = speakerLayout(r).positions;
+    for (const g of guests) expect(a[g.id]!.label).toBe(where[g.id]!.x < 0.5 ? "left" : "right");
+    expect(guests.filter((g) => a[g.id]!.label === "left")).toHaveLength(4); // the slots alternate sides
   });
 
   test("STROBE phases groups evenly", () => {
