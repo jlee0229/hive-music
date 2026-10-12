@@ -151,3 +151,45 @@ describe("pitchShiftMono never emits or hangs on non-finite numbers (ENGINE-DSP-
     expect(await pitchShiftMono(input, Number.NaN)).toBe(input);
   });
 });
+
+describe("pitchShiftMono shares the main thread (ENGINE-DSP-23)", () => {
+  test("yields after every 16384-frame block, not every 5 s of audio", async () => {
+    const input = musicLike(20);
+    let yields = 0;
+    await pitchShiftMono(input, 12, {
+      yieldToEventLoop: async () => {
+        yields++;
+      },
+    });
+    // 20 s is 53 blocks. Unfixed: one slice per 5 s of audio (3 yields), 25-44 ms of blocked main
+    // thread on a desktop and ten times that on a phone.
+    expect(yields).toBeGreaterThanOrEqual(Math.floor(input.length / 16384) - 1);
+  });
+
+  test("timers still get their turn during a render with the default yield", async () => {
+    // The default yield is a MessageChannel hop, and a runtime may serve messages ahead of due
+    // timers (Bun does: 0 turns here without the periodic timer hop). The engine's scheduler and
+    // watchdog run on timers, so every 16th slice must be a real one: 53 blocks -> 3 turns.
+    let turns = 0;
+    const timer = setInterval(() => turns++, 1);
+    try {
+      await pitchShiftMono(musicLike(20), -12);
+    } finally {
+      clearInterval(timer);
+    }
+    expect(turns).toBeGreaterThanOrEqual(2);
+  });
+
+  test("an aborted render rejects at the next slice instead of finishing a stale buffer", async () => {
+    const signal = { aborted: false };
+    let yields = 0;
+    const render = pitchShiftMono(musicLike(20), 7, {
+      signal,
+      yieldToEventLoop: async () => {
+        if (++yields === 3) signal.aborted = true;
+      },
+    });
+    await expect(render).rejects.toThrow("aborted");
+    expect(yields).toBe(3);
+  });
+});
