@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AudioState, ClientRecord, RoomState } from "@hive/protocol";
+import type { AudioState, ClientRecord, Pattern, RoomState } from "@hive/protocol";
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
 import { beatPhase, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
@@ -10,7 +10,72 @@ import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { AdSlot } from "@/components/AdSlot";
 import { Creators } from "@/components/Creators";
 
-/** Full-screen role color, beat pulse (bpm + evaluatePattern), nudge slider, mute. */
+const DARK = "#0B0F14";
+/** How far a STROBE/WAVE "off" phase dims the role colour (opacity of the dark overlay). */
+const FULL_DIM_DEPTH = 0.85;
+/**
+ * WCAG 2.3.1 (three flashes or below threshold): content must not flash more than three times in
+ * any one second unless the flash is below the general flash threshold — a swing of less than 10 %
+ * of full relative luminance. This screen is the whole phone, held at arm's length, and STROBE at
+ * sixteenth notes blinks it 4–7 times a second per phone; so above three flashes a second the
+ * blink is capped to a swing that is under the threshold (a shimmer rather than a strobe).
+ */
+const MAX_FLASHES_PER_SEC = 3;
+const SAFE_LUMINANCE_SWING = 0.09;
+
+function rgb(hex: string): [number, number, number] {
+  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+}
+
+/** WCAG relative luminance of `fill` under a `DARK` overlay of the given opacity (sRGB compositing). */
+export function dimmedLuminance(fill: string, overlayOpacity: number): number {
+  const f = rgb(fill);
+  const d = rgb(DARK);
+  const lin = (c: number) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const ch = (i: number) => lin(f[i]! * (1 - overlayOpacity) + d[i]! * overlayOpacity);
+  return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+}
+
+/** Full flashes (lit → dim → lit) per second this pattern puts on one phone's screen. */
+export function flashesPerSecond(pattern: Pattern | null | undefined): number {
+  return pattern ? 1000 / pattern.periodMs : 0;
+}
+
+/**
+ * Overlay opacity at the darkest point of the pattern: the full dim when it is slow enough to be
+ * safe, the deepest dim that stays under the flash threshold when it is not, and none at all when
+ * the guest asked their phone for reduced motion.
+ */
+export function dimDepth(pattern: Pattern | null | undefined, fill: string, reducedMotion: boolean): number {
+  if (!pattern || reducedMotion) return 0;
+  if (flashesPerSecond(pattern) <= MAX_FLASHES_PER_SEC) return FULL_DIM_DEPTH;
+  const lit = dimmedLuminance(fill, 0);
+  let lo = 0;
+  let hi = FULL_DIM_DEPTH;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (lit - dimmedLuminance(fill, mid) < SAFE_LUMINANCE_SWING) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setReduced(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return reduced;
+}
+
+/** Full-screen role color, beat pulse (bpm + evaluatePattern), mute. */
 export function PlayerPlayingScreen({
   client,
   room,
@@ -36,29 +101,45 @@ export function PlayerPlayingScreen({
 }) {
   const assignment = me?.assignment ?? null;
   const roleColor = assignment ? ROLE_COLORS[assignment.role] : ROLE_COLORS.unison;
-  const ink = assignment ? inkForRole(assignment.role) : "#0B0F14";
+  const ink = assignment ? inkForRole(assignment.role) : DARK;
+  const pattern = assignment?.pattern ?? null;
+  const reducedMotion = usePrefersReducedMotion();
+  const depth = dimDepth(pattern, roleColor, reducedMotion);
 
-  const [trackTimeSec, setTrackTimeSec] = useState(0);
-  const [pulse, setPulse] = useState(0);
-  const [gain, setGain] = useState(1);
-  const ringRef = useRef<HTMLDivElement>(null);
+  const [trackSec, setTrackSec] = useState(0);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const ringsRef = useRef<SVGSVGElement>(null);
 
+  // The beat pulse and the dim run at display rate, so they are written straight to the DOM: a
+  // setState here re-rendered the whole screen 60 times a second on a phone that also has to keep
+  // an audio thread fed. React state only carries the clock, which changes once a second.
   useEffect(() => {
     let raf: number;
+    let lastSec = -1;
+    const bpm = room.track?.bpm;
     const tick = () => {
       const t = client.clock.trackTimeSec();
-      setTrackTimeSec(t);
-      const phase = beatPhase(t, room.track?.bpm);
-      const g = patternGain(assignment?.pattern, t);
-      setGain(g);
-      // a short decaying pulse right on the downbeat, scaled by the pattern's current gain
-      const attack = Math.max(0, 1 - phase * 3);
-      setPulse(attack * g);
+      const gain = patternGain(pattern, t);
+      const dim = (1 - gain) * depth;
+      if (overlayRef.current) overlayRef.current.style.opacity = String(dim);
+      if (ringsRef.current) {
+        // a short decaying pulse right on the downbeat, scaled by the pattern's current gain
+        const pulse = reducedMotion ? 0 : Math.max(0, 1 - beatPhase(t, bpm) * 3) * gain;
+        ringsRef.current.style.transform = `scale(${1 + pulse * 0.06})`;
+      }
+      const sec = Math.floor(t);
+      if (sec !== lastSec) {
+        lastSec = sec;
+        setTrackSec(sec);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [client, room.track?.bpm, assignment]);
+  }, [client, room.track?.bpm, pattern, depth, reducedMotion]);
+
+  const label = assignment?.label ?? "Unison";
+  const soft = 0.8;
 
   let statusLine: React.ReactNode;
   if (audioState !== "ready") {
@@ -70,7 +151,7 @@ export function PlayerPlayingScreen({
   } else {
     statusLine = (
       <span>
-        {room.track?.title ?? "—"} · {formatTrackTime(trackTimeSec)}
+        {room.track?.title ?? "—"} · {formatTrackTime(trackSec)}
       </span>
     );
   }
@@ -86,37 +167,45 @@ export function PlayerPlayingScreen({
         touchAction: "manipulation",
       }}
     >
-      {assignment?.pattern ? (
+      {pattern ? (
         <div
+          ref={overlayRef}
+          data-testid="pattern-dim"
+          data-depth={depth.toFixed(3)}
           className="pointer-events-none absolute inset-0"
           aria-hidden="true"
-          style={{ background: "#0B0F14", opacity: (1 - gain) * 0.85 }}
+          style={{ background: DARK, opacity: 0 }}
         />
       ) : null}
       <svg
+        ref={ringsRef}
         className="pointer-events-none absolute"
-        style={{ left: -105, top: 122, transform: `scale(${1 + pulse * 0.06})`, transformOrigin: "center", transition: "transform 60ms linear" }}
+        style={{ left: -105, top: 122, transformOrigin: "center", transition: "transform 60ms linear" }}
         width="600"
         height="600"
         viewBox="0 0 600 600"
         fill="none"
         aria-hidden="true"
       >
-        <circle cx="300" cy="300" r="120" stroke={ink} strokeOpacity="0.22" strokeWidth="2" />
-        <circle cx="300" cy="300" r="200" stroke={ink} strokeOpacity="0.14" strokeWidth="2" />
-        <circle cx="300" cy="300" r="280" stroke={ink} strokeOpacity="0.07" strokeWidth="2" />
+        <circle cx="300" cy="300" r="120" stroke="currentColor" strokeOpacity="0.22" strokeWidth="2" />
+        <circle cx="300" cy="300" r="200" stroke="currentColor" strokeOpacity="0.14" strokeWidth="2" />
+        <circle cx="300" cy="300" r="280" stroke="currentColor" strokeOpacity="0.07" strokeWidth="2" />
       </svg>
 
       <div className="relative flex items-center justify-between">
-        <span className="font-mono text-[13px] tracking-widest opacity-80">HIVE · {roomCode}</span>
+        <span className="font-mono text-[13px] tracking-widest" style={{ opacity: soft }}>
+          HIVE · {roomCode}
+        </span>
       </div>
 
-      <div ref={ringRef} className="relative flex flex-col items-center gap-2.5">
-        <span className="text-[13px] tracking-[0.22em] opacity-75">YOU ARE</span>
-        <span className="font-display text-[76px] leading-none font-extrabold tracking-tight uppercase">
-          {assignment?.label ?? "Unison"}
+      <div className="relative flex flex-col items-center gap-2.5">
+        <span className="text-[13px] tracking-[0.22em]" style={{ opacity: soft }}>
+          YOU ARE
         </span>
-        <span className="text-[15px] opacity-80">{statusLine}</span>
+        <span className="font-display text-[76px] leading-none font-extrabold tracking-tight uppercase">{label}</span>
+        <span className="text-[15px]" style={{ opacity: soft }}>
+          {statusLine}
+        </span>
       </div>
 
       {/* No nudge slider here anymore: timing is automatic (live latency + the tuning moment), and
@@ -126,6 +215,7 @@ export function PlayerPlayingScreen({
         <ReconnectBanner connection={connection} />
         <button
           onClick={() => client.audio.setMuted(!muted)}
+          aria-pressed={muted}
           className="flex h-12 items-center justify-center rounded-xl border font-semibold"
           style={{ borderColor: "var(--border)", background: muted ? "#F1F5F9" : "transparent", color: muted ? "#0B0F14" : "#F1F5F9" }}
         >
