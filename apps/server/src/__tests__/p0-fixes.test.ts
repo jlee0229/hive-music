@@ -23,7 +23,17 @@ function fakeWs() {
 }
 
 describe("P0-2: host re-join after the fixed-code room is re-spawned", () => {
-  test("create room, host joins, the room is destroyed and re-spawned (simulating a restart) — the host still becomes host with a stale key", () => {
+  /*
+   * Audit SG-02 changed this test's expectation on purpose. It used to assert that a host presenting a
+   * STALE key to a re-spawned room "still becomes host" because nobody held the room yet. That clause
+   * (`hostClientIds.length === 0` grants host to any JOIN with kind:"host") is a takeover: "nobody
+   * holds the room yet" is also true for every guest who JOINs before the host's socket does, and
+   * again 2 minutes after the host's phone locks. The recovery this test protected now happens one
+   * level up and safely — the host's signed key re-creates the room under that same key
+   * (RoomManager, host-key.test.ts "the host's own socket brings the room back"), so the key is never
+   * stale in the first place. A Room handed a key that is not its own must refuse it.
+   */
+  test("a room re-spawned with a different key refuses a stale-keyed host even while it has no host (the key, not the vacancy, grants host)", () => {
     const { server } = fakeServer();
     const room1 = new Room("P0A", server, () => {}, () => []);
     const hostWs1 = fakeWs();
@@ -39,12 +49,19 @@ describe("P0-2: host re-join after the fixed-code room is re-spawned", () => {
     const hostWs2 = fakeWs();
     room2.join(hostWs2.ws, { type: "JOIN", clientId: "host-p0a-01", roomCode: "P0A", kind: "host", plays: false, hostKey: staleHostKey, device, protocolVersion: PROTOCOL_VERSION });
 
-    expect(room2.room.clients["host-p0a-01"]!.kind).toBe("host");
-    expect(room2.room.hostClientIds).toContain("host-p0a-01");
+    expect(room2.room.clients["host-p0a-01"]!.kind).toBe("player");
+    expect(room2.room.hostClientIds).toEqual([]);
     const welcome = hostWs2.sent.find((m) => m.type === "WELCOME");
-    expect(welcome?.type === "WELCOME" && welcome.isHost).toBe(true);
+    expect(welcome?.type === "WELCOME" && welcome.isHost).toBe(false);
+
+    // the same room re-created under the host's own key (what RoomManager does with a verified key) → host again
+    const room3 = new Room("P0A", server, () => {}, () => [], staleHostKey);
+    const hostWs3 = fakeWs();
+    room3.join(hostWs3.ws, { type: "JOIN", clientId: "host-p0a-01", roomCode: "P0A", kind: "host", plays: false, hostKey: staleHostKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect(room3.room.hostClientIds).toEqual(["host-p0a-01"]);
 
     room2.destroy();
+    room3.destroy();
   });
 
   test("a second host claiming kind:'host' with the wrong key is refused once someone already holds the room", () => {
