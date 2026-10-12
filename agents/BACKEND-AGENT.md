@@ -1,5 +1,9 @@
 # Engine agent brief — sync engine + protocol (formerly "backend")
 
+> **Historical (HackMIT, September 2026).** This was a build brief for the hackathon's coding agents. The ownership rules, `agent/*`
+> branches, gates and "frozen contract" process it describes are no longer in force. Current orientation for agents:
+> [CLAUDE.md](../CLAUDE.md).
+
 **Model:** Claude Opus 5. **Branch:** `agent/backend`. **Rules:** [SHARED-RULES.md](SHARED-RULES.md) apply in full.
 
 > **Revised scope (demo-first split):** the room server, vibe director and infra now belong to the **server agent**

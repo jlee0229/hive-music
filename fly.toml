@@ -1,21 +1,57 @@
-# Deploy from the repo root: `fly deploy` (fly.toml lives here so every fly command works with no flags).
-# Keep auto_stop off so the room survives idle minutes. One machine only: rooms are in memory.
-# The Docker build context is the repo root (the Dockerfile copies the whole workspace and runs apps/server/src/index.ts).
+# Fly.io config for the room server (apps/server). The web app is on Vercel, not here.
+# Runbook: docs/13-operations.md. Deploy from the repo root:  flyctl deploy --remote-only
+# (the app name and Dockerfile path below make the longer `--dockerfile infra/Dockerfile
+# --app playhivemusic-api` form redundant, but it is equivalent).
+#
+# THREE RULES
+#   1. One machine, always. Rooms live in this process's memory; a second machine would split a
+#      party across two servers that cannot see each other. Never `fly scale count 2`.
+#   2. Every deploy/restart ends every running party (rooms are not persisted, and codes are
+#      random, so a room cannot be re-created under the same code). Deploy when nobody is playing.
+#   3. Keep auto-stop off: an idle-stopped machine would drop the room between songs.
 
 app = "playhivemusic-api"
 primary_region = "ewr"
 
+# Fly sends this signal, waits kill_timeout seconds, then SIGKILLs. These are Fly's defaults,
+# written out because the server has no shutdown handler yet: it simply exits on SIGINT, sockets
+# drop, and phones show their reconnect state. Raising the timeout buys nothing until the server
+# learns to say goodbye (docs/13-operations.md, "What a deploy does to a party").
+kill_signal = "SIGINT"
+kill_timeout = 5
+
+# A 10-minute upload peaks around 360 MB of process memory (measured; docs/13 "Memory"), so the
+# smallest (256 MB) machine cannot take one. Swap is a cushion for back-to-back uploads, not a plan.
+swap_size_mb = 512
+
 [build]
   dockerfile = "infra/Dockerfile"
 
+[deploy]
+  # The only strategy that works with a volume attached (bluegreen/canary cannot move a volume):
+  # the one machine is stopped, updated and started again. Expect ~10-30 s of downtime.
+  strategy = "rolling"
+
 [env]
   PORT = "8080"
+  # Origin of the web app; the server builds the join URL in POST /rooms from it.
+  NEXT_PUBLIC_WEB_URL = "https://playhivemusic.com"
 
-# Uploaded tracks survive redeploys on this volume (docs/09 §D, docs/12). Seed it once after the
-# first mount: fly ssh console -C "bun run /app/fixtures/gen-synthetic.ts"
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+# Uploaded songs live here and survive deploys. The image's entrypoint seeds the two synthetic
+# tracks when the volume is empty and hands the directory to the unprivileged `bun` user
+# (infra/docker-entrypoint.sh). Fly snapshots the volume daily; keep two weeks of them.
 [[mounts]]
   source = "hive_tracks"
   destination = "/app/fixtures/tracks"
+  snapshot_retention = 14
+
+# The process should never stay down: restart it whatever the exit code.
+[[restart]]
+  policy = "always"
 
 [http_service]
   internal_port = 8080
@@ -24,9 +60,15 @@ primary_region = "ewr"
   auto_start_machines = true
   min_machines_running = 1
 
+  # Every phone holds one WebSocket. Fly's default soft limit is 20 connections, which a single
+  # party passes; with one machine there is nowhere to shed load to, so lift it well clear.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 1000
+
   [[http_service.checks]]
     method = "GET"
     path = "/health"
     interval = "15s"
     timeout = "5s"
-    grace_period = "10s"
+    grace_period = "20s"

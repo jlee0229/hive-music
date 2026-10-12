@@ -1,32 +1,81 @@
 name: Deploy server to Fly
 
+# MANUAL ONLY (Actions tab -> "Deploy server to Fly" -> Run workflow). Nothing deploys on push.
+#
+# Why: the server keeps every room in memory on one machine, so a deploy ends every running party
+# (docs/13-operations.md, "What a deploy does to a party"). A merge must never be what decides
+# when that happens; a person picks a quiet moment.
+#
+# The canonical deploy today is from a laptop: `flyctl deploy --remote-only` in the repo root.
+# This workflow runs the same command for someone who has repo access but no flyctl. It needs the
+# repository secret FLY_API_TOKEN (`fly tokens create deploy -a playhivemusic-api`, then GitHub ->
+# Settings -> Secrets and variables -> Actions). Without the secret it fails in the first step
+# with a message saying exactly that: a person asked for a deploy, so that is a real failure.
+# Freeze switch: repository variable FLY_DEPLOY_DISABLED=true skips the job.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/server/**"
-      - "packages/protocol/**"
-      - "fixtures/**"
-      - "infra/**"
-      - "fly.toml"
-      - "package.json"
-      - "bun.lock"
-      - ".github/workflows/deploy-fly.yml"
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'This ends every running party. Type "deploy" to go ahead.'
+        required: true
+        type: string
 
 concurrency:
   group: fly-deploy
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with package.json / infra/Dockerfile (scripts/check-versions.ts).
+  BUN_VERSION: "1.4.2"
+
 jobs:
   deploy:
     name: fly deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ vars.FLY_DEPLOY_DISABLED != 'true' }}
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
+      - name: Preflight
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "deploy" ]; then
+            echo "::error::Not confirmed. Re-run and type the word deploy in the confirm box."
+            exit 1
+          fi
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::The FLY_API_TOKEN repository secret is not set, so this workflow cannot deploy. Deploy from a machine with flyctl instead (docs/13-operations.md), or add the secret."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # Do not ship a server whose own tests are red.
+      - name: Install, typecheck, unit tests
+        run: |
+          bun install --frozen-lockfile
+          bun run fixtures
+          bun run typecheck
+          bun run test
+
+      - uses: superfly/flyctl-actions/setup-flyctl@1.6
+
+      # App name and Dockerfile path come from fly.toml in the repo root.
       - name: Deploy
         run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Verify the new release answers
+        run: |
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors \
+            https://api.playhivemusic.com/health
+          echo
+          flyctl status

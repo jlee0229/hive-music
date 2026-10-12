@@ -1,5 +1,11 @@
 # 12 · playhivemusic.com
 
+> **Partly historical.** The host table and the DNS records are current. The numbered steps are the record of the
+> one-time setup and several are no longer true: the repo is `piar1243/hive-music-official`; Vercel does not build on
+> push (deploys are manual); `ROOM_FIXED_CODE` is not set in production; there is no host lobby and no `/h/BZQ7`;
+> the volume no longer needs to be seeded by hand (the image does it); CI does not deploy the server.
+> Day-to-day operations: [13-operations.md](13-operations.md).
+
 The production layout for the domain (bought on Namecheap, DNS stays at Namecheap):
 
 | host | points at | serves |

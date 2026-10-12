@@ -1,5 +1,9 @@
 # 10 · Contingency: what to do when the phone test goes badly
 
+> **Historical (HackMIT, September 2026).** Demo-day triage for the hackathon stage: fixed room code, lobby, nudge slider, three
+> demo tiers. For production incidents use [13-operations.md](13-operations.md) §9. §2 below ("How to read what you
+> hear") is still a good guide to diagnosing sync by ear.
+
 The risk register in [08-roadmap.md](08-roadmap.md#risk-register) lists what might go wrong. This doc is the other half: **a triage
 order for the first phone test, a symptom → fallback table, and three demo tiers with the pitch rewritten for each**, so the claims
 on stage always match what the room can actually show. Read it before the first test, not after.

@@ -1,5 +1,9 @@
 # HiveMusic — Context and Reality Check
 
+> Design doc from the original build (September 2026). The reasoning stands, but details have moved since: there is no
+> lobby screen, no fixed room code and no nudge slider, and the app runs in production (see the doc table in the
+> [README](../README.md)). Where this page and the code disagree, the code is right.
+
 Owner: both
 
 HiveMusic turns a crowd's phones into one distributed speaker: the host's phone creates a room, players scan a QR code, every phone syncs to a shared clock, and the room plays one track together — as a unison wall of sound, as an orchestra with each phone on a different stem, or as spatial effects that sweep across the crowd. This document is the shared frame both agents build against. Read it first, then [01-architecture.md](01-architecture.md) and [02-protocol.md](02-protocol.md).

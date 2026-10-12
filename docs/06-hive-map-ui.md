@@ -1,5 +1,9 @@
 # 06 · Host mode and player mode — the UI spec
 
+> Design doc from the original build (September 2026). The reasoning stands, but details have moved since: there is no
+> lobby screen, no fixed room code and no nudge slider, and the app runs in production (see the doc table in the
+> [README](../README.md)). Where this page and the code disagree, the code is right.
+
 Owner: frontend agent. Design canvas: **https://claude.ai/artifact/1CPiXwhDfDPqRenDQC9Nzb** (ten artboards: five player-mode,
 five host-mode; the "Player · Playing" board has a *part* tweak that previews every role color). The canvas is the visual
 reference; this document is the functional contract: which screen exists, what state it shows, which messages it sends.

@@ -1,5 +1,9 @@
 # Protocol change requests
 
+> **Historical (HackMIT, September 2026).** The append-only request log the hackathon's agents used to change the contract. The
+> process is no longer in force (see [CLAUDE.md](../CLAUDE.md)). Kept because code comments cite entries here by number
+> (`R-8`, `P2-11`, …).
+
 Owner: both (either agent appends requests; the backend agent appends answers)
 
 The contract — `packages/protocol` (`PROTOCOL_VERSION = 1`) and the public surface of `packages/sync-client/src/index.ts` — is frozen at IC0 and changes only additively after that. When a gate needs something the contract lacks, the requesting agent appends an entry here and moves on; it never patches the other tree. The backend agent answers here, makes the additive change, bumps `PROTOCOL_VERSION`, and updates `messages.ts`, [02-protocol.md](02-protocol.md) and the mock server in the **same commit**. This file is **append-only**: never edit or delete an earlier entry; add a new one that supersedes it. The format below is the one `agents/SHARED-RULES.md` §3 prescribes.

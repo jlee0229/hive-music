@@ -1,5 +1,9 @@
 # HiveMusic — Tech Stack
 
+> Design doc from the original build (September 2026). The reasoning stands, but details have moved since: there is no
+> lobby screen, no fixed room code and no nudge slider, and the app runs in production (see the doc table in the
+> [README](../README.md)). Where this page and the code disagree, the code is right.
+
 Owner: both
 
 A fresh Turborepo in Beatsync's shape: Bun on the server side, Next.js on Vercel for the UI, zod schemas as the single contract, and no dependency that could fail on stage. The hard rules are in `agents/SHARED-RULES.md`; this doc is the "which tool, why, how configured" reference. Where the repo already pins something (`package.json`, `.env.example`, `infra/`, `.github/`), the repo wins.

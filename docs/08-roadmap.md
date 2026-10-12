@@ -1,5 +1,9 @@
 # HiveMusic — Roadmap, Gates and Demo Script
 
+> **Historical (HackMIT, September 2026).** The hackathon's hour plan, gate scoreboard, cut list and demo script. It assumes a fixed
+> room code (`BZQ7`), a lobby screen, a nudge slider, `agent/*` branches and a deploy on every merge — none of which
+> exist any more. Kept for the record. Current state: [README](../README.md); operations: [13-operations.md](13-operations.md).
+
 Owner: both (each agent updates only its own rows in the status table)
 
 > **Revised (demo-first, three agents).** The backend was split into an **engine agent** (`agent/backend`, Opus 5: sync-client +
