@@ -178,6 +178,8 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
   };
 
   const loadCalls: string[] = [];
+  /** `pitchYields`: slices the CHOIR render has finished — the only outside sign that one is running. */
+  const counters = { pitchYields: 0 };
   const engine = createBrowserAudioEngine(host, {
     createContext: () => {
       const c = new SimCtx(vt, 10 + contexts.length * 1000, opts.outputLatency ?? 0);
@@ -189,6 +191,11 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
       if (opts.loadStem) return opts.loadStem(url);
       return new FakeBuffer(durationSec, 44100);
     }) as unknown as (url: string, c: AudioContext) => Promise<AudioBuffer>,
+    // The CHOIR render yields through a timer, so it advances exactly as far as the test moves time.
+    pitchYield: () => {
+      counters.pitchYields++;
+      return new Promise<void>((resolve) => setTimeout(resolve, 0));
+    },
   }) as AudioEngine & { debug: AudioEngine["debug"] & Record<string, unknown> };
 
   return {
@@ -201,6 +208,7 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
     errors,
     contexts,
     loadCalls,
+    counters,
     localMs,
     makeRoom,
     /** The most recently created context. */

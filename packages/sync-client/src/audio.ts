@@ -63,6 +63,12 @@ export interface BrowserAudioEngineOptions {
   createContext?: () => AudioContext;
   /** Injected in tests; defaults to fetch + decodeAudioData. */
   loadStem?: (url: string, ctx: AudioContext) => Promise<AudioBuffer>;
+  /**
+   * How the CHOIR render gives the event loop back between slices. Defaults to pitch.ts's own
+   * (a MessageChannel hop, with a timer every 16th); tests pass a timer-only yield so the render runs
+   * on virtual time, and a Worker host would pass a no-op.
+   */
+  pitchYield?: () => Promise<void>;
 }
 
 export function createBrowserAudioEngine(
@@ -87,7 +93,15 @@ export function createBrowserAudioEngine(
   let originalBuffers: Map<string, BufferLike> | null = null;
   let appliedPitchSemitones = 0;
   const pitchedCache = new Map<string, Map<string, BufferLike>>();
-  let pitchJobKey: string | null = null;
+  /**
+   * The one render in flight. `signal` is what cancels it: pitch.ts polls it between slices (every
+   * 0.37 s of audio), so a render nobody wants any more stops within one slice instead of burning the
+   * rest of a stem — seconds of main-thread time on a phone, while the *next* track is decoding.
+   */
+  let pitchJob: { trackId: string; semitones: number; signal: { aborted: boolean } } | null = null;
+  const abortPitchJob = (): void => {
+    if (pitchJob) pitchJob.signal.aborted = true; // the job clears itself, and re-evaluates, in its finally
+  };
   /**
    * Variants whose render threw (an allocation failure on a long track, mostly). Without this the next
    * snapshot — and every one after it — started the same seconds-long render again.
@@ -470,7 +484,10 @@ export function createBrowserAudioEngine(
     if (!ctx || !scheduler || !loadedTrackId || !originalBuffers) return;
     if (typeof ctx.createBuffer !== "function") return; // test fakes have no buffer factory
     const trackId = loadedTrackId;
-    const want = lastAssignment?.pitchSemitones ?? 0;
+    const asked = lastAssignment?.pitchSemitones ?? 0;
+    const want = Number.isFinite(asked) ? asked : 0;
+    // A render for another track or another pitch is stale the moment the room moves on.
+    if (pitchJob && (pitchJob.trackId !== trackId || pitchJob.semitones !== want)) abortPitchJob();
     if (want === appliedPitchSemitones) return;
     if (want === 0) {
       scheduler.setBuffers(originalBuffers, trackId);
@@ -482,17 +499,21 @@ export function createBrowserAudioEngine(
     let pitched = pitchedCache.get(key);
     if (!pitched) {
       // One render at a time: it is seconds of main-thread work per stem, and a second one started
-      // beside it (the assignment moved again) only makes both late. The snapshot or the finishing
-      // render below comes back for whatever is wanted by then.
-      if (pitchJobKey !== null || pitchFailed.has(key)) return;
-      pitchJobKey = key;
+      // beside it only makes both late. A stale one was told to stop above; when it does, its `finally`
+      // comes back here for whatever is wanted by then.
+      if (pitchJob !== null || pitchFailed.has(key)) return;
+      const job = { trackId, semitones: want, signal: { aborted: false } };
+      pitchJob = job;
       try {
         const rendered = new Map<string, BufferLike>();
         for (const [stem, raw] of originalBuffers) {
           const src = raw as AudioBuffer;
-          const shifted = await pitchShiftMono(src.getChannelData(0), want);
-          // Track changed mid-render (stale), or the engine was disposed under us (no context).
-          if (loadedTrackId !== trackId || !ctx) return;
+          const shifted = await pitchShiftMono(src.getChannelData(0), want, {
+            signal: job.signal,
+            yieldToEventLoop: opts.pitchYield,
+          });
+          // Aborted on the last slice, or the engine was disposed under us (no context).
+          if (job.signal.aborted || !ctx) return;
           const out = ctx.createBuffer(1, shifted.length, src.sampleRate);
           out.copyToChannel(shifted as Float32Array<ArrayBuffer>, 0);
           rendered.set(stem, out);
@@ -500,15 +521,16 @@ export function createBrowserAudioEngine(
         pitchedCache.set(key, rendered);
         pitched = rendered;
       } catch (err) {
+        if (job.signal.aborted) return; // cancelled on purpose: not a failure, and not worth a word
         // The phone keeps playing the unshifted audio; note it once instead of retrying forever.
         pitchFailed.add(key);
         // (Not an `error` event: the host screen toasts those verbatim, and this one has no action.)
         console.warn("[hive] CHOIR render failed; playing unshifted", err);
         return;
       } finally {
-        if (pitchJobKey === key) pitchJobKey = null;
-        // What is wanted may have changed while this one rendered (or was abandoned for a new track).
-        if ((lastAssignment?.pitchSemitones ?? 0) !== want || loadedTrackId !== trackId) {
+        if (pitchJob === job) pitchJob = null;
+        // What is wanted may have changed while this one rendered (or it was abandoned for a new track).
+        if (job.signal.aborted || (lastAssignment?.pitchSemitones ?? 0) !== want || loadedTrackId !== trackId) {
           queueMicrotask(() => void ensurePitchedBuffers());
         }
       }
@@ -755,6 +777,7 @@ export function createBrowserAudioEngine(
            * more), and keeping it through the next download and decode meant two songs in memory at the
            * moment the tab is already at its peak — which is when iOS kills it.
            */
+          abortPitchJob(); // a render of the song that just ended must not compete with the next decode
           originalBuffers = null;
           pitchedCache.clear();
           appliedPitchSemitones = 0;
@@ -856,6 +879,8 @@ export function createBrowserAudioEngine(
         resyncCount: scheduler?.resyncCount ?? 0,
         // Pattern curves Web Audio refused; anything but 0 is a stretch of STROBE/WAVE left un-automated.
         patternCurveRejections: scheduler?.patternCurveRejections ?? 0,
+        // True while a CHOIR render is in flight (the phone is still on the previous buffers).
+        pitchRendering: pitchJob !== null,
         // Decoded buffers this engine keeps reachable: originals, CHOIR copies, and the scheduler's set.
         buffersHeld:
           (originalBuffers?.size ?? 0) +
@@ -895,6 +920,7 @@ export function createBrowserAudioEngine(
       ctx = null;
       loadedTrackId = null;
       loadingTrackId = null; // an in-flight download now counts as superseded
+      abortPitchJob();
       originalBuffers = null;
       pitchedCache.clear();
       lastRoom = null;
