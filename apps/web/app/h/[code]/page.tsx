@@ -15,7 +15,7 @@ import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { TransportBar } from "@/components/TransportBar";
-import { HiveMap } from "@/components/HiveMap";
+import { HiveMap, partsApply } from "@/components/HiveMap";
 import { ModeChips } from "@/components/ModeChips";
 import { StrobeControls } from "@/components/StrobeControls";
 import { VibeBox } from "@/components/VibeBox";
@@ -479,7 +479,7 @@ function HostRoom({
             <button
               onClick={exitHive}
               aria-label="Exit the hive"
-              className="rounded-full border px-2.5 py-1.5 text-[13px] font-semibold"
+              className="flex h-11 w-11 items-center justify-center rounded-full border text-[15px] font-semibold"
               style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
             >
               ←
@@ -510,17 +510,17 @@ function HostRoom({
         ) : null}
 
         <div className="flex items-center justify-between rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-          <Link href={`/qr/${roomCode}`} target="_blank" className="text-lg font-bold underline">
+          <Link href={`/qr/${roomCode}`} target="_blank" className="-my-3 flex h-11 items-center text-lg font-bold underline">
             Join QR code
           </Link>
-          <button onClick={copyJoinLink} className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+          <button onClick={copyJoinLink} className="-my-3 -mr-2 h-11 px-2 text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
             {screenLinkCopied ? "Copied!" : "Copy link"}
           </button>
         </div>
 
         {room.transport.state === "stopped" ? (
           <div className="flex flex-col gap-2.5">
-            <span className="text-center text-[15px]" style={{ color: "var(--muted)" }}>
+            <span className="line-clamp-2 text-center text-[15px] [overflow-wrap:anywhere]" style={{ color: "var(--muted)" }}>
               Up next: <span className="font-semibold" style={{ color: "var(--text)" }}>{room.track!.title}</span>
             </span>
             <button
@@ -564,7 +564,7 @@ function HostRoom({
           <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} host={client.host} onOpenSheet={setSheetClientId} />
         </div>
 
-        <Legend />
+        <Legend partsApply={partsApply(room)} ringHealth={Object.values(room.clients).some((c) => c.connected && c.assignment && c.assignment.role !== "unison")} />
 
         {/* Lives on the stage, not the lobby: a per-party choice, not a per-song one. */}
         <label className="flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
@@ -603,7 +603,7 @@ function HostRoom({
         </div>
 
         {sheetClientId && room.clients[sheetClientId] ? (
-          <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} onClose={() => setSheetClientId(null)} />
+          <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} showParts={partsApply(room)} onClose={() => setSheetClientId(null)} />
         ) : null}
         {showPlayers ? (
           <PlayersDrawer

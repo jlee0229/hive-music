@@ -22,10 +22,9 @@ test("host map: 40 unplaced phones all get their own spot, inside the map", asyn
     return {
       box: { x: box.x, y: box.y, w: box.width, h: box.height },
       dots: [...svg.querySelectorAll("g[data-client-id]")].map((g) => {
-        // The last circle is the filled disc and the one before it the health ring around it — the
-        // outline of the dot, and the thing that must not collide with a neighbour.
-        const circles = g.querySelectorAll("circle");
-        const r = circles[circles.length - 2]!.getBoundingClientRect();
+        // The first circle is the health ring — the outline of the dot, and the thing that must not
+        // collide with a neighbour.
+        const r = g.querySelector("circle")!.getBoundingClientRect();
         return { id: g.getAttribute("data-client-id")!, cx: r.x + r.width / 2, cy: r.y + r.height / 2, r: r.width / 2 };
       }),
     };

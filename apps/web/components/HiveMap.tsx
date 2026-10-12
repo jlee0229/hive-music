@@ -15,6 +15,16 @@ function cyclableRoles(room: RoomState): StemRole[] {
   return trackStems.length > 0 ? trackStems : [...STEMS];
 }
 
+/**
+ * Whether a phone's part is something the host can change right now: only ORCHESTRA hands out
+ * parts, and only on a song that has them (an uploaded song is one stem, "mix"). Everywhere else a
+ * pin changes nothing anyone can see or hear, so a tap must not silently set one.
+ */
+export function partsApply(room: RoomState): boolean {
+  const stems = (room.track?.stems ?? []).filter((s) => (STEMS as readonly string[]).includes(s));
+  return room.mode.kind === "ORCHESTRA" && stems.length > 1;
+}
+
 function nextPinnedRole(current: StemRole | null, roles: StemRole[]): StemRole | null {
   const sequence: Array<StemRole | null> = [...roles, null];
   const idx = sequence.findIndex((r) => r === current);
@@ -177,9 +187,11 @@ export function HiveMap({
         host.setPosition(clientId, x, y);
         setLivePositions((p) => ({ ...p, [clientId]: { x, y } }));
       } else if (!g.longPressed) {
-        // a plain tap: cycle this client's pinned role
+        // A plain tap: cycle this client's pinned part where parts exist; otherwise open its sheet
+        // (the same thing a long-press does) rather than pin a part nobody can see or hear.
         const rec = room.clients[clientId];
-        if (rec) host.assign(clientId, nextPinnedRole(rec.pinnedRole, roles));
+        if (rec && partsApply(room)) host.assign(clientId, nextPinnedRole(rec.pinnedRole, roles));
+        else if (rec) onOpenSheet?.(clientId);
       }
     }
     setDragging(null);
@@ -235,8 +247,6 @@ export function HiveMap({
             onPointerCancel={endGesture}
             style={{ cursor: host ? "pointer" : "default" }}
           >
-            {/* Invisible, finger-sized: the visible dot shrinks at a big party, the thing you can grab does not. */}
-            <circle cx={cx} cy={cy} r={Math.max(metrics.ring, Math.min(22, metrics.pitchY / 2))} fill="transparent" />
             <circle cx={cx} cy={cy} r={metrics.ring} fill="none" stroke={ringColor} strokeWidth={metrics.ringWidth} />
             <circle
               cx={cx}
@@ -251,6 +261,8 @@ export function HiveMap({
             <text x={cx} y={cy + metrics.labelDy} textAnchor="middle" fontSize={metrics.font} fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
               {fitLabel(client.name, metrics.labelChars)}
             </text>
+            {/* Invisible, finger-sized, on top: the visible dot shrinks at a big party, the thing you can grab does not. */}
+            <circle cx={cx} cy={cy} r={Math.max(metrics.ring, Math.min(22, metrics.pitchY / 2))} fill="transparent" />
           </g>
         );
       })}
