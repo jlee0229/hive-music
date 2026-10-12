@@ -364,6 +364,27 @@ function HostRoom({
     }
   }
 
+  // PLAY is scheduled LEAD_MS ahead and the snapshot that says "playing" can trail it by a full
+  // rate-limit window, so for about half a second the stage still showed "Start the hive" — after
+  // the tuning moment it flashed back as if nothing had happened, and a second tap restarted the
+  // song. `starting` covers that gap: set when PLAY is sent, cleared when the transport moves (or
+  // after 3 s, in case the message was lost).
+  const [starting, setStarting] = useState(false);
+  const sendPlay = useCallback(() => {
+    setStarting(true);
+    client.host.play(0);
+  }, [client]);
+  const transportState = room?.transport.state;
+  useEffect(() => {
+    if (!starting) return;
+    if (transportState && transportState !== "stopped") {
+      setStarting(false);
+      return;
+    }
+    const t = setTimeout(() => setStarting(false), 3000);
+    return () => clearTimeout(t);
+  }, [starting, transportState]);
+
   const finishAutoStart = useCallback(() => {
     if (!autoStartRef.current) return;
     autoStartRef.current = false;
@@ -373,8 +394,8 @@ function HostRoom({
       autoStartTimerRef.current = null;
     }
     setCalibrateDismissed(true);
-    client.host.play(0);
-  }, [client]);
+    sendPlay();
+  }, [sendPlay]);
 
   // Watches the tuning moment that startHive armed. countdown/running means it genuinely started;
   // any exit from there (done, failed, or idle after a cancel) starts the music. `done`/`failed`
@@ -442,7 +463,7 @@ function HostRoom({
     const plan = planStart({ engine: engineKind(), room, startInFlight: autoStartRef.current, micBlocked });
     if (plan.kind === "ignore") return; // a second tap while the first start's tuning is still running
     if (plan.kind === "play") {
-      client.host.play(0);
+      sendPlay();
       return;
     }
     autoStartRef.current = true;
@@ -546,17 +567,19 @@ function HostRoom({
             </span>
             <button
               onClick={startHive}
-              disabled={!selectedTrackId || !canStart}
+              disabled={!selectedTrackId || !canStart || starting}
               className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
               style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
             >
-              {!selectedTrackId
-                ? "Pick a track"
-                : allReady || connectedPlayers.length === 0
-                  ? "Start the hive"
-                  : startAnywayReady
-                    ? "Start anyway"
-                    : "Waiting for phones to load…"}
+              {starting
+                ? "Starting…"
+                : !selectedTrackId
+                  ? "Pick a track"
+                  : allReady || connectedPlayers.length === 0
+                    ? "Start the hive"
+                    : startAnywayReady
+                      ? "Start anyway"
+                      : "Waiting for phones to load…"}
             </button>
             {audio.state === "locked" && speakerOn ? (
               <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
