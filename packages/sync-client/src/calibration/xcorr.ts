@@ -45,8 +45,15 @@ export interface PeakOptions {
   toSample: number;
   /** Half-width of the exclusion zone around the peak when looking for a competitor, ms. */
   guardMs?: number;
+  /** How long after the peak a weaker arrival is treated as the peak's own echo, ms. 0 disables. */
+  echoMs?: number;
   sampleRate: number;
 }
+
+/** Reflections worth worrying about arrive within ~20 m of extra path; beyond that they are reverb. */
+export const DEFAULT_ECHO_MS = 60;
+/** The winner must explain at least a quarter of its window's energy (0.5²) before echoes are discounted. */
+export const MIN_PEAK_FOR_ECHO = 0.5;
 
 /**
  * Normalised correlation for every lag in `[from, to)` (already clamped by the caller so that
@@ -58,7 +65,14 @@ export interface PeakOptions {
  * energy of every later window, silently blinding every later click. A non-finite sample now costs only
  * the lags that actually overlap it, which score 0.
  */
-function correlate(recording: Float32Array, template: Float32Array, from: number, to: number): Float64Array {
+function correlate(
+  recording: Float32Array,
+  template: Float32Array,
+  from: number,
+  to: number,
+  /** Optional: receives the un-normalised numerator per lag (the arrival's amplitude, not its match quality). */
+  raw?: Float64Array,
+): Float64Array {
   const m = template.length;
   const span = to - from + m - 1;
   const prefix = new Float64Array(span + 1);
@@ -71,7 +85,9 @@ function correlate(recording: Float32Array, template: Float32Array, from: number
     let num = 0;
     for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
     const energy = prefix[lag - from + m]! - prefix[lag - from]!;
-    xc[lag - from] = energy > 0 && Number.isFinite(num) ? num / Math.sqrt(energy) : 0;
+    const ok = energy > 0 && Number.isFinite(num);
+    xc[lag - from] = ok ? num / Math.sqrt(energy) : 0;
+    if (raw) raw[lag - from] = ok ? num : 0;
   }
   return xc;
 }
@@ -92,7 +108,8 @@ export function findPeak(recording: Float32Array, template: Float32Array, opts: 
     return { lagSamples: from, peak: 0, secondPeak: 0, confidence: 0, prominence: 0 };
   }
 
-  const xc = correlate(recording, template, from, to);
+  const raw = new Float64Array(to - from);
+  const xc = correlate(recording, template, from, to, raw);
 
   let bestIdx = 0;
   let best = -Infinity;
@@ -118,14 +135,32 @@ export function findPeak(recording: Float32Array, template: Float32Array, opts: 
   }
 
   const guardSamples = Math.max(1, Math.round((((opts.guardMs ?? 2) / 1000) * opts.sampleRate)));
+  /*
+   * The competitor. Per-lag normalisation scores an arrival by how well it matches *its own* local
+   * energy, so a reflection of the winner that is 10 or 20 dB quieter still scores ~1 once it is clear of
+   * the direct sound, and a good click in a quiet room was rejected (confidence ~0) for having an echo.
+   * A later arrival inside the echo zone is therefore judged by its amplitude relative to the winner
+   * instead (`raw[i] / raw[best]`, scaled onto the winner's own score) — never by more than its
+   * normalised score, so this can only raise confidence. An arrival *before* the winner is left as it
+   * was: if something click-shaped precedes the winner, the winner may itself be the echo, and that must
+   * stay unconfident.
+   */
+  const echoSamples = Math.round(((opts.echoMs ?? DEFAULT_ECHO_MS) / 1000) * opts.sampleRate);
+  const rawBest = raw[bestIdx]!;
+  // Only a winner that dominates its own window can have "an echo". Under that, the window is mostly
+  // something else (noise, a drum hit's decay) and discounting whatever follows the winner by its level
+  // would manufacture confidence out of a transient — measured: 1 of 600 click-less windows crossed 0.5.
+  const echoZone = rawBest > 0 && best >= MIN_PEAK_FOR_ECHO;
   let second = 0;
   let sumAbs = 0;
   let sumSq = 0;
   for (let i = 0; i < xc.length; i++) {
-    const v = xc[i]!;
+    let v = xc[i]!;
     sumAbs += Math.abs(v);
     sumSq += v * v;
-    if (Math.abs(i - bestIdx) > guardSamples && v > second) second = v;
+    if (Math.abs(i - bestIdx) <= guardSamples) continue;
+    if (echoZone && i > bestIdx && i - bestIdx <= echoSamples) v = Math.min(v, (best * raw[i]!) / rawBest);
+    if (v > second) second = v;
   }
   const mean = sumAbs / xc.length;
   const sd = Math.sqrt(Math.max(0, sumSq / xc.length - mean * mean));

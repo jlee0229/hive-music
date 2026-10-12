@@ -105,3 +105,97 @@ describe("ENGINE-DSP-40: one bad sample must not blind the rest of the recording
     expect(c.confidence).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
   });
 });
+
+describe("ENGINE-DSP-41: an echo of the click must not veto the click", () => {
+  /** One click at `directMs` plus one reflection, in a quiet room (noise 40 dB under the click). */
+  const withEcho = (echoDelayMs: number, echoGain: number, seed = 21) => {
+    const rec = room(700, 0.002, seed);
+    addClick(rec, 310, 0.5);
+    addClick(rec, 310 + echoDelayMs, 0.5 * echoGain);
+    return analyze(rec, [300]).clicks[0]!;
+  };
+
+  test("a reflection 10-20 dB down, anywhere from 5 to 50 ms later, leaves the click confident (was a miss)", () => {
+    for (const delay of [5, 12, 20, 30, 50]) {
+      for (const gain of [0.1, 0.3]) {
+        const c = withEcho(delay, gain);
+        expect(Math.abs(c.rawMs - 10)).toBeLessThan(0.1);
+        expect(c.confidence).toBeGreaterThanOrEqual(DEFAULT_MIN_CONFIDENCE);
+      }
+    }
+  });
+
+  test("an inverted reflection (pressure-release surface) is treated the same", () => {
+    const c = withEcho(25, -0.3);
+    expect(Math.abs(c.rawMs - 10)).toBeLessThan(0.1);
+    expect(c.confidence).toBeGreaterThanOrEqual(DEFAULT_MIN_CONFIDENCE);
+  });
+
+  test("a reflection nearly as loud as the direct sound stays unconfident: which is which is a guess", () => {
+    for (const delay of [5, 20, 30]) expect(withEcho(delay, 0.9).confidence).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
+  });
+
+  test("when the LATER arrival is the stronger one, the earlier one still vetoes it (no false accept)", () => {
+    // The speaker points away: the reflection is 2x the direct path and 20-30 ms late. Whichever the
+    // filter picks, it must not be confident — picking the echo would be a 20-30 ms error, accumulated.
+    for (const delay of [20, 30]) {
+      const c = withEcho(delay, 2);
+      expect(c.confidence).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
+    }
+  });
+
+  test("two different phones' clicks in one window are still mutually unconfident", () => {
+    // A phone 300 ms late lands in the next phone's window, 100 ms BEFORE that phone's own click and at
+    // the same level: outside the echo zone in the direction that matters, so the veto stands.
+    const rec = room(2 * INTERVAL + 600, 0.002, 5);
+    addClick(rec, 200 + 300, 0.5); // phone 0, 300 ms late
+    addClick(rec, 200 + INTERVAL, 0.5); // phone 1, on time
+    const result = analyze(rec, [200, 200 + INTERVAL]);
+    expect(result.clicks[1]!.confidence).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
+    expect(result.clicks[0]!.confidence).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
+  });
+
+  test("a window with no click at all is still unconfident over 40 noise seeds", () => {
+    let worst = 0;
+    for (let seed = 0; seed < 40; seed++) {
+      const rec = room(700, 0.02, 100 + seed);
+      worst = Math.max(worst, analyze(rec, [300]).clicks[0]!.confidence);
+    }
+    expect(worst).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
+  });
+});
+
+describe("ENGINE-DSP-45 (proposed): a click in the wrong slot is attributed to the wrong phone", () => {
+  /*
+   * The slot is 400 ms and the search window ±150 ms, so a phone 250–550 ms late (a Bluetooth speaker,
+   * a bad clock sync) sounds inside the NEXT phone's window. If that phone's own click is absent — its
+   * click was skipped as unschedulable (audio.ts `clicksSkipped`), it is muted, it is in a pocket — the
+   * late click is the only thing in the window: a clean, confident peak with a −100 ms residual for a
+   * phone that never made a sound. Nothing in the loop bounds a residual (reference.ts reports it, the
+   * server adds it to calibratedOffsetMs), so the innocent phone is moved by 100 ms and that becomes the
+   * base for every later run.
+   *
+   * The matched filter cannot tell whose click it is; the fix is a plausibility bound where the residual
+   * is applied (see the finding). These two tests state the desired outcome and flip when it lands.
+   */
+  const lateIntoEmptySlot = () => {
+    const rec = room(4 * INTERVAL + 600, 0.005, 13);
+    addClick(rec, 200, 0.5); // phone 0 on time
+    addClick(rec, 200 + INTERVAL + 300, 0.5); // phone 1, 300 ms late: lands at −100 ms in phone 2's window
+    // phone 2: silent
+    addClick(rec, 200 + 3 * INTERVAL, 0.5); // phone 3 on time
+    return analyze(rec, [0, 1, 2, 3].map((k) => 200 + k * INTERVAL));
+  };
+
+  test("today: the silent phone is reported 100 ms early with full confidence", () => {
+    const result = lateIntoEmptySlot();
+    expect(Math.abs(result.clicks[2]!.residualMs + 100)).toBeLessThan(0.5);
+    expect(result.clicks[2]!.confidence).toBeGreaterThan(0.8);
+    expect(result.anchorCount).toBe(3);
+  });
+
+  test.failing("a residual no phone could plausibly have is not reported as confident", () => {
+    const result = lateIntoEmptySlot();
+    expect(result.clicks[2]!.confidence).toBeLessThan(DEFAULT_MIN_CONFIDENCE);
+  });
+});
