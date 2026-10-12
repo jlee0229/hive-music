@@ -1,5 +1,9 @@
 # Shared rules for the two build agents
 
+> **Historical (HackMIT, September 2026).** This was a build brief for the hackathon's coding agents. The ownership rules, `agent/*`
+> branches, gates and "frozen contract" process it describes are no longer in force. Current orientation for agents:
+> [CLAUDE.md](../CLAUDE.md).
+
 Three agents build HiveMusic in parallel during HackMIT. These rules exist so they never block each other.
 Read this first, then your brief: [BACKEND-AGENT.md](BACKEND-AGENT.md) (engine, Opus 5, `agent/backend`),
 [SERVER-AGENT.md](SERVER-AGENT.md) (room server + vibe + infra, Sonnet 5, `agent/server`) or

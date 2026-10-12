@@ -1,5 +1,9 @@
 # Server agent brief — room server, vibe director, infra
 
+> **Historical (HackMIT, September 2026).** This was a build brief for the hackathon's coding agents. The ownership rules, `agent/*`
+> branches, gates and "frozen contract" process it describes are no longer in force. Current orientation for agents:
+> [CLAUDE.md](../CLAUDE.md).
+
 **Model:** Claude Sonnet 5. **Branch:** `agent/server`. **Rules:** [SHARED-RULES.md](SHARED-RULES.md) apply in full.
 
 ## Mission
