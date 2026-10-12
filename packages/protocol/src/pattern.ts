@@ -20,20 +20,40 @@ function wrap(t: number, period: number): number {
   return ((t % period) + period) % period;
 }
 
-/** Returns a gain multiplier in [0, 1]. Undefined pattern → 1 (always on). */
+/**
+ * Returns a gain multiplier in [0, 1]. Undefined pattern → 1 (always on).
+ *
+ * Periodic in both directions: a negative `trackTimeMs` (the lead-in before a start) evaluates the same
+ * gate extended backwards, so a phone that schedules early and one that joins late agree. A non-finite
+ * time or period cannot be scheduled against; it evaluates to 1 — audible — rather than to NaN, which
+ * Web Audio's `setValueCurveAtTime` rejects and which would leave the phone at whatever gain it had.
+ *
+ * strobe: on for duty·period, with linear ramps **centred on the two edges** of the window — up across
+ * [−ramp/2, +ramp/2] around the phase origin, down across the same span around `on`. Two gates whose
+ * windows are back to back (group g+1 opens where group g closes) therefore cross-fade and their gains
+ * sum to exactly 1 through the handoff. Ramps placed *inside* the window, as they used to be, made both
+ * gates zero at the switch instant: a 20 ms hole in the room at every handoff, sitting exactly on the
+ * drum hit the switch was aligned to, with the incoming phone still fading in through the attack.
+ */
 export function evaluatePattern(pattern: Pattern | null | undefined, trackTimeMs: number): number {
   if (!pattern) return 1;
-  const t = wrap(trackTimeMs - pattern.phaseMs, pattern.periodMs);
+  const period = pattern.periodMs;
+  if (!Number.isFinite(trackTimeMs) || !Number.isFinite(period) || !Number.isFinite(pattern.phaseMs) || period <= 0) return 1;
   if (pattern.kind === "wave") {
     // raised cosine swell: 0 at the phase origin, 1 half a period later
-    return 0.5 - 0.5 * Math.cos((2 * Math.PI * t) / pattern.periodMs);
+    const t = wrap(trackTimeMs - pattern.phaseMs, period);
+    return 0.5 - 0.5 * Math.cos((2 * Math.PI * t) / period);
   }
-  // strobe: on for duty·period, with a short linear ramp at both edges
-  const duty = pattern.duty ?? 0.5;
-  const on = duty * pattern.periodMs;
-  const ramp = Math.min(pattern.rampMs ?? 10, on / 2);
-  if (t < ramp) return t / ramp;
-  if (t < on - ramp) return 1;
-  if (t < on) return (on - t) / ramp;
+  const on = (pattern.duty ?? 0.5) * period;
+  if (on >= period) return 1; // duty 1 is "always on", not "on with a dip once per period"
+  if (on <= 0) return 0;
+  // a ramp can be no longer than the window it opens or the gap it closes
+  const ramp = Math.min(pattern.rampMs ?? 10, on, period - on);
+  const half = ramp / 2;
+  // position relative to the window's opening edge, in [−half, period − half)
+  const t = wrap(trackTimeMs - pattern.phaseMs + half, period) - half;
+  if (t < half) return ramp > 0 ? (t + half) / ramp : 1;
+  if (t <= on - half) return 1;
+  if (t < on + half) return (on + half - t) / ramp;
   return 0;
 }
