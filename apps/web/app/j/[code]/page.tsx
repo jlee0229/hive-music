@@ -7,7 +7,7 @@ import { detectDevice } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl } from "@/lib/hive/client";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
-import { getPlayerName, setPlayerName } from "@/lib/hive/storage";
+import { getHostKey, getPlayerName, setPlayerName } from "@/lib/hive/storage";
 import { selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
 import { RingerBanner } from "@/components/RingerBanner";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
@@ -56,6 +56,28 @@ const hiveNotFound = (code: string) => ({
   detail: code ? `No hive is running at code ${code}. Check the code with the host.` : "This link has no hive code in it. Ask the host for the code.",
 });
 
+/**
+ * The engine keeps one client id per room per browser (hive:clientId:<code>), and the host page
+ * uses it too. So the join link opened in the *host's* browser — to see what guests see, or to add
+ * that device as a speaker — JOINed as the host's own record: the host was renamed to the guest
+ * name, lost its HEALTH feed to this tab, and was marked disconnected when the tab closed. A
+ * browser that holds this room's host key therefore joins under a second, separately kept id.
+ * Everyone else gets undefined, i.e. the engine's ordinary id.
+ */
+function guestIdInHostBrowser(roomCode: string): string | undefined {
+  if (!getHostKey(roomCode)) return undefined;
+  const key = `hive:guestId:${roomCode}`;
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+    return id;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The protocol's limit on a name, in UTF-16 units (ClientMessageSchema JOIN.name). */
 const NAME_MAX = 32;
 
@@ -92,11 +114,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const [exists, setExists] = useState<boolean | null>(null);
   const [resuming, setResuming] = useState(false);
   const device = detectDevice();
+  const [guestId] = useState(() => guestIdInHostBrowser(roomCode));
 
   const { client, room, me, connection, status, audio, connect, protocolMismatch } = useHiveClient({
     roomCode,
     kind: "player",
     plays: true,
+    clientId: guestId,
     // Trimmed, and nothing at all if that leaves nothing: a name of spaces was sent as-is and
     // showed up on the host's map as a blank label; undefined lets the server say "Phone 7".
     name: name.trim() || undefined,
