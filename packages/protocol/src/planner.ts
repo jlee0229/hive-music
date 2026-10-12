@@ -151,6 +151,26 @@ export function arrangeStrobe(room: RoomState, requestedGroups: number): StrobeS
 }
 
 /**
+ * CHOIR's voicing: semitones per speaker. Voices rotate through `CHOIR_STEPS` by joinIndex, with one
+ * rule on top — **there is always a root**. A fifth or an octave is harmony only against the song at
+ * pitch; on its own it is just the song in the wrong key (a lone guest whose joinIndex was 3 sang the
+ * whole track a fifth up). So the earliest speaker always sings the root, and if every root voice is
+ * offline the earliest connected speaker takes it until one is back.
+ *
+ * A change of pitch is an offline re-render of the whole track on the phone, so this is deliberately
+ * the most stable deal in the planner: a joiner never changes anyone, and becoming the root is free
+ * (0 semitones is the original buffer).
+ */
+export function arrangeChoir(room: RoomState): Map<string, number> {
+  const speakers = Object.values(room.clients).filter((c) => c.plays).sort(byJoin);
+  const voices = new Map<string, number>(speakers.map((c) => [c.id, CHOIR_STEPS[c.joinIndex % CHOIR_STEPS.length]!]));
+  if (speakers.length > 0) voices.set(speakers[0]!.id, 0);
+  const present = presentSpeakers(speakers);
+  if (present.length > 0 && !present.some((c) => voices.get(c.id) === 0)) voices.set(present[0]!.id, 0);
+  return voices;
+}
+
+/**
  * The gate for one STROBE group.
  *
  * Beat-locked when the track's tempo is known: a group is audible for one *slot* = `beatsPerSwitch` beats,
@@ -219,6 +239,7 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
   const out: Record<string, Assignment | null> = {};
   const roles = stemRoles(room);
   const orchestra = room.mode.kind === "ORCHESTRA" ? arrangeOrchestra(room) : null;
+  const choir = room.mode.kind === "CHOIR" ? arrangeChoir(room) : null;
   const strobe = room.mode.kind === "STROBE" ? arrangeStrobe(room, resolveModeParams(room.mode).groups) : null;
   const stems = allStems(room);
   const p = resolveModeParams(room.mode);
@@ -276,9 +297,9 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
       }
       case "CHOIR": {
         // Everyone plays the full mix, but each phone sings at its own pitch: octaves and a fifth
-        // rotated by joinIndex, so the crowd stacks back into one consonant chord. The shift itself
+        // around a root that is always present (arrangeChoir), so the crowd stacks into one chord. The shift itself
         // happens client-side (time-stretch + resample), keeping the shared timeline untouched.
-        const step = CHOIR_STEPS[c.joinIndex % CHOIR_STEPS.length]!;
+        const step = choir!.get(c.id)!;
         const label = step === 0 ? "choir" : step === 12 ? "soprano" : step === -12 ? "basso" : "tenor";
         const role = step === 0 ? "unison" : step === 12 ? "vocals" : step === -12 ? "bass" : "other";
         const a = base(c, label, role, gains(room, stems), applyAtServerTime);

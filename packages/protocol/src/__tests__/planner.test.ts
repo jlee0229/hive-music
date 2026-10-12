@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ROLE_COLORS, STEMS } from "../constants";
 import { speakerLayout } from "../layout";
 import { compensationMs, plan, SILENT_DB, withAssignments } from "../planner";
+import { prng } from "./harness";
 import { client, room } from "./room-fixture";
 
 const audible = (g: Record<string, number>) => Object.entries(g).filter(([, db]) => db > SILENT_DB).map(([s]) => s).sort();
@@ -46,6 +47,38 @@ describe("planner", () => {
       expect(audible(v!.gainsDb)).toEqual([...STEMS].sort()); // everyone plays the whole mix
       expect(v!.delayMs).toBe(0); // pitch is a client-side render, never a schedule change
       expect(v!.pattern).toBeNull();
+    }
+  });
+
+  test("CHOIR always has a root: no lone fifth, no lone octave (PROTO-10)", () => {
+    const CHOIR = { kind: "CHOIR" as const, params: {} };
+    const hostOnly = client(0, { kind: "host", plays: false });
+    // the third guest alone (joinIndex 3) used to sing the whole song a fifth up
+    for (const j of [1, 2, 3, 5, 6, 7]) {
+      const a = plan(room([hostOnly, client(j)], CHOIR));
+      expect(a[`c${j}-00000000`]!.pitchSemitones).toBe(0);
+      expect(a[`c${j}-00000000`]!.label).toBe("choir");
+    }
+    // two guests left behind: root + fifth, not octave + fifth
+    const pair = plan(room([hostOnly, client(1), client(3)], CHOIR));
+    expect([pair["c1-00000000"]!.pitchSemitones, pair["c3-00000000"]!.pitchSemitones]).toEqual([0, 7]);
+    // the root phone goes offline: the earliest phone still there takes the root
+    const rootGone = plan(room([hostOnly, client(1, { connected: false }), client(2), client(3)], CHOIR));
+    expect(rootGone["c2-00000000"]!.pitchSemitones).toBe(0);
+    expect(rootGone["c3-00000000"]!.pitchSemitones).toBe(7);
+    // random rooms: a connected root whenever anyone is connected, and a joiner re-pitches nobody
+    const r = prng(1010);
+    for (let i = 0; i < 1000; i++) {
+      const joins = r.shuffle(Array.from({ length: 120 }, (_, k) => k)).slice(0, r.int(1, 30)).sort((x, y) => x - y);
+      const clients = joins.map((j) => client(j, { plays: r.bool(0.9), connected: r.bool(0.8), kind: r.bool(0.1) ? "host" : "player" }));
+      const a = plan(room(clients, CHOIR));
+      const speakers = clients.filter((c) => c.plays);
+      const present = speakers.some((c) => c.connected) ? speakers.filter((c) => c.connected) : speakers;
+      if (present.length > 0) expect(present.some((c) => a[c.id]!.pitchSemitones === 0), `case ${i}`).toBe(true);
+      const grown = plan(room([...clients, client(joins[joins.length - 1]! + r.int(1, 9))], CHOIR));
+      // (unless a phone was only covering for an offline root and the joiner is a root: it hands the root back)
+      const covering = present.length > 0 && present[0] !== speakers[0] && !present.some((c) => c.joinIndex % 4 === 0);
+      if (!covering) for (const c of speakers) expect(grown[c.id]!.pitchSemitones, `case ${i}`).toBe(a[c.id]!.pitchSemitones!);
     }
   });
 
