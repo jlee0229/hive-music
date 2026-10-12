@@ -64,7 +64,14 @@ export class Room {
   code: string;
   hostKey: string;
   room: RoomState;
+  /** The socket that speaks for each client id: always the one that JOINed most recently. */
   sockets = new Map<string, WS>();
+  /**
+   * Older sockets that JOINed under the same client id and are still open. One browser's tabs share
+   * `hive:clientId:<room>`, so two live sockets per id is an ordinary state, not only a reconnect
+   * race: when the newest closes, the client is still here on the one before it (audit SG-03).
+   */
+  private standby = new Map<string, WS[]>();
   health = new Map<string, HealthRecord>();
   joinCounter = 0;
   dirty = false;
@@ -451,6 +458,12 @@ export class Room {
     ws.data.clientId = rec.id;
     ws.data.roomCode = this.code;
     ws.data.host = wantsHost;
+    const previous = this.sockets.get(rec.id);
+    if (previous && previous !== ws) {
+      const older = this.standby.get(rec.id) ?? [];
+      older.push(previous);
+      this.standby.set(rec.id, older);
+    }
     this.sockets.set(rec.id, ws);
     ws.subscribe(this.code);
     this.clearDisconnectTimer(rec.id);
@@ -491,7 +504,24 @@ export class Room {
     // A duplicate/stale socket for the same clientId (e.g. a reconnect that raced the old socket's
     // close) must not tear down the live one — join() always makes the newest socket the one
     // registered in `this.sockets`, so if this isn't it, the client is still connected elsewhere.
-    if (this.sockets.get(id) !== ws) return;
+    const older = this.standby.get(id);
+    if (this.sockets.get(id) !== ws) {
+      if (older) {
+        const rest = older.filter((s) => s !== ws);
+        if (rest.length > 0) this.standby.set(id, rest);
+        else this.standby.delete(id);
+      }
+      return;
+    }
+    // And the mirror image: the NEWEST socket closing while an older one is still open (the second
+    // tab was closed, the first is still playing). The client has not left — hand its seat back to
+    // the older socket instead of marking it disconnected and deleting its record 2 minutes later.
+    const heir = older?.pop();
+    if (heir) {
+      if (older!.length === 0) this.standby.delete(id);
+      this.sockets.set(id, heir);
+      return;
+    }
     const c = this.room.clients[id];
     if (c) {
       c.connected = false;
@@ -625,12 +655,16 @@ export class Room {
       case "KICK":
         if (!hostOnly()) return;
         if (this.room.clients[msg.clientId]) {
-          const s = this.sockets.get(msg.clientId);
-          if (s) {
+          // Every socket of that client, not only the newest: a standby one would otherwise sit in
+          // the room as a zombie that no longer has a record.
+          for (const s of [this.sockets.get(msg.clientId), ...(this.standby.get(msg.clientId) ?? [])]) {
+            if (!s) continue;
             send(s, { type: "ERROR", code: "KICKED", message: "removed by host" });
+            s.data.clientId = null; // its close event must not be mistaken for anyone's disconnect
             s.close();
           }
           this.sockets.delete(msg.clientId);
+          this.standby.delete(msg.clientId);
           this.clearDisconnectTimer(msg.clientId);
           delete this.room.clients[msg.clientId];
           this.room.hostClientIds = this.room.hostClientIds.filter((id) => id !== msg.clientId);
