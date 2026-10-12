@@ -84,7 +84,9 @@ async function buildTemplate(args: Args, meta: { id: string; clickTimesSec?: num
   if (args.useClick) {
     return { template: renderClick(DEFAULT_CLICK_SPEC, rate), source: "DEFAULT_CLICK_SPEC" };
   }
-  const stemPath = `${args.meta.replace(/\/meta\.json$/, "")}/${args.stem}.wav`;
+  // The stem sits next to meta.json. Strip the last path segment with either separator: a Windows
+  // `--meta D:\tracks\x\meta.json` used to survive the old `/meta.json` regex and open `meta.json/drums.wav`.
+  const stemPath = `${args.meta.replace(/[\\/][^\\/]*$/, "")}/${args.stem}.wav`;
   const stem = await readWav(stemPath);
   const firstClick = meta.clickTimesSec?.[0] ?? 0;
   const lengthSec = 0.05; // the fixture's click is a 2 ms burst plus a ~40 ms tail
