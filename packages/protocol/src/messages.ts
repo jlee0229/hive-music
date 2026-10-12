@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MAX_PLAYERS, NUDGE_RANGE_MS, MODES } from "./constants";
 import { ModeParamsSchema } from "./mode";
-import { CalibrationResultSchema, DeviceInfoSchema, RoomStateSchema, StemRoleSchema } from "./room";
+import { CalibrationResultSchema, DeviceInfoSchema, RoomStateWireSchema, StemRoleSchema } from "./room";
 
 // ---- calibration click signal ----------------------------------------------
 /** Synthesized in sync-client (never a fixture): a short burst followed by a linear chirp. */
@@ -166,7 +166,8 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     probeGroupId: z.number().int().optional(),
     probeGroupIndex: z.union([z.literal(0), z.literal(1)]).optional(),
   }),
-  z.object({ type: z.literal("ROOM_STATE"), room: RoomStateSchema }),
+  // the forgiving read-side schema: an old tab must survive a newer server (see RoomStateWireSchema)
+  z.object({ type: z.literal("ROOM_STATE"), room: RoomStateWireSchema }),
   z.object({ type: z.literal("HEALTH"), serverTime: z.number(), clients: z.record(z.string(), HealthSnapshotSchema) }),
   z.object({ type: z.literal("SCHEDULED_ACTION"), serverTimeToExecute: z.number(), action: ScheduledActionSchema }),
   z.object({
