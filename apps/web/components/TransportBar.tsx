@@ -56,8 +56,8 @@ export function TransportBar({ room, clock, host }: { room: RoomState; clock: Hi
             </svg>
           )}
         </button>
-        <div className="flex grow flex-col gap-0.5">
-          <span className="text-[16px] font-semibold">{room.track?.title ?? "No track"}</span>
+        <div className="flex min-w-0 grow flex-col gap-0.5">
+          <span className="line-clamp-2 text-[16px] font-semibold [overflow-wrap:anywhere]">{room.track?.title ?? "No track"}</span>
           <span className="text-[13px]" style={{ color: "var(--muted)" }}>
             {modeLabel(room.mode.kind)} ·{" "}
             <span className="font-mono">
@@ -79,16 +79,17 @@ export function TransportBar({ room, clock, host }: { room: RoomState; clock: Hi
           if (e.key === "ArrowRight") host.seek(Math.min(duration, trackTimeSec + 5));
           if (e.key === "ArrowLeft") host.seek(Math.max(0, trackTimeSec - 5));
         }}
-        className="relative flex h-5 cursor-pointer items-center"
+        // 44 px of tap height around a 6 px line; the negative margin keeps the card the size it was.
+        className="relative -my-3 flex h-11 cursor-pointer items-center"
       >
         <div className="h-1.5 w-full rounded-full" style={{ background: "var(--raised)" }} />
         <div
-          className="absolute top-1.5 h-1.5 rounded-full"
+          className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full"
           style={{ left: 0, width: `${pct * 100}%`, background: "var(--primary-fill)" }}
         />
         <span
-          className="absolute h-4 w-4 rounded-full"
-          style={{ left: `calc(${pct * 100}% - 8px)`, top: 2, background: "var(--primary-fill)", boxShadow: "0 0 0 4px rgba(241,245,249,0.18)" }}
+          className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full"
+          style={{ left: `calc(${pct * 100}% - 8px)`, background: "var(--primary-fill)", boxShadow: "0 0 0 4px rgba(241,245,249,0.18)" }}
         />
       </div>
     </div>
