@@ -56,6 +56,22 @@ const hiveNotFound = (code: string) => ({
   detail: code ? `No hive is running at code ${code}. Check the code with the host.` : "This link has no hive code in it. Ask the host for the code.",
 });
 
+/** The protocol's limit on a name, in UTF-16 units (ClientMessageSchema JOIN.name). */
+const NAME_MAX = 32;
+
+/**
+ * Cuts a name to the limit on a whole character. A plain slice(0, 32) can land in the middle of
+ * an emoji and leave half of one — a lone surrogate that every other phone then renders as "�".
+ */
+function clampName(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    if (out.length + ch.length > NAME_MAX) break;
+    out += ch;
+  }
+  return out;
+}
+
 /** How often, and for how long, a "not found" screen looks again in case the hive has just been started. */
 const RECHECK_MS = 4000;
 const RECHECK_LIMIT = 30;
@@ -81,7 +97,9 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     roomCode,
     kind: "player",
     plays: true,
-    name: name || undefined,
+    // Trimmed, and nothing at all if that leaves nothing: a name of spaces was sent as-is and
+    // showed up on the host's map as a blank label; undefined lets the server say "Phone 7".
+    name: name.trim() || undefined,
   });
 
   useEffect(() => {
@@ -140,7 +158,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     if (startedRef.current) return;
     startedRef.current = true;
     setJoining(true);
-    setPlayerName(name);
+    setPlayerName(name.trim());
     setJoinRequested(true);
     // unlock() has to *start* inside this tap, but it must not gate the connection: when
     // AudioContext.resume() never settles (WebKit with an interrupted audio session) or rejects,
@@ -417,12 +435,25 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         <input
           value={name}
           onChange={(e) => {
-            const v = e.target.value.slice(0, 32);
+            const v = clampName(e.target.value);
             setName(v);
             setPlayerName(v);
           }}
+          // The keyboard's own "go" key joins: nobody should have to dismiss the keyboard to find
+          // the button underneath it.
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.currentTarget.blur();
+              void handleJoin();
+            }
+          }}
           placeholder="Your name"
-          className="h-14 rounded-2xl border px-4 text-lg outline-none"
+          autoComplete="nickname"
+          autoCapitalize="words"
+          autoCorrect="off"
+          spellCheck={false}
+          enterKeyHint="go"
+          className="h-14 rounded-2xl border px-4 text-lg outline-none focus-visible:border-[color:var(--text)]"
           style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
         />
       </label>
