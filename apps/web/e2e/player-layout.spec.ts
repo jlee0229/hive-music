@@ -105,3 +105,24 @@ test.describe("playing screen", () => {
     expect(await clippedContent(page)).toEqual([]);
   });
 });
+
+test.describe("ready screen", () => {
+  // transport stopped: a joiner lands on Ready and stays there.
+  test.use({ mockScenario: "join.json" });
+
+  for (const viewport of [SMALL_PHONE, { width: 360, height: 640 }, LANDSCAPE]) {
+    test(`${viewport.width}x${viewport.height}: the wait message, sponsor slot and creators line are all on screen`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await join(page, "Bartholomew Fitzgerald-Montgomer"); // 32 characters, the longest a name can be
+      await expect(page.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByText(/\d \/ \d parts/)).toBeVisible();
+
+      expect(await clippedContent(page)).toEqual([]);
+      await expect(page.getByText("Waiting for the host to start")).toBeInViewport({ ratio: 1 });
+      await expect(page.getByText("Sponsored")).toBeInViewport({ ratio: 1 });
+      await expect(page.getByText(/Creators:/)).toBeInViewport({ ratio: 1 });
+      // The name is one line, however long.
+      expect((await page.getByText("Bartholomew Fitzgerald-Montgomer").boundingBox())!.height).toBeLessThan(30);
+    });
+  }
+});

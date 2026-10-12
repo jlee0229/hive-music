@@ -217,87 +217,115 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
 
     body = (
-      // h-dvh + overflow-hidden silently clips anything that doesn't fit — so this screen stays
-      // compact enough that the footer (ad slot + creators) is always on screen.
-      <main className="mx-auto flex h-dvh max-w-md flex-col gap-3 overflow-hidden" style={{ padding: safeAreaPadding(40, 20, 14) }}>
-        <div className="flex items-center justify-between">
-          <span className="flex items-center gap-2 text-[15px] font-semibold">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: roleColor }} />
-            {name || "You"}
-          </span>
-          <span className="font-mono rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-            {roomCode}
-          </span>
-        </div>
-
-        <ReconnectBanner connection={connection} />
-        <ProtocolMismatchBanner show={protocolMismatch} />
-
-        <div className="flex flex-col items-center gap-2.5 pt-1">
-          <svg width="96" height="96" viewBox="0 0 120 120" fill="none" aria-hidden="true">
-            <circle cx="60" cy="60" r="54" stroke="var(--raised)" strokeWidth="6" />
-            <circle
-              cx="60"
-              cy="60"
-              r="54"
-              stroke={ringColor}
-              strokeWidth="6"
-              strokeLinecap="round"
-              strokeDasharray="339 339"
-              transform="rotate(-90 60 60)"
-            />
-            {level === "good" || level === "warn" ? (
-              <path d="M40 62l13 13 27-30" stroke={ringColor} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
-            ) : null}
-          </svg>
-          <span className="font-display text-[34px] font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
-        </div>
-
-        <div className="flex flex-col gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-          <div className="flex justify-between text-sm">
-            <span className="font-semibold">Downloading the song</span>
-            <span className="font-mono" style={{ color: "var(--muted)" }}>
-              {trackStems.length ? `${Math.min(partsDone, trackStems.length)} / ${trackStems.length} parts` : "—"}
+      // h-dvh + overflow-hidden silently clips anything that doesn't fit. So: the footer (what the
+      // guest is waiting for, the sponsor slot, the creators line) is pinned and never shrinks,
+      // the top takes what is left and clips inside itself, and on short screens the optional
+      // pieces drop out whole (the helper line, the ring) or sit side by side (the two cards).
+      <main
+        className="mx-auto flex h-dvh max-w-md flex-col overflow-hidden"
+        style={{
+          gap: "min(12px, 1.6dvh)",
+          padding: [
+            "calc(min(40px, 5dvh) + env(safe-area-inset-top, 0px))",
+            "calc(20px + env(safe-area-inset-right, 0px))",
+            "calc(14px + env(safe-area-inset-bottom, 0px))",
+            "calc(20px + env(safe-area-inset-left, 0px))",
+          ].join(" "),
+        }}
+      >
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ gap: "min(12px, 1.6dvh)" }}>
+          <div className="flex shrink-0 items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-2 text-[15px] font-semibold">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: roleColor }} />
+              <span className="truncate">{name.trim() || "You"}</span>
+            </span>
+            <span className="font-mono shrink-0 rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+              {roomCode}
             </span>
           </div>
-          <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--raised)" }}>
-            <div className="h-2 rounded-full" style={{ width: `${Math.round(audio.loadProgress * 100)}%`, background: "var(--primary-fill)" }} />
+
+          <ReconnectBanner connection={connection} />
+          <ProtocolMismatchBanner show={protocolMismatch} />
+
+          <div className="flex shrink-0 flex-col items-center gap-2.5 pt-1 [@media(max-height:480px)]:pt-0">
+            <svg
+              className="[@media(max-height:480px)]:hidden"
+              style={{ width: "clamp(56px, 12dvh, 96px)", height: "clamp(56px, 12dvh, 96px)" }}
+              viewBox="0 0 120 120"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle cx="60" cy="60" r="54" stroke="var(--raised)" strokeWidth="6" />
+              <circle
+                cx="60"
+                cy="60"
+                r="54"
+                stroke={ringColor}
+                strokeWidth="6"
+                strokeLinecap="round"
+                strokeDasharray="339 339"
+                transform="rotate(-90 60 60)"
+              />
+              {level === "good" || level === "warn" ? (
+                <path d="M40 62l13 13 27-30" stroke={ringColor} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
+              ) : null}
+            </svg>
+            <span className="font-display text-[34px] leading-tight font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
+          </div>
+
+          <div className="flex shrink-0 flex-col [@media(max-height:480px)]:flex-row" style={{ gap: "min(12px, 1.6dvh)" }}>
+            {/* Nothing to download until the host has picked a song. */}
+            {trackStems.length ? (
+              <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+                <div className="flex justify-between gap-2 text-sm">
+                  <span className="font-semibold">Downloading the song</span>
+                  <span className="font-mono shrink-0" style={{ color: "var(--muted)" }}>
+                    {Math.min(partsDone, trackStems.length)} / {trackStems.length} parts
+                  </span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--raised)" }}>
+                  <div className="h-2 rounded-full" style={{ width: `${Math.round(audio.loadProgress * 100)}%`, background: "var(--primary-fill)" }} />
+                </div>
+              </div>
+            ) : null}
+
+            {me?.assignment ? (
+              <div className="flex min-w-0 flex-1 items-center gap-3.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+                <span className="h-11 w-11 shrink-0 rounded-xl" style={{ background: roleColor }} />
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="text-xs tracking-widest" style={{ color: "var(--muted)" }}>
+                    YOU&apos;LL PLAY
+                  </span>
+                  <span className="font-display text-[22px] font-bold" style={{ color: roleColor }}>
+                    {me.assignment.label}
+                  </span>
+                  <span className="text-[13px] [@media(max-height:700px)]:hidden" style={{ color: "var(--muted)" }}>
+                    The host can change this during the show.
+                  </span>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
-        {me?.assignment ? (
-          <div className="flex items-center gap-3.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-            <span className="h-11 w-11 shrink-0 rounded-xl" style={{ background: roleColor }} />
-            <div className="flex flex-col gap-1">
-              <span className="text-xs tracking-widest" style={{ color: "var(--muted)" }}>
-                YOU&apos;LL PLAY
-              </span>
-              <span className="font-display text-[22px] font-bold" style={{ color: roleColor }}>
-                {me.assignment.label}
-              </span>
-              <span className="text-[13px]" style={{ color: "var(--muted)" }}>
-                The host can change this during the show.
-              </span>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="grow" />
-
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex shrink-0 flex-col items-center gap-2">
           <span className="flex items-center gap-2 text-[15px]" style={{ color: "var(--muted)" }}>
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--muted)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--faint)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--border)" }} />
             {room?.transport.state === "paused" ? "Paused — waiting for the host" : "Waiting for the host to start"}
           </span>
-          <span className="text-[13px]" style={{ color: "var(--faint)" }}>
+          <span className="text-center text-[13px]" style={{ color: "var(--faint)" }}>
             Keep your screen on. Don&apos;t lock your phone.
           </span>
         </div>
 
-        <AdSlot />
-        <Creators />
+        <div className="shrink-0">
+          <AdSlot />
+        </div>
+        <div className="shrink-0">
+          <Creators />
+        </div>
       </main>
     );
   }
