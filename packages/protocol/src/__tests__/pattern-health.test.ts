@@ -99,6 +99,25 @@ describe("healthLevel", () => {
     expect(healthLevel(h(null), 10_000)).toBe("unknown");
     expect(healthLevel(null, 10_000)).toBe("unknown");
   });
+  test("PROTO-16 · boundaries: exact thresholds, the stale edge, a clock that runs behind, nonsense values", () => {
+    const at = (syncErrMs: number | null, lastSeenServerTime: number) => ({ rttMs: 20, syncErrMs, outputLatencyMs: null, audioState: "ready" as const, lastSeenServerTime });
+    expect(healthLevel(at(5.0001, 10_000), 10_000)).toBe("warn");
+    expect(healthLevel(at(20.0001, 10_000), 10_000)).toBe("bad");
+    expect(healthLevel(at(0, 5_000), 10_000)).toBe("good"); // exactly 5 s old: not yet stale
+    expect(healthLevel(at(0, 4_999), 10_000)).toBe("bad"); // a hair over
+    expect(healthLevel(at(0, 20_000), 10_000)).toBe("good"); // last seen "in the future": the viewer's clock is behind, not the phone
+    expect(healthLevel(at(null, 0), 10_000)).toBe("bad"); // stale wins over unknown
+    // a sync error has no sign: −40 used to read as green
+    expect(healthLevel(at(-40, 10_000), 10_000)).toBe("bad");
+    expect(healthLevel(at(-12, 10_000), 10_000)).toBe("warn");
+    expect(healthLevel(at(-3, 10_000), 10_000)).toBe("good");
+    expect(healthLevel(at(NaN, 10_000), 10_000)).toBe("bad");
+    expect(healthLevel(at(Infinity, 10_000), 10_000)).toBe("bad");
+    expect(healthLevel(undefined, 10_000)).toBe("unknown");
+    expect(computeSyncErrMs(0, 0, 0)).toBe(0);
+    expect(computeSyncErrMs(7, -0, -0)).toBe(3.5);
+  });
+
   test("syncErr = rtt/2 + |correction|", () => {
     expect(computeSyncErrMs(20, -3)).toBe(13);
     // the two-argument call is unchanged: the third parameter defaults to 0

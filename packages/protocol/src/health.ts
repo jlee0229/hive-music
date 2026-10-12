@@ -20,8 +20,11 @@ export function healthLevel(h: ClientHealth | null | undefined, nowServerTime: n
   if (!h) return "unknown";
   if (nowServerTime - h.lastSeenServerTime > HEALTH_STALE_MS) return "bad";
   if (h.syncErrMs == null) return "unknown";
-  if (h.syncErrMs <= HEALTH_GOOD_MS) return "good";
-  if (h.syncErrMs <= HEALTH_WARN_MS) return "warn";
+  // An error bound has no sign: a client reporting −40 is 40 ms off, not "better than perfect" (it used
+  // to read as green). NaN compares false to everything and falls through to "bad".
+  const err = Math.abs(h.syncErrMs);
+  if (err <= HEALTH_GOOD_MS) return "good";
+  if (err <= HEALTH_WARN_MS) return "warn";
   return "bad";
 }
 

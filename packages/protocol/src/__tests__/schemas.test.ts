@@ -142,4 +142,29 @@ describe("scene plan", () => {
     }
     expect(activeSceneIndex(null, 10)).toBe(-1);
   });
+
+  test("PROTO-16 · boundaries: before the first scene, past the last, the limits of the schema", () => {
+    const mk = (ats: number[]) => ({ prompt: "p", source: "rules" as const, createdAtServerTime: 0, scenes: ats.map((atTrackSec, i) => ({ atTrackSec, mode: "UNISON" as const, params: {}, note: `s${i}` })) });
+    const late = ScenePlanSchema.parse(mk([10, 20]));
+    expect(activeSceneIndex(late, 0)).toBe(-1); // a plan need not start at 0: nothing is active before its first scene
+    expect(activeSceneIndex(late, 9.999)).toBe(-1);
+    expect(activeSceneIndex(late, 10)).toBe(0);
+    expect(activeSceneIndex(late, 1e9)).toBe(1);
+    expect(activeSceneIndex(late, -5)).toBe(-1);
+    expect(activeSceneIndex(late, NaN)).toBe(-1);
+    expect(activeSceneIndex(undefined, 0)).toBe(-1);
+    expect(ScenePlanSchema.safeParse(mk([])).success).toBe(false);
+    expect(ScenePlanSchema.safeParse(mk([0, 0])).success).toBe(false); // strictly ascending: a duplicate boundary is refused
+    expect(ScenePlanSchema.safeParse(mk([-1])).success).toBe(false);
+    expect(ScenePlanSchema.safeParse(mk(Array.from({ length: 12 }, (_, i) => i))).success).toBe(true);
+    expect(ScenePlanSchema.safeParse(mk(Array.from({ length: 13 }, (_, i) => i))).success).toBe(false);
+    expect(ScenePlanSchema.safeParse({ ...mk([0]), prompt: "x".repeat(501) }).success).toBe(false);
+    const withNote = mk([0]);
+    withNote.scenes[0]!.note = "n".repeat(41);
+    expect(ScenePlanSchema.safeParse(withNote).success).toBe(false);
+    // scene params go through the same bounded ModeParamsSchema as SET_MODE, unknown keys stripped
+    const parsed = ScenePlanSchema.parse({ ...mk([0]), scenes: [{ atTrackSec: 0, mode: "STROBE", params: { groups: 4, laser: true }, note: "n" }] });
+    expect(parsed.scenes[0]!.params).toEqual({ groups: 4 });
+    expect(ScenePlanSchema.safeParse({ ...mk([0]), scenes: [{ atTrackSec: 0, mode: "STROBE", params: { groups: 99 }, note: "n" }] }).success).toBe(false);
+  });
 });
