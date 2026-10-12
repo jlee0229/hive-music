@@ -114,6 +114,14 @@ export const RoomStateSchema = z.object({
   createdAtServerTime: z.number(),
   hostClientIds: z.array(z.string()),
   track: TrackInfoSchema.nullable(),
+  /**
+   * The track the playlist will advance to when `track` ends, when the server knows it (absent or
+   * null: unknown, or a single-song loop). A hint, not a promise — the host can pick something else
+   * at any time. It exists so phones can download the next song *during* the current one: an
+   * 18 MB WAV takes ~15 s on a 10 Mbit/s link and the advance itself gives only a ~5 s lead.
+   * Optional and additive: old servers never send it, old clients ignore it.
+   */
+  nextTrack: TrackInfoSchema.nullable().optional(),
   transport: TransportSchema,
   mode: ModeSchema,
   scenePlan: ScenePlanSchema.nullable(),
