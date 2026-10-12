@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { evaluatePattern } from "../pattern";
 import { arrangeStrobe, plan } from "../planner";
 import type { ClientRecord, RoomState } from "../room";
 import { prng } from "./harness";
@@ -146,6 +147,109 @@ describe("STROBE stays on the beat grid for the whole song (PROTO-08)", () => {
           expect(offGrid(p.phaseMs + k * p.periodMs - beatOffsetSec * 1000, slot), `case ${i}`).toBeLessThan(1e-5);
         }
         expect(Number.isFinite(p.phaseMs) && Number.isFinite(p.periodMs)).toBe(true);
+      }
+    }
+  });
+});
+
+/**
+ * Cross-agent reproductions, re-created here so they live next to the code that fixes them.
+ *
+ * ENGINE-DSP-03 (engine-dsp, commit 4619205, apps/server/src/upload/__tests__/bpm-grid.test.ts): three
+ * `test.failing` cases measuring where group 0 actually switches on near 3:50 by scanning the pattern.
+ * Ported verbatim — same room (one phone, joinIndex 0, a "mix" track), same scan, same 5 ms bound — and
+ * they pass. Once this branch is merged those three `test.failing` must become `test` (a test.failing
+ * that passes is reported as a failure).
+ *
+ * HOST-17 (host-ui): dead air measured from plan() + evaluatePattern() when the phones present do not
+ * cover every group. Same measurement, now 0 %.
+ */
+describe("ENGINE-DSP-03 (ported): the planner keeps the strobe on the detected grid", () => {
+  const strobeRoom = (bpm: number, groups: number, beatsPerSwitch: number, joinIndexes: number[] = [0]): RoomState =>
+    room(joinIndexes.map((j) => client(j)), strobe({ groups, beatsPerSwitch }), ["mix"], { durationSec: 240, bpm, beatOffsetSec: 0 });
+  /** Where a phone's gate actually opens nearest to `atMs`, by scanning the pattern itself (engine-dsp's helper). */
+  const switchOnNear = (r: RoomState, atMs: number, id = "c0-00000000"): number => {
+    const pattern = plan(r)[id]!.pattern!;
+    let best = Infinity;
+    for (let t = atMs - 2000; t < atMs + 2000; t += 0.25) {
+      if (evaluatePattern(pattern, t - 0.25) === 0 && evaluatePattern(pattern, t) > 0 && Math.abs(t - atMs) < Math.abs(best - atMs)) best = t;
+    }
+    return best;
+  };
+
+  for (const [groups, beatsPerSwitch] of [[2, 1], [2, 0.25], [3, 1]] as const) {
+    test(`128 BPM, ${groups} groups, ${beatsPerSwitch} beat(s) per switch: the switch at ~3:50 is within 5 ms of a beat`, () => {
+      const beatMs = 60000 / 128;
+      const rotationMs = beatMs * beatsPerSwitch * groups;
+      const k = Math.round(230000 / rotationMs);
+      const expected = k * rotationMs; // beatOffsetSec is 0: group 0 switches on at whole rotations
+      expect(Math.abs(switchOnNear(strobeRoom(128, groups, beatsPerSwitch), expected) - expected)).toBeLessThan(5);
+    });
+  }
+
+  test("the same, measured where it matters: the half-gain point of every group's opening edge is on a grid line at 0:00, 2:00 and 3:50", () => {
+    // The gate starts to open half a ramp (5 ms) before the beat and is at exactly 0.5 ON the beat, which is why the
+    // scan above lands 4.75–4.9 ms early. The switch instant itself is the 0.5 crossing; it must be on the grid to the microsecond.
+    for (const bpm of [128, 128.004, 93.871, 174.5]) {
+      for (const [groups, beatsPerSwitch] of [[2, 1], [2, 0.25], [3, 1], [4, 0.5], [8, 2]] as const) {
+        const phones = Array.from({ length: groups }, (_, i) => i + 1);
+        const r = strobeRoom(bpm, groups, beatsPerSwitch, phones);
+        const slot = (60000 / bpm) * beatsPerSwitch;
+        const a = plan(r);
+        for (const j of phones) {
+          const p = a[`c${j}-00000000`]!.pattern!;
+          for (const around of [0, 120_000, 230_000]) {
+            const open = p.phaseMs + Math.round((around - p.phaseMs) / p.periodMs) * p.periodMs; // this group's opening nearest `around`
+            expect(evaluatePattern(p, open), `${bpm} BPM ${groups}×${beatsPerSwitch}`).toBeCloseTo(0.5, 6);
+            const gridLine = Math.round(open / slot) * slot;
+            expect(Math.abs(open - gridLine), `${bpm} BPM ${groups}×${beatsPerSwitch} @${around}`).toBeLessThan(1e-6);
+          }
+        }
+      }
+    }
+  });
+
+  test("fractional periods and phases survive the wire and evaluate identically after a JSON round trip", () => {
+    const r = strobeRoom(128, 2, 0.25, [1, 2]); // 234.375 ms rotation, 117.1875 ms phase
+    const p = plan(r)["c2-00000000"]!.pattern!;
+    expect(p.periodMs).toBe(234.375);
+    const wire = JSON.parse(JSON.stringify(p)) as typeof p;
+    expect(wire).toEqual(p);
+    for (let t = 0; t < 240_000; t += 997.3) expect(evaluatePattern(wire, t)).toBe(evaluatePattern(p, t));
+  });
+});
+
+describe("HOST-17 (ported): no dead air when the phones present do not cover every group", () => {
+  /** Fraction of a rotation during which the summed gate of the given phones is (near) zero. */
+  function deadAir(r: RoomState): number {
+    const pats = Object.values(plan(r)).filter((a) => a !== null).map((a) => a!.pattern!);
+    const period = pats[0]!.periodMs;
+    let silent = 0;
+    const steps = 4000;
+    for (let i = 0; i < steps; i++) if (pats.reduce((acc, p) => acc + evaluatePattern(p, (i / steps) * period), 0) < 0.01) silent++;
+    return silent / steps;
+  }
+  const at120 = (joinIndexes: number[], groups: number) => room([host, ...joinIndexes.map((j) => client(j))], strobe({ groups, beatsPerSwitch: 1 }), undefined, { bpm: 120 });
+
+  test("2 phones with join indexes 1 and 3 on 2 groups: was 51 % silent", () => {
+    expect(deadAir(at120([1, 3], 2))).toBe(0);
+  });
+  test("5 phones on 8 groups: was 39 % silent", () => {
+    const r = at120([1, 2, 3, 4, 5], 8);
+    expect(arrangeStrobe(r, 8).groups).toBe(5);
+    expect(deadAir(r)).toBe(0);
+  });
+  test("every offered group count (2, 3, 4, 5, 6, 8) with 1 … 12 phones at arbitrary join indexes", () => {
+    const rng = prng(1717);
+    for (const groups of [2, 3, 4, 5, 6, 8]) {
+      for (let n = 1; n <= 12; n++) {
+        const joins = rng.shuffle(Array.from({ length: 60 }, (_, k) => k + 1)).slice(0, n);
+        const r = at120(joins, groups);
+        // the contract the host page can rely on: the effective count is min(requested, speakers present)
+        expect(arrangeStrobe(r, groups).groups).toBe(Math.min(groups, n));
+        // one phone alone is an on/off strobe (half the rotation off, by design); otherwise there is no dead air at all
+        if (n === 1) expect(deadAir(r)).toBeCloseTo(0.49, 1);
+        else expect(deadAir(r), `${groups} groups × ${n} phones`).toBe(0);
       }
     }
   });
