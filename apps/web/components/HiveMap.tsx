@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HEALTH_COLORS, HOST_RING_COLOR, ROLE_COLORS, STEMS, healthLevel, type ClientRecord, type HealthSnapshot, type RoomState, type StemRole } from "@hive/protocol";
 import type { HiveClock, HiveHostControls } from "@hive/sync-client";
-import { patternGain } from "@/lib/hive/derive";
+import { patternGain, stableGains } from "@/lib/hive/derive";
 import { MAP_SIZE, autoLayout, dotMetrics, drawnCentre, fitLabel } from "@/lib/hive/map-layout";
 
 const SIZE = MAP_SIZE;
 const LONG_PRESS_MS = 500;
 const DRAG_THRESHOLD_PX = 6;
+/** A fingertip wobbles more than a mouse: below this a touch is still a tap, not the start of a drag. */
+const TOUCH_DRAG_THRESHOLD_PX = 12;
 
 function cyclableRoles(room: RoomState): StemRole[] {
   const trackStems = (room.track?.stems ?? []).filter((s): s is StemRole => (STEMS as readonly string[]).includes(s));
@@ -91,7 +93,10 @@ export function HiveMap({
       for (const c of Object.values(roomRef.current.clients)) {
         if (c.assignment?.pattern) next[c.id] = patternGain(c.assignment.pattern, t);
       }
-      setGains(next);
+      // Keep the previous object when nothing visibly changed, so React skips the render: with no
+      // pattern on screen (Unison, Orchestra, Stereo, Choir — or a stopped Wave/Strobe) this used to
+      // re-render every dot of the map sixty times a second for as long as the stage was open.
+      setGains((prev) => stableGains(prev, next));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -166,7 +171,7 @@ export function HiveMap({
     if (!g || g.id !== clientId || g.longPressed) return;
     const dx = e.clientX - g.startX;
     const dy = e.clientY - g.startY;
-    if (!g.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+    if (!g.moved && Math.hypot(dx, dy) > (e.pointerType === "mouse" ? DRAG_THRESHOLD_PX : TOUCH_DRAG_THRESHOLD_PX)) {
       g.moved = true;
       if (g.longPressTimer) clearTimeout(g.longPressTimer);
       setDragging(clientId);
