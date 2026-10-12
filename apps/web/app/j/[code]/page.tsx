@@ -406,7 +406,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             {/* Nothing to download until the host has picked a song. */}
             {trackStems.length ? (
               <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-                <div className="flex justify-between gap-2 text-sm">
+                <div className="flex flex-wrap justify-between gap-x-2 text-sm">
                   <span className="font-semibold">Downloading the song</span>
                   <span className="font-mono shrink-0" style={{ color: "var(--muted)" }}>
                     {Math.min(partsDone, trackStems.length)} / {trackStems.length} parts
