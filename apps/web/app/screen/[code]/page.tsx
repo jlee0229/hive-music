@@ -13,23 +13,48 @@ function modeLabel(kind: ModeKind): string {
 }
 
 /**
+ * The projector gets an id of its own, kept per tab. The engine's default id is
+ * `hive:clientId:<code>` in localStorage, which is shared by every page of this browser — and the
+ * laptop driving the projector is usually the host's. Reusing it made /screen JOIN *as the host's
+ * record*: the host was renamed "Screen (read-only)", lost its HEALTH feed to this tab, and was
+ * marked disconnected when the projector tab closed.
+ */
+function screenClientId(roomCode: string): string {
+  const key = `hive:screenId:${roomCode}`;
+  const fresh = () => globalThis.crypto?.randomUUID?.() ?? `screen-${Math.random().toString(36).slice(2, 14)}`;
+  try {
+    const existing = sessionStorage.getItem(key);
+    if (existing) return existing;
+    const id = fresh();
+    sessionStorage.setItem(key, id);
+    return id;
+  } catch {
+    return fresh(); // SSR, or storage blocked
+  }
+}
+
+/**
  * Read-only projector/judge display: code + QR, player count, full-bleed Hive Map, mode/scene
  * strip. No controls -- never renders a button that sends a message.
  *
- * Joins as kind: "player", plays: false (the closest the current contract allows to a credential-
- * free viewer -- see docs/PROTOCOL-REQUESTS.md R-8). Until that lands: the server still counts this
- * connection as a player and may hand it a stem in ORCHESTRA's rotation, and the room-wide sync
- * median below reads "--" because HEALTH is only ever sent to registered hosts.
+ * Joins as kind: "viewer" (protocol v4): never a speaker, never counted as a player, never handed
+ * a stem, no credential needed. It used to join as a "player", which the transport forces to
+ * plays: true — so every projector was a silent phantom speaker that took a part in ORCHESTRA and
+ * showed up on the host's map.
  */
 export default function ScreenPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = use(params);
   const roomCode = code.toUpperCase();
+  const [clientId] = useState(() => screenClientId(roomCode));
 
   const { client, room, connection, health, healthServerTime } = useHiveClient({
     roomCode,
-    kind: "player",
+    // UseHiveClientOptions has not been widened to the engine's "viewer" kind yet; the value is
+    // passed straight through to HiveClientOptions, which has.
+    kind: "viewer" as "player",
     plays: false,
-    name: "Screen (read-only)",
+    name: "Screen",
+    clientId,
     autoConnect: true,
   });
 
@@ -88,12 +113,16 @@ export default function ScreenPage({ params }: { params: Promise<{ code: string 
             </span>
             <span className="font-display text-5xl font-bold">{playerCount}</span>
           </div>
-          <div className="flex flex-col gap-1 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-            <span className="text-sm" style={{ color: "var(--muted)" }}>
-              Synced
-            </span>
-            <span className="font-display text-5xl font-bold">{medianSyncMs == null ? "—" : `±${Math.round(medianSyncMs)} ms`}</span>
-          </div>
+          {/* Only once there is a number: the server sends HEALTH to hosts, and to viewers only
+              where it has been taught to, so without this the tile read "—" for the whole party. */}
+          {medianSyncMs == null ? null : (
+            <div className="flex flex-col gap-1 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+              <span className="text-sm" style={{ color: "var(--muted)" }}>
+                Synced
+              </span>
+              <span className="font-display text-5xl font-bold">±{Math.round(medianSyncMs)} ms</span>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-2 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
