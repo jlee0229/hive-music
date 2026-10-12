@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { HEALTH_COLORS, HOST_RING_COLOR, ROLE_COLORS, STEMS, healthLevel, type ClientRecord, type HealthSnapshot, type RoomState, type StemRole } from "@hive/protocol";
+import { HEALTH_COLORS, HOST_RING_COLOR, ROLE_COLORS, STEMS, healthLevel, speakerLayout, type ClientRecord, type HealthSnapshot, type RoomState, type StemRole } from "@hive/protocol";
 import type { HiveClock, HiveHostControls } from "@hive/sync-client";
 import { patternGain, stableGains } from "@/lib/hive/derive";
-import { MAP_SIZE, autoLayout, dotMetrics, drawnCentre, fitLabel } from "@/lib/hive/map-layout";
+import { MAP_SIZE, dotMetrics, drawnCentre, fitLabel } from "@/lib/hive/map-layout";
 
 const SIZE = MAP_SIZE;
 const LONG_PRESS_MS = 500;
@@ -35,7 +35,7 @@ function nextPinnedRole(current: StemRole | null, roles: StemRole[]): StemRole |
 
 interface Dot {
   client: ClientRecord;
-  x: number; // 0..1, null → laid out along the bottom edge by caller
+  x: number; // 0..1
   y: number;
   isHost: boolean;
 }
@@ -105,38 +105,36 @@ export function HiveMap({
 
   const roles = cyclableRoles(room);
 
-  // Only what is actually in the room right now: connected speakers plus the connected host.
-  // Disconnected records linger server-side for the retention window (so a reload keeps its slot),
-  // but drawing them made the map show phones that had left the party.
-  const speakers = Object.values(room.clients).filter((c) => c.plays && c.connected && c.id !== excludeClientId);
-  const placed = speakers.filter((c) => c.position !== null);
-  const unplaced = speakers.filter((c) => c.position === null);
-  const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays && c.connected);
-
   /**
-   * Auto-placement (lib/hive/map-layout.ts) fills the map from the centre out — a hive forming, not
-   * a queue at the edge — and never overlaps: slots within reach of anything already on the map (a
-   * dragged phone, the host marker) are skipped, and the dots step down a size when a big party no
-   * longer fits. Dragging still writes a real position; this only lays out the rest.
+   * Where every speaker is: `speakerLayout(room)` from @hive/protocol — the hand-placed position if
+   * the host dragged the phone, its auto slot otherwise. It is the function the planner computes
+   * WAVE's sweep and STEREO's sides from, so the dots sit exactly where the room hears them. It is
+   * laid out over EVERY `plays` record, connected or not (the set the planner assigns): a phone that
+   * drops for a minute keeps its slot and nobody else moves. Dragging still writes a real position.
    */
-  const placedXY = placed.map((c) => ({ x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y }));
-  const hostXY = hostRecord ? { x: hostRecord.position?.x ?? 0.1, y: hostRecord.position?.y ?? 0.9 } : null;
-  const unplacedIds = [...unplaced].sort((a, b) => a.joinIndex - b.joinIndex).map((c) => c.id);
-  // Keyed on a string so the layout is recomputed when the room changes, not on every animation frame.
-  const layoutKey = JSON.stringify([unplacedIds, placedXY, hostXY]);
-  const layout = useMemo(() => {
-    const [ids, taken, hostAt] = JSON.parse(layoutKey) as [string[], Array<{ x: number; y: number }>, { x: number; y: number } | null];
-    return autoLayout(ids, hostAt ? [...taken, hostAt] : taken);
-  }, [layoutKey]);
-  const metrics = dotMetrics(layout.scale);
+  // Keyed on what the layout depends on, so it is recomputed when the room changes and not on every
+  // animation frame.
+  const layoutKey = JSON.stringify(
+    Object.values(room.clients)
+      .filter((c) => c.plays)
+      .map((c) => [c.id, c.joinIndex, c.position?.x ?? null, c.position?.y ?? null]),
+  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `room` changes identity with every snapshot; layoutKey is the part that matters
+  const layout = useMemo(() => speakerLayout(room), [layoutKey]);
+  const metrics = dotMetrics(layout.spacing);
 
-  const dots: Dot[] = [
-    ...placed.map((c) => ({ client: c, x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y, isHost: c.kind === "host" })),
-    ...unplaced.map((c) => {
-      const p = layout.positions[c.id] ?? { x: 0.5, y: 0.5 };
-      return { client: c, x: p.x, y: p.y, isHost: c.kind === "host" };
-    }),
-  ];
+  // Drawn: only what is actually in the room right now — connected speakers plus the connected host.
+  // Disconnected records linger server-side for the retention window, but drawing them made the map
+  // show phones that had left the party.
+  const speakers = Object.values(room.clients).filter((c) => c.plays && c.connected && c.id !== excludeClientId);
+  const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays && c.connected);
+  const hostXY = hostRecord ? { x: hostRecord.position?.x ?? 0.1, y: hostRecord.position?.y ?? 0.9 } : null;
+
+  const dots: Dot[] = speakers.map((c) => {
+    // A drag in progress leads the server by a snapshot; everything else is the shared layout.
+    const p = livePositions[c.id] ?? layout.positions[c.id] ?? { x: 0.5, y: 0.5 };
+    return { client: c, x: p.x, y: p.y, isHost: c.kind === "host" };
+  });
 
   function normFromEvent(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const rect = svgRef.current!.getBoundingClientRect();
@@ -210,7 +208,7 @@ export function HiveMap({
       height={size}
       viewBox={`0 0 ${SIZE} ${SIZE}`}
       role="img"
-      aria-label={`Hive map: ${placed.length + unplaced.length} player phones`}
+      aria-label={`Hive map: ${speakers.length} player phones`}
       className="no-callout"
       // Square at every width: the flex parent may squeeze the width (a 320-375 px phone), and with a
       // fixed height the drawing was letterboxed inside a taller box — a dragged dot then landed up
@@ -227,8 +225,8 @@ export function HiveMap({
 
       {hostXY ? (
         <g>
-          <circle cx={hostXY.x * SIZE} cy={hostXY.y * SIZE} r={14 * layout.scale} fill="none" stroke={HOST_RING_COLOR} strokeWidth="2" strokeDasharray="4 3" />
-          <text x={hostXY.x * SIZE} y={hostXY.y * SIZE - 14 * layout.scale - 4} textAnchor="middle" fontSize="10" fill={HOST_RING_COLOR} fontFamily="IBM Plex Sans, sans-serif">
+          <circle cx={hostXY.x * SIZE} cy={hostXY.y * SIZE} r={14 * metrics.scale} fill="none" stroke={HOST_RING_COLOR} strokeWidth="2" strokeDasharray="4 3" />
+          <text x={hostXY.x * SIZE} y={hostXY.y * SIZE - 14 * metrics.scale - 4} textAnchor="middle" fontSize="10" fill={HOST_RING_COLOR} fontFamily="IBM Plex Sans, sans-serif">
             you
           </text>
         </g>
@@ -266,11 +264,14 @@ export function HiveMap({
               strokeDasharray={isHost ? "3 2" : undefined}
               strokeWidth={isHost ? 2 : 0}
             />
-            <text x={cx} y={cy + metrics.labelDy} textAnchor="middle" fontSize={metrics.font} fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
-              {fitLabel(client.name, metrics.labelChars)}
-            </text>
+            {/* Names only while they fit between neighbours; a big party is dots, and a tap or the Players list has the name. */}
+            {metrics.showLabels ? (
+              <text x={cx} y={cy + metrics.labelDy} textAnchor="middle" fontSize={metrics.font} fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
+                {fitLabel(client.name, metrics.labelChars)}
+              </text>
+            ) : null}
             {/* Invisible, finger-sized, on top: the visible dot shrinks at a big party, the thing you can grab does not. */}
-            <circle cx={cx} cy={cy} r={Math.max(metrics.ring, Math.min(22, metrics.pitchY / 2))} fill="transparent" />
+            <circle cx={cx} cy={cy} r={metrics.hit} fill="transparent" />
           </g>
         );
       })}
