@@ -1,17 +1,30 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HEALTH_COLORS, HOST_RING_COLOR, ROLE_COLORS, STEMS, healthLevel, type ClientRecord, type HealthSnapshot, type RoomState, type StemRole } from "@hive/protocol";
 import type { HiveClock, HiveHostControls } from "@hive/sync-client";
-import { patternGain } from "@/lib/hive/derive";
+import { patternGain, stableGains } from "@/lib/hive/derive";
+import { MAP_SIZE, autoLayout, dotMetrics, drawnCentre, fitLabel } from "@/lib/hive/map-layout";
 
-const SIZE = 350;
+const SIZE = MAP_SIZE;
 const LONG_PRESS_MS = 500;
 const DRAG_THRESHOLD_PX = 6;
+/** A fingertip wobbles more than a mouse: below this a touch is still a tap, not the start of a drag. */
+const TOUCH_DRAG_THRESHOLD_PX = 12;
 
 function cyclableRoles(room: RoomState): StemRole[] {
   const trackStems = (room.track?.stems ?? []).filter((s): s is StemRole => (STEMS as readonly string[]).includes(s));
   return trackStems.length > 0 ? trackStems : [...STEMS];
+}
+
+/**
+ * Whether a phone's part is something the host can change right now: only ORCHESTRA hands out
+ * parts, and only on a song that has them (an uploaded song is one stem, "mix"). Everywhere else a
+ * pin changes nothing anyone can see or hear, so a tap must not silently set one.
+ */
+export function partsApply(room: RoomState): boolean {
+  const stems = (room.track?.stems ?? []).filter((s) => (STEMS as readonly string[]).includes(s));
+  return room.mode.kind === "ORCHESTRA" && stems.length > 1;
 }
 
 function nextPinnedRole(current: StemRole | null, roles: StemRole[]): StemRole | null {
@@ -80,7 +93,10 @@ export function HiveMap({
       for (const c of Object.values(roomRef.current.clients)) {
         if (c.assignment?.pattern) next[c.id] = patternGain(c.assignment.pattern, t);
       }
-      setGains(next);
+      // Keep the previous object when nothing visibly changed, so React skips the render: with no
+      // pattern on screen (Unison, Orchestra, Stereo, Choir — or a stopped Wave/Strobe) this used to
+      // re-render every dot of the map sixty times a second for as long as the stage was open.
+      setGains((prev) => stableGains(prev, next));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -98,37 +114,26 @@ export function HiveMap({
   const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays && c.connected);
 
   /**
-   * Auto-placement fills the map from the centre out — a hive forming, not a queue at the edge —
-   * and never overlaps: candidate slots are concentric rings spaced at least MIN_DIST apart, and a
-   * slot within MIN_DIST of anything already on the map (a dragged phone, an earlier auto dot, the
-   * host marker) is skipped. Dragging still writes a real position; this only lays out the rest.
+   * Auto-placement (lib/hive/map-layout.ts) fills the map from the centre out — a hive forming, not
+   * a queue at the edge — and never overlaps: slots within reach of anything already on the map (a
+   * dragged phone, the host marker) are skipped, and the dots step down a size when a big party no
+   * longer fits. Dragging still writes a real position; this only lays out the rest.
    */
-  const MIN_DIST = 0.17; // ≈60px at the 350 viewBox: outer ring (24px) plus label clearance
   const placedXY = placed.map((c) => ({ x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y }));
   const hostXY = hostRecord ? { x: hostRecord.position?.x ?? 0.1, y: hostRecord.position?.y ?? 0.9 } : null;
-  const autoXY = new Map<string, { x: number; y: number }>();
-  {
-    const slots: Array<{ x: number; y: number }> = [{ x: 0.5, y: 0.5 }];
-    for (let k = 1; k <= 6; k++) {
-      const r = Math.min(0.19 * k, 0.42);
-      const n = 6 * k;
-      for (let j = 0; j < n; j++) {
-        const a = (2 * Math.PI * j) / n + k * 0.5; // stagger each ring so spokes don't line up
-        slots.push({ x: 0.5 + r * Math.cos(a), y: 0.5 + r * Math.sin(a) });
-      }
-    }
-    const taken = [...placedXY, ...(hostXY ? [hostXY] : [])];
-    for (const c of [...unplaced].sort((a, b) => a.joinIndex - b.joinIndex)) {
-      const slot = slots.find((s) => taken.every((t) => Math.hypot(s.x - t.x, s.y - t.y) >= MIN_DIST)) ?? { x: 0.5, y: 0.5 };
-      autoXY.set(c.id, slot);
-      taken.push(slot);
-    }
-  }
+  const unplacedIds = [...unplaced].sort((a, b) => a.joinIndex - b.joinIndex).map((c) => c.id);
+  // Keyed on a string so the layout is recomputed when the room changes, not on every animation frame.
+  const layoutKey = JSON.stringify([unplacedIds, placedXY, hostXY]);
+  const layout = useMemo(() => {
+    const [ids, taken, hostAt] = JSON.parse(layoutKey) as [string[], Array<{ x: number; y: number }>, { x: number; y: number } | null];
+    return autoLayout(ids, hostAt ? [...taken, hostAt] : taken);
+  }, [layoutKey]);
+  const metrics = dotMetrics(layout.scale);
 
   const dots: Dot[] = [
     ...placed.map((c) => ({ client: c, x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y, isHost: c.kind === "host" })),
     ...unplaced.map((c) => {
-      const p = autoXY.get(c.id)!;
+      const p = layout.positions[c.id] ?? { x: 0.5, y: 0.5 };
       return { client: c, x: p.x, y: p.y, isHost: c.kind === "host" };
     }),
   ];
@@ -166,7 +171,7 @@ export function HiveMap({
     if (!g || g.id !== clientId || g.longPressed) return;
     const dx = e.clientX - g.startX;
     const dy = e.clientY - g.startY;
-    if (!g.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+    if (!g.moved && Math.hypot(dx, dy) > (e.pointerType === "mouse" ? DRAG_THRESHOLD_PX : TOUCH_DRAG_THRESHOLD_PX)) {
       g.moved = true;
       if (g.longPressTimer) clearTimeout(g.longPressTimer);
       setDragging(clientId);
@@ -187,9 +192,11 @@ export function HiveMap({
         host.setPosition(clientId, x, y);
         setLivePositions((p) => ({ ...p, [clientId]: { x, y } }));
       } else if (!g.longPressed) {
-        // a plain tap: cycle this client's pinned role
+        // A plain tap: cycle this client's pinned part where parts exist; otherwise open its sheet
+        // (the same thing a long-press does) rather than pin a part nobody can see or hear.
         const rec = room.clients[clientId];
-        if (rec) host.assign(clientId, nextPinnedRole(rec.pinnedRole, roles));
+        if (rec && partsApply(room)) host.assign(clientId, nextPinnedRole(rec.pinnedRole, roles));
+        else if (rec) onOpenSheet?.(clientId);
       }
     }
     setDragging(null);
@@ -205,7 +212,10 @@ export function HiveMap({
       role="img"
       aria-label={`Hive map: ${placed.length + unplaced.length} player phones`}
       className="no-callout"
-      style={{ touchAction: "none" }}
+      // Square at every width: the flex parent may squeeze the width (a 320-375 px phone), and with a
+      // fixed height the drawing was letterboxed inside a taller box — a dragged dot then landed up
+      // to 15 px away from the finger, because the drag maths divides by the box, not the drawing.
+      style={{ touchAction: "none", maxWidth: "100%", height: "auto", aspectRatio: "1 / 1" }}
     >
       <defs>
         <pattern id="hive-map-dots" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -215,25 +225,10 @@ export function HiveMap({
       <rect x="0" y="0" width={SIZE} height={SIZE} rx="24" fill="var(--surface)" stroke="var(--border)" />
       <rect x="12" y="12" width={SIZE - 24} height={SIZE - 24} rx="16" fill="url(#hive-map-dots)" />
 
-      {hostRecord ? (
+      {hostXY ? (
         <g>
-          <circle
-            cx={(hostRecord.position?.x ?? 0.1) * SIZE}
-            cy={(hostRecord.position?.y ?? 0.9) * SIZE}
-            r="14"
-            fill="none"
-            stroke={HOST_RING_COLOR}
-            strokeWidth="2"
-            strokeDasharray="4 3"
-          />
-          <text
-            x={(hostRecord.position?.x ?? 0.1) * SIZE}
-            y={(hostRecord.position?.y ?? 0.9) * SIZE - 18}
-            textAnchor="middle"
-            fontSize="10"
-            fill={HOST_RING_COLOR}
-            fontFamily="IBM Plex Sans, sans-serif"
-          >
+          <circle cx={hostXY.x * SIZE} cy={hostXY.y * SIZE} r={14 * layout.scale} fill="none" stroke={HOST_RING_COLOR} strokeWidth="2" strokeDasharray="4 3" />
+          <text x={hostXY.x * SIZE} y={hostXY.y * SIZE - 14 * layout.scale - 4} textAnchor="middle" fontSize="10" fill={HOST_RING_COLOR} fontFamily="IBM Plex Sans, sans-serif">
             you
           </text>
         </g>
@@ -247,8 +242,8 @@ export function HiveMap({
         // lights — there the host is actively managing parts and wants the signal.
         const ringColor = !client.assignment || client.assignment.role === "unison" ? "#0B0F14" : HEALTH_COLORS[level];
         const gain = client.assignment?.pattern ? (gains[client.id] ?? 1) : 1;
-        const cx = x * SIZE;
-        const cy = y * SIZE;
+        // Drawn inside the map even when the stored position is on the very edge (ring and name stay whole).
+        const { x: cx, y: cy } = drawnCentre({ x, y }, metrics);
         return (
           <g
             key={client.id}
@@ -260,20 +255,22 @@ export function HiveMap({
             onPointerCancel={endGesture}
             style={{ cursor: host ? "pointer" : "default" }}
           >
-            <circle cx={cx} cy={cy} r="24" fill="none" stroke={ringColor} strokeWidth="3" />
+            <circle cx={cx} cy={cy} r={metrics.ring} fill="none" stroke={ringColor} strokeWidth={metrics.ringWidth} />
             <circle
               cx={cx}
               cy={cy}
-              r="17"
+              r={metrics.fill}
               fill={fill}
               fillOpacity={0.3 + 0.7 * gain}
               stroke={isHost ? HOST_RING_COLOR : "none"}
               strokeDasharray={isHost ? "3 2" : undefined}
               strokeWidth={isHost ? 2 : 0}
             />
-            <text x={cx} y={cy + 40} textAnchor="middle" fontSize="11" fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
-              {client.name}
+            <text x={cx} y={cy + metrics.labelDy} textAnchor="middle" fontSize={metrics.font} fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
+              {fitLabel(client.name, metrics.labelChars)}
             </text>
+            {/* Invisible, finger-sized, on top: the visible dot shrinks at a big party, the thing you can grab does not. */}
+            <circle cx={cx} cy={cy} r={Math.max(metrics.ring, Math.min(22, metrics.pitchY / 2))} fill="transparent" />
           </g>
         );
       })}

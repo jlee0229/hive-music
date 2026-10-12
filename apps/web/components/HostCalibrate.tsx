@@ -99,19 +99,21 @@ export function HostCalibrate({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2">
+      {/* The one part of this screen that grows with the party: it scrolls, so the buttons below
+          stay on screen (at 30 phones they used to be pushed far below a screen that cannot scroll). */}
+      <div className="flex min-h-0 shrink flex-col gap-2 overflow-y-auto">
         {rows.map((row) => (
           <div
             key={row.id}
-            className="flex items-center gap-3 rounded-[14px] border px-3.5 py-3"
+            className="flex shrink-0 items-center gap-3 rounded-[14px] border px-3.5 py-3"
             style={{
               background: "var(--surface)",
               borderColor: row.status === "listening" ? "var(--ringer-fg)" : "var(--border)",
               color: row.status === "waiting" ? "var(--faint)" : "var(--text)",
             }}
           >
-            <span className="h-3 w-3 rounded-full" style={{ background: "var(--muted)", opacity: row.status === "waiting" ? 0.5 : 1 }} />
-            <span className="grow text-[15px] font-medium">{row.name}</span>
+            <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: "var(--muted)", opacity: row.status === "waiting" ? 0.5 : 1 }} />
+            <span className="min-w-0 grow truncate text-[15px] font-medium">{row.name}</span>
             {row.status === "clear" ? (
               <>
                 <span className="font-mono text-[13px]" style={{ color: "var(--muted)" }}>
@@ -138,7 +140,7 @@ export function HostCalibrate({
 
       <div className="grow" />
 
-      <div className="flex flex-col gap-2.5">
+      <div className="flex shrink-0 flex-col gap-2.5">
         {state === "done" || state === "failed" ? (
           <button
             onClick={onClose}

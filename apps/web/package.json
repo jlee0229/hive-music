@@ -8,7 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "next lint",
-    "test": "echo \"no web tests yet\""
+    "test": "bun test ./lib"
   },
   "dependencies": {
     "@hive/protocol": "workspace:*",

@@ -4,16 +4,19 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { TrackLibraryEntry } from "@hive/protocol";
-import type { CalibrationProgress } from "@hive/sync-client";
+import { reconnectDelayMs, type CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
-import { getHostKey, setHostKey } from "@/lib/hive/storage";
+import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
+import { classifyHostClaim } from "@/lib/hive/host-claim";
+import { planStart, showTuningScreen, tuningNote } from "@/lib/hive/start-flow";
+import { HOST_TOAST_MS, hostErrorText } from "@/lib/hive/host-errors";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
 import { TransportBar } from "@/components/TransportBar";
-import { HiveMap } from "@/components/HiveMap";
+import { HiveMap, partsApply } from "@/components/HiveMap";
 import { ModeChips } from "@/components/ModeChips";
 import { StrobeControls } from "@/components/StrobeControls";
 import { VibeBox } from "@/components/VibeBox";
@@ -25,6 +28,9 @@ import { PlayersDrawer } from "@/components/PlayersDrawer";
 import { SongsDrawer } from "@/components/SongsDrawer";
 import { Creators } from "@/components/Creators";
 
+/** Why this phone cannot host this code right now; each renders a screen with a way out (lib/hive/host-claim.ts). */
+type HostProblem = "ended" | "elsewhere" | "unreachable";
+
 /**
  * Bootstraps (or recovers) the hostKey, then mounts HostRoom keyed on that hostKey. A room can be
  * re-created server-side with a fresh key (a Fly restart, or the idle-room timeout) out from under
@@ -35,29 +41,45 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const { code } = use(params);
   const roomCode = code.toUpperCase();
 
-  const [hostKeyState, setHostKeyState] = useState<string | null>(() => getHostKey(roomCode));
-  const [roomError, setRoomError] = useState<string | null>(null);
+  // The stored key is read after mount, not in the initial state: the server render cannot see
+  // localStorage, so a key in the first client render made every reload a hydration mismatch
+  // (React threw the server HTML away and logged an error).
+  const [hostKeyState, setHostKeyState] = useState<string | null>(null);
+  const [storageRead, setStorageRead] = useState(false);
+  useEffect(() => {
+    const stored = getHostKey(roomCode);
+    if (stored) setHostKeyState(stored);
+    setStorageRead(true);
+  }, [roomCode]);
+  const [problem, setProblem] = useState<HostProblem | null>(null);
   const [recoveryClientId, setRecoveryClientId] = useState<string | null>(null);
   const recoveryAttemptedRef = useRef(false);
 
   const claimHostKey = useCallback(async () => {
+    let status: number | null = null;
+    let body: unknown = null;
     try {
       const res = await fetch(`${apiUrl()}/rooms`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code: roomCode }),
       });
-      if (!res.ok) throw new Error(String(res.status));
-      const data = (await res.json()) as { code: string; hostKey: string };
-      setHostKey(data.code, data.hostKey);
-      setHostKeyState(data.hostKey);
+      status = res.status;
+      body = await res.json().catch(() => null);
     } catch {
-      setRoomError("Could not start the hive. Is the server running?");
+      /* network error: status stays null */
+    }
+    const claim = classifyHostClaim(status, body);
+    if (claim.kind === "ok") {
+      setHostKey(claim.code, claim.hostKey);
+      setHostKeyState(claim.hostKey);
+    } else {
+      setProblem(claim.kind);
     }
   }, [roomCode]);
 
   useEffect(() => {
-    if (hostKeyState) return;
+    if (!storageRead || hostKeyState || problem) return;
     let cancelled = false;
     (async () => {
       if (!cancelled) await claimHostKey();
@@ -65,14 +87,13 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     return () => {
       cancelled = true;
     };
-  }, [hostKeyState, claimHostKey]);
+  }, [storageRead, hostKeyState, problem, claimHostKey]);
 
   const handleDemoted = useCallback(() => {
     // At most one automatic recovery per page load: a second demotion right after a re-claimed
-    // key means re-asking isn't the fix (the other half of this lives in apps/server, accepting a
-    // host claim on a room that has none yet), so loop no further and surface it instead.
+    // key means re-asking isn't the fix (someone else holds this hive), so loop no further.
     if (recoveryAttemptedRef.current) {
-      setRoomError("This phone lost host control and could not reclaim it. Refresh, or start a new hive.");
+      setProblem("elsewhere");
       return;
     }
     recoveryAttemptedRef.current = true;
@@ -86,11 +107,44 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     setHostKeyState(null);
   }, []);
 
-  if (roomError) {
+  // The server answered NO_ROOM to our JOIN: it restarted (rooms live in memory) or the hive idled
+  // out. Nothing on this page can work any more, and the stored key is for a room that is gone.
+  const handleGone = useCallback(() => {
+    clearHostKey(roomCode);
+    setProblem("ended");
+  }, [roomCode]);
+
+  if (problem) {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
-        <h1 className="font-display text-2xl font-bold">Couldn&apos;t start the hive</h1>
-        <p style={{ color: "var(--muted)" }}>{roomError}</p>
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
+        <h1 className="font-display text-2xl font-bold">
+          {problem === "ended" ? "This hive has ended" : problem === "elsewhere" ? "This hive is hosted on another phone" : "Can’t reach the hive"}
+        </h1>
+        {problem === "unreachable" ? (
+          <button
+            onClick={() => setProblem(null)}
+            className="flex h-13 items-center justify-center rounded-2xl px-6 font-semibold"
+            style={{ height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" }}
+          >
+            Try again
+          </button>
+        ) : null}
+        {problem === "elsewhere" ? (
+          <Link
+            href={`/j/${roomCode}`}
+            className="flex h-13 items-center justify-center rounded-2xl px-6 font-semibold"
+            style={{ height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" }}
+          >
+            Join it instead
+          </Link>
+        ) : null}
+        <Link
+          href="/"
+          className="flex h-13 items-center justify-center rounded-2xl border px-6 font-semibold"
+          style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+        >
+          {problem === "ended" ? "Host a new hive" : "Back home"}
+        </Link>
       </main>
     );
   }
@@ -110,6 +164,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
       hostKey={hostKeyState}
       clientId={recoveryClientId ?? undefined}
       onDemoted={handleDemoted}
+      onGone={handleGone}
     />
   );
 }
@@ -119,11 +174,13 @@ function HostRoom({
   hostKey,
   clientId,
   onDemoted,
+  onGone,
 }: {
   roomCode: string;
   hostKey: string;
   clientId?: string;
   onDemoted: () => void;
+  onGone: () => void;
 }) {
   const [speakerOn, setSpeakerOn] = useState(false);
   const speakerOnInitialised = useRef(false);
@@ -136,10 +193,15 @@ function HostRoom({
   const [calibrateDismissed, setCalibrateDismissed] = useState(false);
   const [screenLinkCopied, setScreenLinkCopied] = useState(false);
   const [uploadPhase, setUploadPhase] = useState<"analyzing" | "uploading" | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [tracksVersion, setTracksVersion] = useState(0);
   const [hostToast, setHostToast] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  /** The microphone refused (denied, or no input device): tuning cannot work from this phone until that changes. */
+  const [micBlocked, setMicBlocked] = useState(false);
+  /** This page asked for the current/last tuning moment (as opposed to finding one in the room after a reload). */
+  const [tuningStartedHere, setTuningStartedHere] = useState(false);
   /**
    * Armed by "Start the hive" when an automatic tuning moment should run first: play the moment
    * that tuning lands (done, failed, or cancelled — the show starts either way). Refs, not state:
@@ -162,10 +224,19 @@ function HostRoom({
   useEffect(() => {
     return client.on("error", (code, message) => {
       if (code === "NOT_HOST") onDemoted();
-      else setHostToast(message || code);
+      else if (code === "NO_ROOM") onGone();
+      else setHostToast(hostErrorText(code, message));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
+
+  // An error is news for a few seconds, not a banner for the rest of the night: it used to stay
+  // until the page was reloaded, long after whatever caused it was over.
+  useEffect(() => {
+    if (!hostToast) return;
+    const t = setTimeout(() => setHostToast(null), HOST_TOAST_MS);
+    return () => clearTimeout(t);
+  }, [hostToast]);
 
   // A demotion remounts HostRoom under a fresh key (see HostPage); this client's socket is
   // otherwise never closed, so the old, now-demoted connection would sit in the room as a zombie
@@ -190,16 +261,41 @@ function HostRoom({
     }
   }, [me]);
 
+  // The engine re-JOINs after a dropped socket with the options it was created with (plays: false),
+  // and the server takes a host's `plays` from the JOIN — so every reconnect silently switched this
+  // phone's speaker off while the checkbox stayed ticked. Whenever the room and the toggle disagree
+  // on an open socket, what the host last asked for (toggleSpeaker) wins.
+  const wantedPlays = useRef<boolean | null>(null);
+  const serverPlays = me?.plays;
+  useEffect(() => {
+    if (wantedPlays.current === null || serverPlays === undefined || connection !== "open") return;
+    if (serverPlays !== wantedPlays.current) client.host.setPlays(wantedPlays.current);
+  }, [serverPlays, connection, client]);
+
+  // The library is what ends the "Setting up your hive…" splash (the first track is auto-picked
+  // from it) and what fills the Songs drawer, so one failed request must not be the end of it:
+  // retry with the socket's own backoff until an answer arrives.
   useEffect(() => {
     let cancelled = false;
-    fetch(`${apiUrl()}/tracks`)
-      .then((r) => r.json())
-      .then((d: { tracks: TrackLibraryEntry[] }) => {
-        if (!cancelled) setTracks(d.tracks);
-      })
-      .catch(() => {});
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    const load = () => {
+      fetch(`${apiUrl()}/tracks`)
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.json();
+        })
+        .then((d: { tracks: TrackLibraryEntry[] }) => {
+          if (!cancelled) setTracks(d.tracks);
+        })
+        .catch(() => {
+          if (!cancelled) retry = setTimeout(load, reconnectDelayMs(attempt++));
+        });
+    };
+    load();
     return () => {
       cancelled = true;
+      if (retry) clearTimeout(retry);
     };
   }, [tracksVersion]);
 
@@ -208,17 +304,23 @@ function HostRoom({
   // pre-seed a track, but a fresh real room starts with track: null, so "Start" would otherwise
   // send TRANSPORT into a room with nothing loaded (ERROR NO_TRACK) until the user happened to
   // click a radio button that was already visually checked.
+  // Sent only while the socket is open (a message sent while it is down is dropped, not queued),
+  // and sent again if the room still has no track after a reconnect.
+  const autoPickSentAt = useRef<number | null>(null);
   useEffect(() => {
     if (!room) return;
     if (room.track) {
       setSelectedTrackId(room.track.id);
       return;
     }
-    if (!selectedTrackId && tracks[0]) {
-      setSelectedTrackId(tracks[0].id);
-      client.host.setTrack(tracks[0].id);
-    }
-  }, [room, tracks, selectedTrackId, client]);
+    const first = tracks[0];
+    if (!first || connection !== "open") return;
+    const now = performance.now();
+    if (autoPickSentAt.current !== null && now - autoPickSentAt.current < 3000) return;
+    autoPickSentAt.current = now;
+    setSelectedTrackId(first.id);
+    client.host.setTrack(first.id);
+  }, [room, tracks, connection, client]);
 
   useEffect(() => {
     setStartAnywayReady(false);
@@ -229,6 +331,7 @@ function HostRoom({
   }, [room?.track?.id]);
 
   function toggleSpeaker(on: boolean) {
+    wantedPlays.current = on;
     setSpeakerOn(on);
     if (on) client.audio.unlock().catch(() => {});
     client.host.setPlays(on);
@@ -249,15 +352,38 @@ function HostRoom({
     setUploadPhase("analyzing");
     try {
       const wav = await fileToMonoWav(file);
+      setUploadProgress(0);
       setUploadPhase("uploading");
-      await postTrack(apiUrl(), hostKey, titleFromFilename(file.name), wav);
+      await postTrack(apiUrl(), hostKey, titleFromFilename(file.name), wav, setUploadProgress);
       setTracksVersion((v) => v + 1);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "upload failed");
     } finally {
       setUploadPhase(null);
+      setUploadProgress(null);
     }
   }
+
+  // PLAY is scheduled LEAD_MS ahead and the snapshot that says "playing" can trail it by a full
+  // rate-limit window, so for about half a second the stage still showed "Start the hive" — after
+  // the tuning moment it flashed back as if nothing had happened, and a second tap restarted the
+  // song. `starting` covers that gap: set when PLAY is sent, cleared when the transport moves (or
+  // after 3 s, in case the message was lost).
+  const [starting, setStarting] = useState(false);
+  const sendPlay = useCallback(() => {
+    setStarting(true);
+    client.host.play(0);
+  }, [client]);
+  const transportState = room?.transport.state;
+  useEffect(() => {
+    if (!starting) return;
+    if (transportState && transportState !== "stopped") {
+      setStarting(false);
+      return;
+    }
+    const t = setTimeout(() => setStarting(false), 3000);
+    return () => clearTimeout(t);
+  }, [starting, transportState]);
 
   const finishAutoStart = useCallback(() => {
     if (!autoStartRef.current) return;
@@ -268,8 +394,8 @@ function HostRoom({
       autoStartTimerRef.current = null;
     }
     setCalibrateDismissed(true);
-    client.host.play(0);
-  }, [client]);
+    sendPlay();
+  }, [sendPlay]);
 
   // Watches the tuning moment that startHive armed. countdown/running means it genuinely started;
   // any exit from there (done, failed, or idle after a cancel) starts the music. `done`/`failed`
@@ -292,7 +418,9 @@ function HostRoom({
 
   function startTuning() {
     setCalibrateDismissed(false);
+    setTuningStartedHere(true);
     setMicError(null);
+    setMicBlocked(false);
     // The stub engine (mock/e2e testing) has no microphone by design -- it never calls
     // runAsReference() and the mock server measures its own synthetic players on a timer
     // regardless, so the countdown/rows UI works the same either way. Only the real engine
@@ -307,13 +435,18 @@ function HostRoom({
         .catch((err: unknown) => {
           const name = err instanceof Error ? err.name : "";
           if (name === "CalibrationCancelledError") return; // the user pressed Cancel; not an error
-          setMicError(err instanceof Error ? err.message : "could not start listening");
-          // An auto-started tuning with no mic (permission denied, no input device) would click to a
-          // dead room until the server's failure timeout. Cancel it and start the show untuned.
-          if (autoStartRef.current) {
+          const message = err instanceof Error ? err.message : "could not start listening";
+          setMicError(message);
+          // No microphone (permission denied, no input device): every phone would click to a room
+          // nobody is listening to until the server's failure timeout. Cancel the run — whether it
+          // was Start's automatic one or a tap on "Tune the hive" — and remember, so the next Start
+          // does not flash the tuning screen on every phone again just to fail the same way.
+          if (/^microphone denied/.test(message)) {
+            setMicBlocked(true);
             client.host.cancelCalibration();
-            finishAutoStart();
           }
+          // An automatic tuning that cannot run must not hold the music back.
+          if (autoStartRef.current) finishAutoStart();
         });
     }
     client.host.startCalibration().catch(() => {});
@@ -323,23 +456,22 @@ function HostRoom({
    * "Start the hive": when tuning can actually help — real engine (the stub has no mic), at least
    * one ready speaker still on table/guessed compensation, calibration idle — run the tuning moment
    * automatically and play the instant it lands. No separate tap. Everything else starts as before.
+   * The decision itself is planStart (lib/hive/start-flow.ts, unit-tested).
    */
   function startHive() {
     if (!selectedTrackId) return;
-    const readyPlayers = room
-      ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected && c.plays && c.audioReadyTrackId === room.track?.id)
-      : [];
-    const untuned = readyPlayers.some((c) => c.calibratedOffsetMs == null);
-    if (engineKind() === "real" && untuned && room?.calibration.state === "idle") {
-      autoStartRef.current = true;
-      autoStartSawTuningRef.current = false;
-      // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
-      // the party on the countdown screen; worst case the show starts on table compensation.
-      autoStartTimerRef.current = setTimeout(finishAutoStart, 30_000);
-      startTuning();
-    } else {
-      client.host.play(0);
+    const plan = planStart({ engine: engineKind(), room, startInFlight: autoStartRef.current, micBlocked });
+    if (plan.kind === "ignore") return; // a second tap while the first start's tuning is still running
+    if (plan.kind === "play") {
+      sendPlay();
+      return;
     }
+    autoStartRef.current = true;
+    autoStartSawTuningRef.current = false;
+    // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
+    // the party on the countdown screen; worst case the show starts on table compensation.
+    autoStartTimerRef.current = setTimeout(finishAutoStart, plan.failsafeMs);
+    startTuning();
   }
 
   const router = useRouter();
@@ -370,8 +502,8 @@ function HostRoom({
   // the Songs drawer, joining in the Join QR code page, and Start appears whenever the transport
   // is stopped. `room.track` is auto-picked seconds after the room exists (effect above).
   const showStage = !!room?.track;
-  const calibrationActive = room ? room.calibration.state === "countdown" || room.calibration.state === "running" || room.calibration.state === "failed" : false;
-  const showCalibrate = calibrationActive && !calibrateDismissed;
+  const showCalibrate = showTuningScreen({ calibrationState, startedHere: tuningStartedHere, dismissed: calibrateDismissed });
+  const tuneNote = tuningNote({ calibrationState, micBlocked });
 
   if (showCalibrate && room) {
     return (
@@ -389,7 +521,7 @@ function HostRoom({
             <button
               onClick={exitHive}
               aria-label="Exit the hive"
-              className="rounded-full border px-2.5 py-1.5 text-[13px] font-semibold"
+              className="flex h-11 w-11 items-center justify-center rounded-full border text-[15px] font-semibold"
               style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
             >
               ←
@@ -420,32 +552,34 @@ function HostRoom({
         ) : null}
 
         <div className="flex items-center justify-between rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-          <Link href={`/qr/${roomCode}`} target="_blank" className="text-lg font-bold underline">
+          <Link href={`/qr/${roomCode}`} target="_blank" className="-my-3 flex h-11 items-center text-lg font-bold underline">
             Join QR code
           </Link>
-          <button onClick={copyJoinLink} className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+          <button onClick={copyJoinLink} className="-my-3 -mr-2 h-11 px-2 text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
             {screenLinkCopied ? "Copied!" : "Copy link"}
           </button>
         </div>
 
         {room.transport.state === "stopped" ? (
           <div className="flex flex-col gap-2.5">
-            <span className="text-center text-[15px]" style={{ color: "var(--muted)" }}>
+            <span className="line-clamp-2 text-center text-[15px] [overflow-wrap:anywhere]" style={{ color: "var(--muted)" }}>
               Up next: <span className="font-semibold" style={{ color: "var(--text)" }}>{room.track!.title}</span>
             </span>
             <button
               onClick={startHive}
-              disabled={!selectedTrackId || !canStart}
+              disabled={!selectedTrackId || !canStart || starting}
               className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
               style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
             >
-              {!selectedTrackId
-                ? "Pick a track"
-                : allReady || connectedPlayers.length === 0
-                  ? "Start the hive"
-                  : startAnywayReady
-                    ? "Start anyway"
-                    : "Waiting for phones to load…"}
+              {starting
+                ? "Starting…"
+                : !selectedTrackId
+                  ? "Pick a track"
+                  : allReady || connectedPlayers.length === 0
+                    ? "Start the hive"
+                    : startAnywayReady
+                      ? "Start anyway"
+                      : "Waiting for phones to load…"}
             </button>
             {audio.state === "locked" && speakerOn ? (
               <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
@@ -463,15 +597,18 @@ function HostRoom({
         <VibeBox host={client.host} />
         <SceneStrip room={room} clock={client.clock} />
 
-        <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
-          Phones were tuned automatically at start. Re-tune anytime — best between songs, with the room quiet.
-        </div>
+        {/* Says something only when tuning did not happen; silence means nothing is wrong. */}
+        {tuneNote ? (
+          <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
+            {tuneNote}
+          </div>
+        ) : null}
 
         <div className="flex justify-center">
           <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} host={client.host} onOpenSheet={setSheetClientId} />
         </div>
 
-        <Legend />
+        <Legend partsApply={partsApply(room)} ringHealth={Object.values(room.clients).some((c) => c.connected && c.assignment && c.assignment.role !== "unison")} />
 
         {/* Lives on the stage, not the lobby: a per-party choice, not a per-song one. */}
         <label className="flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
@@ -494,7 +631,10 @@ function HostRoom({
             Tune the hive
           </button>
           <button
-            onClick={() => setShowSongs(true)}
+            onClick={() => {
+              setShowSongs(true);
+              setTracksVersion((v) => v + 1); // songs added from another phone since this page loaded
+            }}
             className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
             style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
           >
@@ -510,7 +650,7 @@ function HostRoom({
         </div>
 
         {sheetClientId && room.clients[sheetClientId] ? (
-          <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} onClose={() => setSheetClientId(null)} />
+          <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} showParts={partsApply(room)} onClose={() => setSheetClientId(null)} />
         ) : null}
         {showPlayers ? (
           <PlayersDrawer
@@ -528,11 +668,16 @@ function HostRoom({
           <SongsDrawer
             tracks={tracks}
             currentTrackId={room.track?.id ?? null}
+            playing={room.transport.state !== "stopped"}
             uploadPhase={uploadPhase}
+            uploadProgress={uploadProgress}
             uploadError={uploadError}
             onSelect={(id) => {
               setShowSongs(false);
-              selectTrack(id); // SET_TRACK stops the transport server-side; the stage shows Start for the new song
+              // SET_TRACK stops the transport server-side and the stage shows Start for the new song —
+              // so never send it for the song that is already loaded: tapping the highlighted row
+              // (to go back, or to check what is on) used to stop the music for the whole room.
+              if (id !== room.track?.id) selectTrack(id);
             }}
             onUpload={(f) => void onUploadFile(f)}
             onClose={() => setShowSongs(false)}
@@ -552,6 +697,9 @@ function HostRoom({
       <span className="text-[15px]" style={{ color: "var(--muted)" }}>
         Setting up your hive…
       </span>
+      {/* If the server cannot be reached this is where the host waits, so say so here too. */}
+      <ReconnectBanner connection={connection} />
+      <ProtocolMismatchBanner show={protocolMismatch} />
     </main>
   );
 }

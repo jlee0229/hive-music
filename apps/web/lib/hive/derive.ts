@@ -40,6 +40,20 @@ export function patternGain(pattern: Pattern | null | undefined, trackTimeSecNow
   return evaluatePattern(pattern, trackTimeSecNow * 1000);
 }
 
+/**
+ * `next` if any gain moved by a visible amount (1/100 of full opacity), else `prev` itself — the same
+ * object, so a React state setter given the result skips the re-render.
+ */
+export function stableGains(prev: Record<string, number>, next: Record<string, number>): Record<string, number> {
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(prev).length) return next;
+  for (const k of keys) {
+    const before = prev[k];
+    if (before === undefined || Math.round(before * 100) !== Math.round(next[k]! * 100)) return next;
+  }
+  return prev;
+}
+
 /** Full-screen role colors span light and dark; pick readable ink per role (bass is the one dark fill). */
 export function inkForRole(role: Role): string {
   return role === "bass" ? "#F8FAFC" : "#0B0F14";
@@ -104,6 +118,13 @@ export function formatTrackTime(sec: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}:${String(r).padStart(2, "0")}`;
+}
+
+/** "4 parts · 1:00 · playing" — parts only when the song has more than one, and what the song is doing right now. */
+export function songSubtitle(t: { stems: string[]; durationSec: number }, state: "playing" | "next" | null): string {
+  return [t.stems.length > 1 ? `${t.stems.length} parts` : null, formatTrackTime(t.durationSec), state === "playing" ? "playing" : state === "next" ? "up next" : null]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function deviceLabel(device: ClientRecord["device"]): string {

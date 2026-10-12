@@ -16,6 +16,14 @@ function set(key: string, value: string): void {
   }
 }
 
+function remove(key: string): void {
+  try {
+    globalThis.localStorage?.removeItem(key);
+  } catch {
+    /* private browsing / SSR: ignore */
+  }
+}
+
 export function getPlayerName(): string {
   return get("hive:name") ?? "";
 }
@@ -30,4 +38,9 @@ export function getHostKey(roomCode: string): string | null {
 
 export function setHostKey(roomCode: string, hostKey: string): void {
   set(`hive:hostKey:${roomCode}`, hostKey);
+}
+
+/** The room is gone: a key for it can only ever demote this phone if the code is reused. */
+export function clearHostKey(roomCode: string): void {
+  remove(`hive:hostKey:${roomCode}`);
 }
