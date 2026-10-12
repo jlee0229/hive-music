@@ -45,7 +45,51 @@ export interface PeakOptions {
   toSample: number;
   /** Half-width of the exclusion zone around the peak when looking for a competitor, ms. */
   guardMs?: number;
+  /** How long after the peak a weaker arrival is treated as the peak's own echo, ms. 0 disables. */
+  echoMs?: number;
   sampleRate: number;
+}
+
+/** Reflections worth worrying about arrive within ~20 m of extra path; beyond that they are reverb. */
+export const DEFAULT_ECHO_MS = 60;
+/** The winner must explain at least a quarter of its window's energy (0.5²) before echoes are discounted. */
+export const MIN_PEAK_FOR_ECHO = 0.5;
+
+/**
+ * Normalised correlation for every lag in `[from, to)` (already clamped by the caller so that
+ * `to + template.length - 1 <= recording.length`).
+ *
+ * The energy prefix sum covers only the samples this lag range touches, not the whole recording. A
+ * whole-recording prefix was rebuilt for every click — O(recording) time and an 8-byte-per-sample
+ * allocation per phone on the host's main thread — and it let one non-finite sample anywhere poison the
+ * energy of every later window, silently blinding every later click. A non-finite sample now costs only
+ * the lags that actually overlap it, which score 0.
+ */
+function correlate(
+  recording: Float32Array,
+  template: Float32Array,
+  from: number,
+  to: number,
+  /** Optional: receives the un-normalised numerator per lag (the arrival's amplitude, not its match quality). */
+  raw?: Float64Array,
+): Float64Array {
+  const m = template.length;
+  const span = to - from + m - 1;
+  const prefix = new Float64Array(span + 1);
+  for (let i = 0; i < span; i++) {
+    const sq = recording[from + i]! * recording[from + i]!;
+    prefix[i + 1] = prefix[i]! + (sq < Infinity ? sq : 0); // NaN and ±Infinity both fail the comparison
+  }
+  const xc = new Float64Array(to - from);
+  for (let lag = from; lag < to; lag++) {
+    let num = 0;
+    for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
+    const energy = prefix[lag - from + m]! - prefix[lag - from]!;
+    const ok = energy > 0 && Number.isFinite(num);
+    xc[lag - from] = ok ? num / Math.sqrt(energy) : 0;
+    if (raw) raw[lag - from] = ok ? num : 0;
+  }
+  return xc;
 }
 
 /**
@@ -64,17 +108,8 @@ export function findPeak(recording: Float32Array, template: Float32Array, opts: 
     return { lagSamples: from, peak: 0, secondPeak: 0, confidence: 0, prominence: 0 };
   }
 
-  // prefix sums of squares → local energy for any window in O(1)
-  const prefix = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i]! + recording[i]! * recording[i]!;
-
-  const xc = new Float64Array(to - from);
-  for (let lag = from; lag < to; lag++) {
-    let num = 0;
-    for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
-    const energy = prefix[lag + m]! - prefix[lag]!;
-    xc[lag - from] = energy > 0 ? num / Math.sqrt(energy) : 0;
-  }
+  const raw = new Float64Array(to - from);
+  const xc = correlate(recording, template, from, to, raw);
 
   let bestIdx = 0;
   let best = -Infinity;
@@ -100,14 +135,32 @@ export function findPeak(recording: Float32Array, template: Float32Array, opts: 
   }
 
   const guardSamples = Math.max(1, Math.round((((opts.guardMs ?? 2) / 1000) * opts.sampleRate)));
+  /*
+   * The competitor. Per-lag normalisation scores an arrival by how well it matches *its own* local
+   * energy, so a reflection of the winner that is 10 or 20 dB quieter still scores ~1 once it is clear of
+   * the direct sound, and a good click in a quiet room was rejected (confidence ~0) for having an echo.
+   * A later arrival inside the echo zone is therefore judged by its amplitude relative to the winner
+   * instead (`raw[i] / raw[best]`, scaled onto the winner's own score) — never by more than its
+   * normalised score, so this can only raise confidence. An arrival *before* the winner is left as it
+   * was: if something click-shaped precedes the winner, the winner may itself be the echo, and that must
+   * stay unconfident.
+   */
+  const echoSamples = Math.round(((opts.echoMs ?? DEFAULT_ECHO_MS) / 1000) * opts.sampleRate);
+  const rawBest = raw[bestIdx]!;
+  // Only a winner that dominates its own window can have "an echo". Under that, the window is mostly
+  // something else (noise, a drum hit's decay) and discounting whatever follows the winner by its level
+  // would manufacture confidence out of a transient — measured: 1 of 600 click-less windows crossed 0.5.
+  const echoZone = rawBest > 0 && best >= MIN_PEAK_FOR_ECHO;
   let second = 0;
   let sumAbs = 0;
   let sumSq = 0;
   for (let i = 0; i < xc.length; i++) {
-    const v = xc[i]!;
+    let v = xc[i]!;
     sumAbs += Math.abs(v);
     sumSq += v * v;
-    if (Math.abs(i - bestIdx) > guardSamples && v > second) second = v;
+    if (Math.abs(i - bestIdx) <= guardSamples) continue;
+    if (echoZone && i > bestIdx && i - bestIdx <= echoSamples) v = Math.min(v, (best * raw[i]!) / rawBest);
+    if (v > second) second = v;
   }
   const mean = sumAbs / xc.length;
   const sd = Math.sqrt(Math.max(0, sumSq / xc.length - mean * mean));
@@ -141,16 +194,7 @@ export function findPeaks(
   const to = Math.min(n - m, Math.ceil(opts.toSample));
   if (m === 0 || to <= from) return [];
 
-  const prefix = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i]! + recording[i]! * recording[i]!;
-
-  const xc = new Float64Array(to - from);
-  for (let lag = from; lag < to; lag++) {
-    let num = 0;
-    for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
-    const energy = prefix[lag + m]! - prefix[lag]!;
-    xc[lag - from] = energy > 0 ? num / Math.sqrt(energy) : 0;
-  }
+  const xc = correlate(recording, template, from, to);
 
   const sep = Math.max(1, Math.round(((opts.minSeparationMs ?? 1) / 1000) * opts.sampleRate));
   const taken: MultiPeak[] = [];

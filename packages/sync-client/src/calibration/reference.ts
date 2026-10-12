@@ -65,8 +65,15 @@ export interface ReferenceDeps {
   signal?: CancelSignal;
 }
 
+/** One captured block and where it sits on the context's own sample timeline. */
+export interface CapturedChunk {
+  samples: Float32Array;
+  /** Frames since the first captured block, from the audio graph; null when the graph did not say. */
+  at: number | null;
+}
+
 interface Capture {
-  chunks: Float32Array[];
+  chunks: CapturedChunk[];
   frames: number;
   firstFrameCtxTime: number | null;
   stop: () => void;
@@ -79,9 +86,10 @@ class HiveCaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const input = inputs[0];
     if (input && input[0]) {
-      if (!this.started) { this.started = true; this.port.postMessage({ firstFrameCtxTime: currentTime }); }
-      // A copy: the render thread reuses these buffers.
-      this.port.postMessage({ samples: new Float32Array(input[0]) });
+      if (!this.started) { this.started = true; this.first = currentFrame; this.port.postMessage({ firstFrameCtxTime: currentTime }); }
+      // A copy: the render thread reuses these buffers. "at" is this block's place on the context's
+      // timeline, so a block the graph skipped (no input channel) leaves a hole instead of a splice.
+      this.port.postMessage({ samples: new Float32Array(input[0]), at: currentFrame - this.first });
     }
     return true;
   }
@@ -101,12 +109,12 @@ async function startCapture(ctx: AudioContext, source: MediaStreamAudioSourceNod
     }
     const node = new AudioWorkletNode(ctx, "hive-capture", { numberOfInputs: 1, numberOfOutputs: 0 });
     node.port.onmessage = (ev: MessageEvent) => {
-      const data = ev.data as { samples?: Float32Array; firstFrameCtxTime?: number };
+      const data = ev.data as { samples?: Float32Array; at?: number; firstFrameCtxTime?: number };
       if (typeof data.firstFrameCtxTime === "number" && capture.firstFrameCtxTime === null) {
         capture.firstFrameCtxTime = data.firstFrameCtxTime;
       }
       if (data.samples) {
-        capture.chunks.push(data.samples);
+        capture.chunks.push({ samples: data.samples, at: typeof data.at === "number" ? data.at : null });
         capture.frames += data.samples.length;
       }
     };
@@ -129,10 +137,18 @@ async function startCapture(ctx: AudioContext, source: MediaStreamAudioSourceNod
     const node = ctx.createScriptProcessor(size, 1, 1);
     const silent = ctx.createGain();
     silent.gain.value = 0;
+    let firstPlaybackTime: number | null = null;
     node.onaudioprocess = (ev: AudioProcessingEvent) => {
       if (capture.firstFrameCtxTime === null) capture.firstFrameCtxTime = ctx.currentTime - size / ctx.sampleRate;
       const input = ev.inputBuffer.getChannelData(0);
-      capture.chunks.push(new Float32Array(input));
+      // A blocked main thread makes this node drop whole buffers. `playbackTime` then jumps by the
+      // buffers that were lost; it is snapped to whole buffers so its jitter can never invent a gap.
+      let at: number | null = null;
+      if (Number.isFinite(ev.playbackTime)) {
+        firstPlaybackTime ??= ev.playbackTime;
+        at = Math.round(((ev.playbackTime - firstPlaybackTime) * ctx.sampleRate) / size) * size;
+      }
+      capture.chunks.push({ samples: new Float32Array(input), at });
       capture.frames += input.length;
     };
     source.connect(node);
@@ -153,13 +169,35 @@ async function startCapture(ctx: AudioContext, source: MediaStreamAudioSourceNod
   }
 }
 
-function flatten(chunks: Float32Array[], frames: number): Float32Array {
-  const out = new Float32Array(frames);
-  let at = 0;
+/** The most silence `assembleCapture` will insert in total: a longer hole means the run is lost anyway. */
+export const MAX_CAPTURE_GAP_FRAMES = 48_000 * 10;
+
+/**
+ * Lays the captured blocks out on the context's timeline.
+ *
+ * Plain concatenation assumes the graph delivered every block. When it did not — an input with no
+ * channel for a few quanta, a ScriptProcessor buffer dropped behind a busy main thread — every later
+ * click sat earlier in the recording than the plan said, by the length of the hole. The clicks before and
+ * after the hole then disagreed by that much, the median split the difference, and phones that were in
+ * perfect sync were handed confident residuals of several ms each (ENGINE-DSP-44). A hole is filled with
+ * silence instead, which keeps every click where it was heard. A block stamped *earlier* than the
+ * cursor is appended as before: nothing already captured is ever overwritten.
+ */
+export function assembleCapture(chunks: CapturedChunk[]): Float32Array {
+  let length = 0;
+  let gapBudget = MAX_CAPTURE_GAP_FRAMES;
+  const starts: number[] = [];
   for (const c of chunks) {
-    out.set(c, at);
-    at += c.length;
+    if (c.at != null && Number.isFinite(c.at) && c.at > length) {
+      const gap = Math.min(gapBudget, Math.round(c.at) - length);
+      gapBudget -= gap;
+      length += gap;
+    }
+    starts.push(length);
+    length += c.samples.length;
   }
+  const out = new Float32Array(length);
+  chunks.forEach((c, i) => out.set(c.samples, starts[i]!));
   return out;
 }
 
@@ -229,7 +267,7 @@ export async function runAsReference(
     // the scheduler uses.
     abortIfCancelled();
     progress({ phase: "analysing", currentClientId: null, done: total, total });
-    const recording = flatten(capture.chunks, capture.frames);
+    const recording = assembleCapture(capture.chunks);
     const recordingSec = recording.length / ctx.sampleRate;
     // The ctx time of the first frame the graph handed us. If the worklet never reported one (the
     // ScriptProcessor path sets it too), fall back to "now minus the recording length", which is the
