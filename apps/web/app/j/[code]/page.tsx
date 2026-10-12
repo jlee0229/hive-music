@@ -113,6 +113,9 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   // "join" before learning there was nothing to join. null = not known (yet, or the lookup failed).
   const [exists, setExists] = useState<boolean | null>(null);
   const [resuming, setResuming] = useState(false);
+  // Has this page ever seen a connected host? A room is only "waiting for the host to come back"
+  // if there was one to begin with.
+  const [hostSeen, setHostSeen] = useState(false);
   const device = detectDevice();
   const [guestId] = useState(() => guestIdInHostBrowser(roomCode));
 
@@ -249,6 +252,16 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const contextStalled = ctxState === "suspended" || ctxState === "interrupted";
 
   const gone = removed ?? (exists === false && !joinRequested ? hiveNotFound(roomCode) : null);
+
+  // The host's phone locking, their tab closing or their battery dying all look the same from
+  // here: no connected host. The wait line used to keep saying "waiting for the host to start"
+  // (or "Paused") for as long as the guest cared to look at it.
+  const hostHere = !!room && room.hostClientIds.some((id) => room.clients[id]?.connected);
+  useEffect(() => {
+    if (hostHere) setHostSeen(true);
+  }, [hostHere]);
+  const hostAway = hostSeen && !hostHere;
+  const waitLine = hostAway ? "Waiting for the host to come back" : room?.transport.state === "paused" ? "Paused — waiting for the host" : "Waiting for the host to start";
 
   let view: View = "join";
   if (gone) view = "removed";
@@ -429,7 +442,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--muted)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--faint)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--border)" }} />
-            {room?.transport.state === "paused" ? "Paused — waiting for the host" : "Waiting for the host to start"}
+            {waitLine}
           </span>
           <span className="text-center text-[13px]" style={{ color: "var(--faint)" }}>
             Keep your screen on. Don&apos;t lock your phone.
@@ -536,7 +549,10 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     if (audio.state !== "ready") announcement = "The music is playing. This phone is still getting the song.";
     else if (audio.muted) announcement = "This phone is muted.";
     else announcement = `Now playing. Your part is ${part}.`;
-  } else if (view === "ready") announcement = room?.transport.state === "paused" ? "The host paused the music." : "You're in. The host hasn't started the music yet.";
+  } else if (view === "ready") {
+    if (hostAway) announcement = "The host has gone for now.";
+    else announcement = room?.transport.state === "paused" ? "The host paused the music." : "You're in. The host hasn't started the music yet.";
+  }
 
   return (
     <>
