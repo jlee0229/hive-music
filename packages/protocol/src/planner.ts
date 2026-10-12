@@ -132,6 +132,7 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
 export function withAssignments(room: RoomState, applyAtServerTime: number | null = null): RoomState {
   const assignments = plan(room, applyAtServerTime);
   const clients: RoomState["clients"] = {};
-  for (const [id, c] of Object.entries(room.clients)) clients[id] = { ...c, assignment: assignments[id] ?? null };
+  // Own keys only: `assignments["toString"]` on a plain object is a function, not a missing entry.
+  for (const [id, c] of Object.entries(room.clients)) clients[id] = { ...c, assignment: Object.hasOwn(assignments, id) ? (assignments[id] ?? null) : null };
   return { ...room, clients };
 }
