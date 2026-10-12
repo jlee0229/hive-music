@@ -2,17 +2,20 @@
 
 import { useRef, useState } from "react";
 import type { TrackLibraryEntry } from "@hive/protocol";
+import { songSubtitle } from "@/lib/hive/derive";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 /**
- * The stage's song panel: the same library + upload the lobby has, reachable mid-show. Picking a
- * track sends SET_TRACK, which stops the transport server-side — the host lands back in the lobby
- * with the new song selected and presses Start (that gesture also re-arms the automatic tuning).
+ * The stage's song panel: the library + upload, reachable mid-show. Picking a different track sends
+ * SET_TRACK, which stops the transport server-side — the stage then shows "Up next" and Start for
+ * it. Picking the song that is already loaded changes nothing (the page just closes the drawer).
  */
 export function SongsDrawer({
   tracks,
   currentTrackId,
+  playing = false,
   uploadPhase,
+  uploadProgress = null,
   uploadError,
   onSelect,
   onUpload,
@@ -20,7 +23,11 @@ export function SongsDrawer({
 }: {
   tracks: TrackLibraryEntry[];
   currentTrackId: string | null;
+  /** The current track is audible (transport playing or paused), as opposed to queued behind Start. */
+  playing?: boolean;
   uploadPhase: "analyzing" | "uploading" | null;
+  /** 0..1 while the file is on its way to the server. */
+  uploadProgress?: number | null;
   uploadError: string | null;
   onSelect: (trackId: string) => void;
   onUpload: (file: File) => void;
@@ -37,9 +44,11 @@ export function SongsDrawer({
       <div className="mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
         <div className="flex shrink-0 items-center justify-between">
           <span className="font-display text-xl font-bold">Songs</span>
-          <span className="text-[13px]" style={{ color: "var(--muted)" }}>
-            picking one pauses the show
-          </span>
+          {playing ? (
+            <span className="text-[13px]" style={{ color: "var(--muted)" }}>
+              picking another stops the music
+            </span>
+          ) : null}
         </div>
         <label className="flex h-11 shrink-0 items-center gap-2.5 rounded-2xl border px-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -51,7 +60,7 @@ export function SongsDrawer({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search the library"
             aria-label="Search the library"
-            className="grow bg-transparent text-[15px] outline-none"
+            className="min-w-0 grow bg-transparent text-[15px] outline-none"
             style={{ color: "var(--text)" }}
           />
         </label>
@@ -60,17 +69,22 @@ export function SongsDrawer({
             <button
               key={t.id}
               onClick={() => onSelect(t.id)}
-              className="flex items-center gap-3 rounded-2xl border px-3.5 py-3 text-left"
+              className="flex shrink-0 items-center gap-3 rounded-2xl border px-3.5 py-3 text-left"
               style={{ background: "var(--surface)", borderColor: t.id === currentTrackId ? "var(--primary-fill)" : "var(--border)" }}
             >
-              <span className="flex grow flex-col gap-0.5">
-                <span className="text-[15px] font-semibold">{t.title}</span>
+              <span className="flex min-w-0 grow flex-col gap-0.5">
+                <span className="line-clamp-2 text-[15px] font-semibold [overflow-wrap:anywhere]">{t.title}</span>
                 <span className="text-xs" style={{ color: "var(--muted)" }}>
-                  {t.stems.length} parts · {Math.round(t.durationSec)}s{t.id === currentTrackId ? " · now playing" : ""}
+                  {songSubtitle(t, t.id === currentTrackId ? (playing ? "playing" : "next") : null)}
                 </span>
               </span>
             </button>
           ))}
+          {shown.length === 0 && tracks.length > 0 ? (
+            <p className="py-6 text-center text-sm" style={{ color: "var(--muted)" }}>
+              No songs match.
+            </p>
+          ) : null}
         </div>
         <input
           ref={inputRef}
@@ -89,10 +103,14 @@ export function SongsDrawer({
           className="flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-dashed px-3.5 py-3 text-[15px] font-semibold disabled:opacity-60"
           style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
         >
-          {uploadPhase === "analyzing" ? "Analyzing…" : uploadPhase === "uploading" ? "Uploading…" : "+ Upload a song"}
+          {uploadPhase === "analyzing"
+            ? "Analyzing…"
+            : uploadPhase === "uploading"
+              ? `Uploading… ${uploadProgress != null ? `${Math.round(uploadProgress * 100)}%` : ""}`.trim()
+              : "+ Upload a song"}
         </button>
         {uploadError ? (
-          <p className="shrink-0 text-center text-sm" style={{ color: "var(--health-bad)" }}>
+          <p role="alert" className="shrink-0 text-center text-sm" style={{ color: "var(--health-bad)" }}>
             {uploadError}
           </p>
         ) : null}

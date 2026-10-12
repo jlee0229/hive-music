@@ -192,6 +192,7 @@ function HostRoom({
   const [calibrateDismissed, setCalibrateDismissed] = useState(false);
   const [screenLinkCopied, setScreenLinkCopied] = useState(false);
   const [uploadPhase, setUploadPhase] = useState<"analyzing" | "uploading" | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [tracksVersion, setTracksVersion] = useState(0);
   const [hostToast, setHostToast] = useState<string | null>(null);
@@ -342,13 +343,15 @@ function HostRoom({
     setUploadPhase("analyzing");
     try {
       const wav = await fileToMonoWav(file);
+      setUploadProgress(0);
       setUploadPhase("uploading");
-      await postTrack(apiUrl(), hostKey, titleFromFilename(file.name), wav);
+      await postTrack(apiUrl(), hostKey, titleFromFilename(file.name), wav, setUploadProgress);
       setTracksVersion((v) => v + 1);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "upload failed");
     } finally {
       setUploadPhase(null);
+      setUploadProgress(null);
     }
   }
 
@@ -596,7 +599,10 @@ function HostRoom({
             Tune the hive
           </button>
           <button
-            onClick={() => setShowSongs(true)}
+            onClick={() => {
+              setShowSongs(true);
+              setTracksVersion((v) => v + 1); // songs added from another phone since this page loaded
+            }}
             className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
             style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
           >
@@ -630,11 +636,16 @@ function HostRoom({
           <SongsDrawer
             tracks={tracks}
             currentTrackId={room.track?.id ?? null}
+            playing={room.transport.state !== "stopped"}
             uploadPhase={uploadPhase}
+            uploadProgress={uploadProgress}
             uploadError={uploadError}
             onSelect={(id) => {
               setShowSongs(false);
-              selectTrack(id); // SET_TRACK stops the transport server-side; the stage shows Start for the new song
+              // SET_TRACK stops the transport server-side and the stage shows Start for the new song —
+              // so never send it for the song that is already loaded: tapping the highlighted row
+              // (to go back, or to check what is on) used to stop the music for the whole room.
+              if (id !== room.track?.id) selectTrack(id);
             }}
             onUpload={(f) => void onUploadFile(f)}
             onClose={() => setShowSongs(false)}

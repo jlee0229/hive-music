@@ -106,6 +106,13 @@ export function formatTrackTime(sec: number): string {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
+/** "4 parts · 1:00 · playing" — parts only when the song has more than one, and what the song is doing right now. */
+export function songSubtitle(t: { stems: string[]; durationSec: number }, state: "playing" | "next" | null): string {
+  return [t.stems.length > 1 ? `${t.stems.length} parts` : null, formatTrackTime(t.durationSec), state === "playing" ? "playing" : state === "next" ? "up next" : null]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export function deviceLabel(device: ClientRecord["device"]): string {
   switch (device.browserFamily) {
     case "ios-safari":
