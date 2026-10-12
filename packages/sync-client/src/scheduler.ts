@@ -76,6 +76,14 @@ export const PATTERN_TICK_MS = 100;
 export const PATTERN_LOOKAHEAD_MS = 200;
 /** Samples per second of pattern curve written into `setValueCurveAtTime`. */
 export const PATTERN_CURVE_HZ = 200;
+/** A top-up shorter than this is left for the next tick, seconds. */
+export const PATTERN_MIN_WINDOW_SEC = 0.02;
+/**
+ * Gap left between one pattern curve and the next, seconds. Web Audio refuses a curve that overlaps one
+ * already scheduled — by a single ulp of float error is enough — so consecutive curves are kept visibly
+ * apart. The gain simply holds its last value across the gap (a handful of samples).
+ */
+export const PATTERN_CURVE_GAP_SEC = 1e-4;
 /** Fade applied when stopping so a pause never clicks. */
 export const STOP_FADE_SEC = 0.01;
 /** How often the playhead is compared with the timeline while playing. */
@@ -163,6 +171,8 @@ interface Branch {
   stopped: boolean;
   /** Ctx time its sources were told to stop at; Infinity while it is live. */
   endsAtCtx: number;
+  /** Ctx time up to which this branch's pattern gain has a curve written; −Infinity when it has none. */
+  patternEndCtx: number;
   /**
    * Content-seconds consumed beyond nominal because `playbackRate !== 1` (B9e). Positive = this branch
    * has eaten *more* of the track than wall time says, i.e. it is further along.
@@ -212,7 +222,6 @@ export class Scheduler {
   private applied: AppliedKey | null = null;
   private assignment: Assignment | null = null;
   private patternTimer: ReturnType<typeof setInterval> | null = null;
-  private patternWrittenUntilMs = 0;
   /** Serialized last pattern: ROOM_STATE arrives at 2 Hz and must not restart identical automation. */
   private patternKey: string | null = null;
   private muted = false;
@@ -227,6 +236,8 @@ export class Scheduler {
   lastSlewPpm = 0;
   /** B9e on/off. Defaults to the constant; `/diag` can flip it to compare against crossfade-only. */
   slewEnabled = PLAYBACK_RATE_SLEW_DEFAULT;
+  /** Pattern curves Web Audio refused (diagnostics). Anything but 0 is a stretch of un-automated gain. */
+  patternCurveRejections = 0;
   private driftTimer: ReturnType<typeof setInterval> | null = null;
   private useOutputLatency = false;
   /** Last usable `ctx.outputLatency`, seconds — see `outputLatencySec()`. */
@@ -444,6 +455,7 @@ export class Scheduler {
       startOffsetSec: decision.offsetSec,
       stopped: false,
       endsAtCtx: Infinity,
+      patternEndCtx: -Infinity,
       slewSec: 0,
       slewRate: 1,
       slewAtCtx: decision.whenCtx,
@@ -723,18 +735,29 @@ export class Scheduler {
     opts: { restart?: boolean; branch?: Branch } = {},
   ): void {
     const key = pattern ? JSON.stringify(pattern) : null;
-    if (key === this.patternKey && !opts.restart) return;
+    const changed = key !== this.patternKey;
+    if (!changed && !opts.restart) return;
     this.patternKey = key;
+    const ctxNow = this.deps.ctx.currentTime;
     if (!pattern) {
       this.stopPatternAutomation();
       for (const branch of this.branches) {
         if (branch.stopped) continue;
-        branch.patternGain.gain.cancelScheduledValues(this.deps.ctx.currentTime);
-        branch.patternGain.gain.setTargetAtTime(1, this.deps.ctx.currentTime, GAIN_RAMP_TC_SEC);
+        branch.patternGain.gain.cancelScheduledValues(ctxNow);
+        branch.patternGain.gain.setTargetAtTime(1, ctxNow, GAIN_RAMP_TC_SEC);
+        branch.patternEndCtx = -Infinity;
       }
       return;
     }
-    this.patternWrittenUntilMs = 0;
+    if (changed) {
+      // A different pattern: what the old one wrote ahead has to go first, or its curves are still
+      // sitting where the new ones belong and Web Audio refuses every one of them.
+      for (const branch of this.branches) {
+        if (branch.stopped || branch === opts.branch) continue;
+        branch.patternGain.gain.cancelScheduledValues(ctxNow);
+        branch.patternEndCtx = -Infinity;
+      }
+    }
     this.writePatternWindow(pattern, opts.branch);
     if (this.patternTimer) return;
     this.patternTimer = setInterval(() => {
@@ -747,42 +770,47 @@ export class Scheduler {
   private stopPatternAutomation(): void {
     if (this.patternTimer) clearInterval(this.patternTimer);
     this.patternTimer = null;
-    this.patternWrittenUntilMs = 0;
   }
 
   /**
-   * Writes PATTERN_LOOKAHEAD_MS of curve starting wherever we left off. Two cases have to be handled
-   * or the automation silently never runs:
-   *  - the start is still in the future, so the playhead position is *negative*; the window then begins
-   *    at track position 0 and the curve is scheduled at the branch's start time.
-   *  - the window we would write begins in the past (a tick was late, or the tab was throttled); the
-   *    window is shifted forward so `setValueCurveAtTime` gets a time it will accept, and the curve
-   *    stays aligned to the music rather than to the moment we happened to wake up.
+   * Tops the pattern curve up to PATTERN_LOOKAHEAD_MS ahead of the playhead — and no further.
+   *
+   * The horizon is the point. This used to write a fixed 200 ms on every 100 ms tick, each starting where
+   * the last ended, so the written curve ran ahead of the music at twice real time: a minute into a song,
+   * a minute of the *current* pattern was already scheduled. A change of pattern then had nowhere to go —
+   * every new curve overlapped an old one, Web Audio refused it (the throw was swallowed below), and the
+   * phone kept strobing to the old pattern for as long as the song had been playing.
+   *
+   * The window is laid out in ctx time, from where the previous curve ended:
+   *  - never in the past (a late tick, a throttled tab) and never before the branch's own start (a
+   *    scheduled start still ahead: the first window then begins at track position 0);
+   *  - PATTERN_CURVE_GAP_SEC clear of the previous curve, because two curves that merely touch are
+   *    "overlapping" whenever float rounding lands the wrong way, which in Chrome was one window in nine;
+   *  - evaluated at the track position that will actually be sounding at each instant, so the curve
+   *    stays aligned to the music rather than to the moment the tick happened to run.
    */
   private writePatternWindow(pattern: Pattern, target?: Branch): void {
     const branch = target ?? this.branches.find((b) => !b.stopped);
     if (!branch || branch.stopped) return;
-    const ctxNow = this.deps.ctx.currentTime;
-    const positionNowMs = (branch.startOffsetSec + (ctxNow - branch.startedAtCtx)) * 1000;
-    let fromMs = Math.max(0, positionNowMs, this.patternWrittenUntilMs);
-    let startCtx = branch.startedAtCtx + (fromMs / 1000 - branch.startOffsetSec);
-    if (startCtx < ctxNow) {
-      fromMs += (ctxNow - startCtx) * 1000;
-      startCtx = ctxNow;
-    }
-    const toMs = fromMs + PATTERN_LOOKAHEAD_MS;
+    const origin = Math.max(this.deps.ctx.currentTime, branch.startedAtCtx);
+    const startCtx = Math.max(origin, branch.patternEndCtx + PATTERN_CURVE_GAP_SEC);
+    const durationSec = origin + PATTERN_LOOKAHEAD_MS / 1000 - startCtx;
+    if (durationSec < PATTERN_MIN_WINDOW_SEC) return; // already written far enough ahead
 
-    const points = Math.max(2, Math.round(((toMs - fromMs) / 1000) * PATTERN_CURVE_HZ));
+    const fromMs = (branch.startOffsetSec + (startCtx - branch.startedAtCtx)) * 1000;
+    const points = Math.max(2, Math.round(durationSec * PATTERN_CURVE_HZ) + 1);
     const curve = new Float32Array(points);
     for (let i = 0; i < points; i++) {
-      curve[i] = evaluatePattern(pattern, fromMs + ((toMs - fromMs) * i) / (points - 1));
+      curve[i] = evaluatePattern(pattern, fromMs + (durationSec * 1000 * i) / (points - 1));
     }
     try {
-      branch.patternGain.gain.setValueCurveAtTime(curve, startCtx, (toMs - fromMs) / 1000);
+      branch.patternGain.gain.setValueCurveAtTime(curve, startCtx, durationSec);
+      branch.patternEndCtx = startCtx + durationSec;
     } catch {
-      /* Web Audio throws when curves overlap; the next tick starts after patternWrittenUntilMs. */
+      // Refused (an engine with its own idea of what overlaps). `patternEndCtx` is left alone, so the
+      // next tick tries again from "now" instead of skipping the window; the count makes it visible.
+      this.patternCurveRejections++;
     }
-    this.patternWrittenUntilMs = toMs;
   }
 
   dispose(): void {
