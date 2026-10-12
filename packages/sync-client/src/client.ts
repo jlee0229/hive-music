@@ -219,6 +219,14 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
         if (msg.code === "KICKED") {
           transport.stopReconnecting();
           room = null;
+          /*
+           * A removed phone has to go quiet by itself: it is no longer in the room, so no pause, stop
+           * or track change will ever reach it, and whatever it had scheduled would play on to the end
+           * of the song with nobody able to stop it. The probe and status timers go too — the socket is
+           * about to close and nothing would ever clear them.
+           */
+          stopTimers();
+          audio.dispose();
         }
         break;
     }

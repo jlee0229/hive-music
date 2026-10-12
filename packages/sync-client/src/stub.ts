@@ -81,6 +81,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
             if (m.code === "KICKED") {
               transport.stopReconnecting();
               room = null;
+              stopTimers();
             }
             break;
         }

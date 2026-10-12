@@ -823,7 +823,8 @@ export function createBrowserAudioEngine(
       pitchedCache.clear();
       lastRoom = null;
       lastAssignment = null;
-      state = "locked";
+      // Through setState, so the UI hears it: after a KICK this is the only notice that the audio stopped.
+      setState("locked");
     },
   };
 
