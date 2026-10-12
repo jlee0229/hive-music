@@ -146,6 +146,8 @@ export interface ApplyResult {
 }
 
 interface Branch {
+  /** The buffer set this branch was built from, so a swap (CHOIR's pitched render) can be detected. */
+  buffers: Map<string, BufferLike>;
   sources: Map<string, SourceLike>;
   stemGains: Map<string, GainLike>;
   patternGain: GainLike;
@@ -325,9 +327,25 @@ export class Scheduler {
       this.applied.serverTimeAtTrackZero === key.serverTimeAtTrackZero &&
       Math.abs(this.applied.timingShiftMs - key.timingShiftMs) <= RESYNC_THRESHOLD_MS;
 
-    if (same && this.playing) {
+    /*
+     * A buffer swap under a running branch (CHOIR: the pitched render finished, or the pitch was cleared).
+     * `setBuffers` only replaces what the *next* branch is built from, so without this the phone kept
+     * playing the old audio until something else — a seek, a pause — happened to rebuild the branch, and
+     * CHOIR switched on mid-song did nothing audible at all. Once the music is sounding it is a crossfade
+     * at the same position (the hard-resync path); a branch still waiting for its start instant is simply
+     * rebuilt below, which is inaudible.
+     */
+    const live = this.branches.find((b) => !b.stopped);
+    const swapped = same && live !== undefined && live.buffers !== this.buffers;
+    const swapBeforeStart = swapped && this.deps.ctx.currentTime < live.startedAtCtx;
+
+    if (same && this.playing && !swapBeforeStart) {
       // Gains and patterns may still have changed — that is a ramp, never a restart (B5e).
       this.applyAssignmentGains(assignment);
+      if (swapped) {
+        const decision = this.crossfadeToTimeline(assignment, opts.useOutputLatency);
+        return { action: decision ? "restarted" : "unchanged", decision: this.lastDecision, reason: "buffers swapped" };
+      }
       if (opts.force) {
         /*
          * A resumed tab or a context that came back from 'interrupted' lands here. Drift-check rather
@@ -378,6 +396,7 @@ export class Scheduler {
     patternGain.connect(fadeGain as never);
 
     const branch: Branch = {
+      buffers: this.buffers,
       sources: new Map(),
       stemGains: new Map(),
       patternGain,
@@ -529,19 +548,26 @@ export class Scheduler {
       return { errorMs, resynced: false };
     }
 
+    // The correction would land outside the track: nothing useful to fade to.
+    if (!this.crossfadeToTimeline(assignment, useOutputLatency)) return { errorMs, resynced: false };
+    this.lastCorrectionMs = errorMs;
+    this.resyncCount++;
+    return { errorMs, resynced: true };
+  }
+
+  /**
+   * Replaces the live branch with a fresh one at the position the timeline says is playing right now,
+   * crossfading over RESYNC_CROSSFADE_MS. Shared by the hard resync (same audio, corrected position) and
+   * a buffer swap (same position, different audio). Returns null — and changes nothing — when "now" is
+   * outside the track.
+   */
+  private crossfadeToTimeline(assignment: Assignment | null, useOutputLatency: boolean): StartDecision | null {
+    if (this.applied === null) return null;
     const ctxNow = this.deps.ctx.currentTime;
-    const startCtxForZero = this.ctxTimeForTrackPosition(
-      this.applied!.serverTimeAtTrackZero,
-      0,
-      assignment,
-      useOutputLatency,
-    );
+    const startCtxForZero = this.ctxTimeForTrackPosition(this.applied.serverTimeAtTrackZero, 0, assignment, useOutputLatency);
     const whenCtx = ctxNow + RESYNC_START_MARGIN_SEC;
     const offsetSec = whenCtx - startCtxForZero;
-    if (offsetSec < 0 || offsetSec >= this.durationSec) {
-      // The correction would land outside the track: nothing useful to fade to.
-      return { errorMs, resynced: false };
-    }
+    if (offsetSec < 0 || offsetSec >= this.durationSec) return null;
     const decision: StartDecision = { whenCtx, offsetSec, startCtxForZero, mode: "immediate" };
     const fadeSec = RESYNC_CROSSFADE_MS / 1000;
     const old = this.branches.filter((b) => !b.stopped);
@@ -553,12 +579,10 @@ export class Scheduler {
     this.branches = this.branches.filter((b) => !b.stopped);
 
     this.lastDecision = decision;
-    this.lastCorrectionMs = errorMs;
-    this.resyncCount++;
     // The fresh branch starts at rate 1: the step it was just given is the correction, so any trim
     // carried over would be applied twice.
     this.lastSlewPpm = 0;
-    return { errorMs, resynced: true };
+    return decision;
   }
 
   private startDriftCheck(): void {
