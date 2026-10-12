@@ -129,6 +129,27 @@ export function arrangeOrchestra(room: RoomState): Map<string, OrchestraSeat> {
   return seats;
 }
 
+export interface StrobeSeating {
+  /** Groups actually in rotation: the host's `groups`, capped at the number of speakers that are there. */
+  groups: number;
+  groupOf: Map<string, number>;
+}
+
+/**
+ * STROBE's seating. A group with nobody in it is a hole in the song — 4 groups and 2 phones used to be
+ * silence half the time, and so did 2 groups with phones whose joinIndexes happened to share a parity.
+ * So: no more groups than connected speakers, and the groups are dealt balanced (connected speakers
+ * first, so every group has someone who is actually there; the absent fill in behind them).
+ */
+export function arrangeStrobe(room: RoomState, requestedGroups: number): StrobeSeating {
+  const speakers = Object.values(room.clients).filter((c) => c.plays).sort(byJoin);
+  const present = presentSpeakers(speakers);
+  const groups = Math.max(1, Math.min(Math.floor(requestedGroups), present.length));
+  const options = Array.from({ length: groups }, (_, i) => i);
+  const absent = speakers.filter((c) => !present.includes(c));
+  return { groups, groupOf: dealBalanced([...present, ...absent], options, new Map()) };
+}
+
 /** "drums", "drums + bass", "unison" (everything) — what the phone's screen says it is playing. */
 function orchestraLabel(seat: OrchestraSeat, stems: readonly string[]): string {
   if (seat.primary === null || stems.every((s) => seat.stems.includes(s))) return "unison";
@@ -163,6 +184,7 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
   const out: Record<string, Assignment | null> = {};
   const roles = stemRoles(room);
   const orchestra = room.mode.kind === "ORCHESTRA" ? arrangeOrchestra(room) : null;
+  const strobe = room.mode.kind === "STROBE" ? arrangeStrobe(room, resolveModeParams(room.mode).groups) : null;
   const stems = allStems(room);
   const p = resolveModeParams(room.mode);
   const clients = Object.values(room.clients).sort((a, b) => a.joinIndex - b.joinIndex);
@@ -209,7 +231,8 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         break;
       }
       case "STROBE": {
-        const group = c.joinIndex % p.groups;
+        const groups = strobe!.groups;
+        const group = strobe!.groupOf.get(c.id)!;
         const role = STEMS[group % STEMS.length]!;
         const a = base(c, `strobe ${group + 1}`, role, gains(room, stems), applyAtServerTime);
         // Beat-locked when the track's tempo is known: each group is audible for beatsPerSwitch
@@ -217,12 +240,12 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         // hands the song from group to group with no overlap and no gap. Patterns evaluate on
         // track time, so beat 0 sits at track zero. No bpm → the free-running period, as before.
         const beatMs = room.track?.bpm ? 60000 / room.track.bpm : null;
-        const periodMs = beatMs ? Math.min(8000, Math.max(100, Math.round(beatMs * p.beatsPerSwitch * p.groups))) : p.periodMs;
-        const duty = beatMs ? 1 / p.groups : p.duty;
+        const periodMs = beatMs ? Math.min(8000, Math.max(100, Math.round(beatMs * p.beatsPerSwitch * groups))) : p.periodMs;
+        const duty = beatMs ? 1 / groups : p.duty;
         // Anchor the whole rotation to the song's beat grid: switches land ON the drum hits, not
         // wherever track time 0 happened to fall inside the bar (intros and pickups shift it).
         const gridMs = beatMs ? Math.round((room.track?.beatOffsetSec ?? 0) * 1000) : 0;
-        a.pattern = { kind: "strobe", periodMs, phaseMs: gridMs + Math.round((group / p.groups) * periodMs), duty, rampMs: 10 };
+        a.pattern = { kind: "strobe", periodMs, phaseMs: gridMs + Math.round((group / groups) * periodMs), duty, rampMs: 10 };
         out[c.id] = a;
         break;
       }
