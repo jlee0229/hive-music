@@ -23,9 +23,9 @@ test("F9: the reconnect banner appears at 20s and clears within 5s, same clientI
 });
 
 test("F9: NO_ROOM shows a not-found state with a way back home", async ({ page }) => {
+  // The page asks the server about the code on arrival now, so a wrong code says so before the
+  // guest has typed a name — there is no join form to fill in for a hive that does not exist.
   await page.goto("/j/NOPE");
-  await page.getByPlaceholder("Your name").fill("Ghost Room");
-  await page.getByRole("button", { name: "Tap to join" }).click();
   await expect(page.getByText("Hive not found")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("link", { name: "Back home" })).toBeVisible();
 });
