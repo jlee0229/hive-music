@@ -592,7 +592,7 @@ function HostRoom({
         )}
 
         <ModeChips current={room.mode.kind} host={client.host} />
-        {room.mode.kind === "STROBE" ? <StrobeControls mode={room.mode} bpm={room.track?.bpm ?? null} host={client.host} /> : null}
+        {room.mode.kind === "STROBE" ? <StrobeControls room={room} host={client.host} /> : null}
 
         <VibeBox host={client.host} />
         <SceneStrip room={room} clock={client.clock} />
