@@ -49,6 +49,34 @@ export interface PeakOptions {
 }
 
 /**
+ * Normalised correlation for every lag in `[from, to)` (already clamped by the caller so that
+ * `to + template.length - 1 <= recording.length`).
+ *
+ * The energy prefix sum covers only the samples this lag range touches, not the whole recording. A
+ * whole-recording prefix was rebuilt for every click — O(recording) time and an 8-byte-per-sample
+ * allocation per phone on the host's main thread — and it let one non-finite sample anywhere poison the
+ * energy of every later window, silently blinding every later click. A non-finite sample now costs only
+ * the lags that actually overlap it, which score 0.
+ */
+function correlate(recording: Float32Array, template: Float32Array, from: number, to: number): Float64Array {
+  const m = template.length;
+  const span = to - from + m - 1;
+  const prefix = new Float64Array(span + 1);
+  for (let i = 0; i < span; i++) {
+    const sq = recording[from + i]! * recording[from + i]!;
+    prefix[i + 1] = prefix[i]! + (sq < Infinity ? sq : 0); // NaN and ±Infinity both fail the comparison
+  }
+  const xc = new Float64Array(to - from);
+  for (let lag = from; lag < to; lag++) {
+    let num = 0;
+    for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
+    const energy = prefix[lag - from + m]! - prefix[lag - from]!;
+    xc[lag - from] = energy > 0 && Number.isFinite(num) ? num / Math.sqrt(energy) : 0;
+  }
+  return xc;
+}
+
+/**
  * Normalised cross-correlation of `template` against `recording` over a lag range, plus the diagnostics
  * that say whether the winner means anything.
  *
@@ -64,17 +92,7 @@ export function findPeak(recording: Float32Array, template: Float32Array, opts: 
     return { lagSamples: from, peak: 0, secondPeak: 0, confidence: 0, prominence: 0 };
   }
 
-  // prefix sums of squares → local energy for any window in O(1)
-  const prefix = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i]! + recording[i]! * recording[i]!;
-
-  const xc = new Float64Array(to - from);
-  for (let lag = from; lag < to; lag++) {
-    let num = 0;
-    for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
-    const energy = prefix[lag + m]! - prefix[lag]!;
-    xc[lag - from] = energy > 0 ? num / Math.sqrt(energy) : 0;
-  }
+  const xc = correlate(recording, template, from, to);
 
   let bestIdx = 0;
   let best = -Infinity;
@@ -141,16 +159,7 @@ export function findPeaks(
   const to = Math.min(n - m, Math.ceil(opts.toSample));
   if (m === 0 || to <= from) return [];
 
-  const prefix = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i]! + recording[i]! * recording[i]!;
-
-  const xc = new Float64Array(to - from);
-  for (let lag = from; lag < to; lag++) {
-    let num = 0;
-    for (let i = 0; i < m; i++) num += recording[lag + i]! * template[i]!;
-    const energy = prefix[lag + m]! - prefix[lag]!;
-    xc[lag - from] = energy > 0 ? num / Math.sqrt(energy) : 0;
-  }
+  const xc = correlate(recording, template, from, to);
 
   const sep = Math.max(1, Math.round(((opts.minSeparationMs ?? 1) / 1000) * opts.sampleRate));
   const taken: MultiPeak[] = [];
