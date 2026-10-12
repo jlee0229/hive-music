@@ -1,19 +1,37 @@
-Load test: 30 clients, 180s, room ZAUX
+Load test: 30 clients, 180s, scenario standard, room P2XT
+  command: bun apps/server/scripts/load-test.ts --clients 30 --duration 180
 
-NTP server-side processing latency (t2-t1), 5370 samples:
-  p50 = 0.000 ms
-  p99 = 0.001 ms
-  max = 0.032 ms
+NTP handler latency on the server (t2-t1): p50=0.000 p95=0.000 p99=0.000 max=0.689 ms (n=12120)
   target: p50/p99 < 1 ms  ->  PASS
+NTP round trip seen by the load clients (loopback, includes this generator's lag): p50=0.12 p95=0.28 p99=0.48 max=5.18 ms (n=12120)
+Canary (separate process, 10 Hz, 581/1803 answered) — server event-loop lag as a phone sees it:
+  round trip:                         p50=0.17 p95=0.30 p99=0.42 max=0.55 ms (n=581)
+  clock-offset error, single probe:   p50=0.01 p95=0.05 p99=0.10 max=0.19 ms (n=581)
+  clock-offset error, min-RTT of 30:  p50=0.00 p95=0.01 p99=0.02 max=0.02 ms (n=581)
 
-ROOM_STATE broadcast rate (observed by the host):
-  56 messages over 180s = 0.311 Hz average
-  smallest gap between consecutive broadcasts: 499.7 ms
-  worst 1s sliding-window count (informational; a boundary artifact, not the server's real guarantee): 2 messages
-  target: >= 1000/ROOM_STATE_MAX_HZ (500ms), 10ms tolerance for client-side measurement/timer granularity  ->  PASS
-
-Largest message any client received: 17878 bytes
+ROOM_STATE (observed by the host): 60 broadcasts over 180s = 0.333 Hz
+  smallest gap between consecutive broadcasts: 501.5 ms
+  target: >= 490 ms (the 2 Hz cap, 10 ms tolerance)  ->  PASS
+  size: p50=18042 p95=19942 p99=19943 max=19943 bytes (n=60)  = 665 bytes per client at the max
+Largest message any client received: 19943 bytes
   target: <= 65536 bytes  ->  PASS
 
-Server RSS: start=74340kB end=76436kB
-  target: roughly flat (no unbounded growth over one run)  ->  PASS
+Server egress over WebSocket: 34.19 MB in 180s = 189.6 kB/s total, 379.2 kB per client per minute
+  ROOM_STATE            1771 msgs     32.305 MB  92.9 %   largest 19943 B
+  NTP_RESPONSE         12120 msgs      1.608 MB   4.6 %   largest 134 B
+  HEALTH                 181 msgs      0.843 MB   2.4 %   largest 4899 B
+  PING                   270 msgs      0.013 MB   0.0 %   largest 47 B
+  WELCOME                 30 msgs      0.005 MB   0.0 %   largest 153 B
+Client -> server: 15335 msgs, 1.31 MB
+
+Host action (SET_MODE) -> the resulting ROOM_STATE, 17 actions:
+  first client: p50=0.5 p95=267.1 p99=267.1 max=267.1 ms (n=17)
+  last client:  p50=1.3 p95=267.8 p99=267.8 max=267.8 ms (n=17)
+  all clients:  p50=1.0 p95=267.1 p99=267.6 max=267.8 ms (n=510)   (clients that never saw their snapshot: 0)
+
+Server process: RSS idle=55700 kB, after join=57900 kB, peak=61764 kB, end=57860 kB (private 240480 kB)
+  RSS slope over the run: 504.8 kB/min over 91 samples
+  target: roughly flat (end < 1.5 x after-join)  ->  PASS
+  CPU: 907 ms over 180s = 0.50 % of one core  (15.12 ms per ROOM_STATE broadcast, all work included)
+Connections: 30 attempts, 0 failed, 0 reconnects completed; errors: none
+Load generator event-loop lag: p50=0.8 p95=1.3 p99=1.6 max=7.3 ms (n=8683)
