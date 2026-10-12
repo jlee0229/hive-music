@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from "@hive/protocol";
 import { Room, type Conn } from "../rooms";
 
@@ -154,5 +154,85 @@ describe("SG-02: only the hostKey grants host", () => {
     room.join(p2.ws, join("player-000001", "host", room.hostKey));
     expect(room.room.hostClientIds).toEqual(["real-host-0001", "player-000001"]);
     room.destroy();
+  });
+});
+
+/**
+ * HOST-16 (found independently by host-ui, relayed by the coordinator), replayed over real sockets
+ * against the real server process: a guest reads the host's client id out of ROOM_STATE.hostClientIds
+ * and re-JOINs under it with kind:"host" and no key. On HEAD that answered WELCOME isHost:true and the
+ * attacker's SET_MODE was applied.
+ */
+describe("SG-02 / HOST-16 over the wire", () => {
+  const PORT = 23080 + Math.floor(Math.random() * 900);
+  let proc: ReturnType<typeof Bun.spawn>;
+  beforeAll(async () => {
+    proc = Bun.spawn(["bun", `${import.meta.dir}/../index.ts`], { env: { ...process.env, PORT: String(PORT), ROOM_FIXED_CODE: "", HOST_KEY_SECRET: "host-16-test-secret-0123456789abcdef" }, stdout: "ignore", stderr: "inherit" });
+    for (let i = 0; i < 80; i++) {
+      try {
+        if ((await fetch(`http://localhost:${PORT}/health`)).ok) return;
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("server did not start");
+  });
+  afterAll(() => proc.kill());
+
+  function open(joinFields: Record<string, unknown>, code: string) {
+    const log: ServerMessage[] = [];
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws`);
+    const answered = new Promise<void>((resolve) => {
+      ws.onopen = () => ws.send(JSON.stringify({ type: "JOIN", roomCode: code, device, protocolVersion: PROTOCOL_VERSION, ...joinFields }));
+      ws.onmessage = (e) => {
+        const m = JSON.parse(String(e.data)) as ServerMessage;
+        log.push(m);
+        if (m.type === "WELCOME" || m.type === "ERROR") resolve();
+      };
+    });
+    const until = async (pred: (m: ServerMessage) => boolean, ms = 3000) => {
+      for (let waited = 0; waited < ms; waited += 25) {
+        const hit = log.find(pred);
+        if (hit) return hit;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error("timed out waiting for a message");
+    };
+    return { ws, log, answered, until };
+  }
+
+  test("the host's id is public, and it is worth nothing without the key", async () => {
+    const { code, hostKey } = (await (await fetch(`http://localhost:${PORT}/rooms`, { method: "POST", body: "{}" })).json()) as { code: string; hostKey: string };
+    const host = open({ clientId: "real-host-0001", kind: "host", plays: false, hostKey, name: "Host" }, code);
+    await host.answered;
+    const guest = open({ clientId: "attacker-as-player-1", kind: "player", plays: true, name: "Mallory" }, code);
+    await guest.answered;
+    const state = (await guest.until((m) => m.type === "ROOM_STATE" && m.room.hostClientIds.length > 0)) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
+    const leakedHostId = state.room.hostClientIds[0]!;
+    expect(leakedHostId).toBe("real-host-0001");
+
+    for (const extra of [{}, { hostKey: "guess" }, { hostKey: "" }]) {
+      const attacker = open({ clientId: leakedHostId, kind: "host", plays: false, name: "Mallory", ...extra }, code);
+      await attacker.answered;
+      expect(attacker.log.find((m) => m.type === "WELCOME")).toMatchObject({ isHost: false });
+      attacker.ws.send(JSON.stringify({ type: "SET_MODE", mode: "STROBE", params: {} }));
+      attacker.ws.send(JSON.stringify({ type: "KICK", clientId: "attacker-as-player-1" }));
+      attacker.ws.send(JSON.stringify({ type: "KICK", clientId: leakedHostId }));
+      attacker.ws.send(JSON.stringify({ type: "PONG" })); // a marker: everything before it has been handled once NTP answers
+      attacker.ws.send(JSON.stringify({ type: "NTP_REQUEST", t0: 1 }));
+      await attacker.until((m) => m.type === "NTP_RESPONSE");
+      expect(attacker.log.flatMap((m) => (m.type === "ERROR" ? [m.code] : []))).toEqual(["NOT_HOST", "NOT_HOST", "NOT_HOST"]);
+      attacker.ws.close();
+    }
+
+    // the real host is still the only host, still connected, and the mode never moved
+    host.ws.send(JSON.stringify({ type: "SET_MODE", mode: "WAVE", params: {} }));
+    const after = (await guest.until((m) => m.type === "ROOM_STATE" && m.room.mode.kind !== "UNISON")) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
+    expect(after.room.mode.kind).toBe("WAVE"); // the host's change, not the attacker's STROBE
+    expect(after.room.hostClientIds).toEqual(["real-host-0001"]);
+    expect(after.room.clients["real-host-0001"]).toMatchObject({ kind: "host", connected: true });
+    expect(after.room.clients["attacker-as-player-1"]).toMatchObject({ kind: "player" });
+    expect(host.log.some((m) => m.type === "ERROR")).toBe(false);
+    host.ws.close();
+    guest.ws.close();
   });
 });
