@@ -1,5 +1,6 @@
 /** Shared room builders for the planner tests. */
 import { PROTOCOL_VERSION, STEMS } from "../constants";
+import type { Pattern } from "../pattern";
 import { SILENT_DB } from "../planner";
 import { IDLE_CALIBRATION, type Assignment, type ClientRecord, type RoomState } from "../room";
 
@@ -31,4 +32,25 @@ export function heard(plan: Record<string, Assignment | null>, ids?: string[]): 
   const set = new Set<string>();
   for (const [id, a] of Object.entries(plan)) if (a && (!ids || ids.includes(id))) for (const s of audible(a)) set.add(s);
   return [...set].sort();
+}
+
+/** Fraction of one period during which none of the patterns' on-windows [phase, phase + duty·period) is open. */
+export function uncoveredFraction(patterns: Pattern[]): number {
+  const period = patterns[0]!.periodMs;
+  const cuts: Array<[number, number]> = [];
+  for (const p of patterns) {
+    const start = ((p.phaseMs % period) + period) % period;
+    const len = (p.duty ?? 0.5) * period;
+    if (start + len <= period) cuts.push([start, start + len]);
+    else cuts.push([start, period], [0, start + len - period]);
+  }
+  cuts.sort((a, b) => a[0] - b[0]);
+  let covered = 0;
+  let reach = 0;
+  for (const [a, b] of cuts) {
+    if (b <= reach) continue;
+    covered += b - Math.max(a, reach);
+    reach = b;
+  }
+  return 1 - covered / period;
 }

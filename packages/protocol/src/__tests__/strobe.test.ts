@@ -1,33 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { arrangeStrobe, plan } from "../planner";
-import type { Pattern } from "../pattern";
 import type { ClientRecord, RoomState } from "../room";
 import { prng } from "./harness";
-import { client, room } from "./room-fixture";
+import { client, room, uncoveredFraction } from "./room-fixture";
 
 const strobe = (params: RoomState["mode"]["params"]): RoomState["mode"] => ({ kind: "STROBE", params });
 const host = client(0, { kind: "host", plays: false });
-
-/** Fraction of one period during which none of the patterns' on-windows [phase, phase + duty·period) is open. */
-export function uncoveredFraction(patterns: Pattern[]): number {
-  const period = patterns[0]!.periodMs;
-  const cuts: Array<[number, number]> = [];
-  for (const p of patterns) {
-    const start = ((p.phaseMs % period) + period) % period;
-    const len = (p.duty ?? 0.5) * period;
-    if (start + len <= period) cuts.push([start, start + len]);
-    else cuts.push([start, period], [0, start + len - period]);
-  }
-  cuts.sort((a, b) => a[0] - b[0]);
-  let covered = 0;
-  let reach = 0;
-  for (const [a, b] of cuts) {
-    if (b <= reach) continue;
-    covered += b - Math.max(a, reach);
-    reach = b;
-  }
-  return 1 - covered / period;
-}
 
 describe("STROBE never rotates through an empty group (PROTO-07)", () => {
   test("4 groups, 2 phones: two groups, not half a song of silence", () => {
