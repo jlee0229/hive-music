@@ -188,6 +188,7 @@ const server = Bun.serve<Conn>({
 
     const audio = url.pathname.match(/^\/audio\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\.wav$/);
     if (audio) {
+      if (req.method !== "GET" && req.method !== "HEAD") return json({ error: "method_not_allowed" }, 405);
       const f = Bun.file(`${FIXTURES_DIR}/tracks/${audio[1]}/${audio[2]}.wav`);
       if (!(await f.exists())) return json({ error: "not found; run `bun run fixtures`" }, 404);
       const audioHeaders = { ...corsHeaders, "Content-Type": "audio/wav", "Cache-Control": "public, max-age=31536000, immutable", "Accept-Ranges": "bytes" };
@@ -195,11 +196,13 @@ const server = Bun.serve<Conn>({
       // give up instead of playing, so a single-range request gets a real 206 (engine's R-1 review).
       const range = req.headers.get("range");
       const match = range?.match(/^bytes=(\d*)-(\d*)$/);
-      if (match) {
+      if (match && (match[1] || match[2])) {
         const total = f.size;
-        const start = match[1] ? Number(match[1]) : 0;
-        const end = match[2] ? Number(match[2]) : total - 1;
-        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= total) {
+        // `bytes=-N` is the LAST N bytes (RFC 9110 §14.1.2), not bytes 0..N.
+        const suffix = !match[1];
+        const start = suffix ? Math.max(0, total - Number(match[2])) : Number(match[1]);
+        const end = suffix || !match[2] ? total - 1 : Number(match[2]);
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= total || (suffix && Number(match[2]) === 0)) {
           return new Response(null, { status: 416, headers: { ...audioHeaders, "Content-Range": `bytes */${total}` } });
         }
         const clampedEnd = Math.min(end, total - 1);
