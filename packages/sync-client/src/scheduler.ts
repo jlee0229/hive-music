@@ -190,7 +190,7 @@ interface AppliedKey {
   timingShiftMs: number;
 }
 
-/** delayMs − compensationMs: the net shift of this device's playhead, in ms. */
+/** delayMs − compensationMs: the assignment's share of this device's playhead shift, in ms. */
 const timingShiftOf = (a: Assignment | null): number => (a?.delayMs ?? 0) - (a?.compensationMs ?? 0);
 
 export class Scheduler {
@@ -220,6 +220,8 @@ export class Scheduler {
   slewEnabled = PLAYBACK_RATE_SLEW_DEFAULT;
   private driftTimer: ReturnType<typeof setInterval> | null = null;
   private useOutputLatency = false;
+  /** Last usable `ctx.outputLatency`, seconds — see `outputLatencySec()`. */
+  private lastOutputLatencySec = 0;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.master = deps.ctx.createGain();
@@ -273,8 +275,29 @@ export class Scheduler {
     const base = this.deps.mapper.ctxTimeForNow(serverTime, ctxNow, this.deps.now());
     const delaySec = (a?.delayMs ?? 0) / 1000;
     const compSec = (a?.compensationMs ?? 0) / 1000;
-    const olSec = useOutputLatency ? this.deps.ctx.outputLatency || 0 : 0;
+    const olSec = useOutputLatency ? this.outputLatencySec() : 0;
     return base + delaySec - compSec - olSec;
+  }
+
+  /**
+   * `ctx.outputLatency`, held at its last usable value. Once this phone has reported a latency the
+   * server stops sending a table guess for it, so the live value is the *only* compensation left: a read
+   * of 0 (a context that has not rendered yet, a browser hiccup) would silently play ~40 ms late, and a
+   * NaN would make every `start(when)` throw.
+   */
+  private outputLatencySec(): number {
+    const live = this.deps.ctx.outputLatency;
+    if (typeof live === "number" && Number.isFinite(live) && live > 0) this.lastOutputLatencySec = live;
+    return this.lastOutputLatencySec;
+  }
+
+  /**
+   * The whole shift of this device's playhead, ms: the assignment's delay and compensation *and* the
+   * output latency the client subtracts itself when the server has no number for it. All three move the
+   * audio, so all three belong in the "has the schedule changed?" comparison — see `apply`.
+   */
+  private netTimingShiftMs(a: Assignment | null, useOutputLatency: boolean): number {
+    return timingShiftOf(a) - (useOutputLatency ? this.outputLatencySec() * 1000 : 0);
   }
 
   /**
@@ -313,12 +336,18 @@ export class Scheduler {
       trackId: opts.trackId,
       transportState: "playing",
       serverTimeAtTrackZero: transport.serverTimeAtTrackZero,
-      timingShiftMs: timingShiftOf(assignment),
+      timingShiftMs: this.netTimingShiftMs(assignment, opts.useOutputLatency),
     };
     /*
      * A timing shift under RESYNC_THRESHOLD_MS is left to the drift check (B4) to absorb; a bigger one
      * is rescheduled now. This matters for WAVE: its delayMs is up to 300 ms, so switching into WAVE
      * mid-song has to move the playhead immediately or the mode does nothing audible.
+     *
+     * The shift compared is the *net* one. The server retires its table guess the first time a phone
+     * reports `outputLatency`: one snapshot drops ~45 ms from compensationMs and flips useOutputLatency
+     * on. Comparing compensation alone read that as a 45 ms move and stop-started the music on every
+     * Android phone two seconds after it joined, when the playhead had really moved by the few ms
+     * between the guess and the measurement.
      */
     const same =
       this.applied !== null &&
@@ -579,6 +608,9 @@ export class Scheduler {
     this.branches = this.branches.filter((b) => !b.stopped);
 
     this.lastDecision = decision;
+    // The branch now embodies today's shift (a Bluetooth route that added 150 ms of output latency was
+    // just corrected for); without this the next snapshot would see a "change" and restart it again.
+    this.applied = { ...this.applied, timingShiftMs: this.netTimingShiftMs(assignment, useOutputLatency) };
     // The fresh branch starts at rate 1: the step it was just given is the correction, so any trim
     // carried over would be applied twice.
     this.lastSlewPpm = 0;
