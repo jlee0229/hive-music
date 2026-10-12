@@ -206,3 +206,25 @@ test("a phone whose AudioContext.resume() never settles still joins the hive and
   host.close();
   await context.close();
 });
+
+test("joining mid-song on a slow connection says the song is loading instead of sitting silent", async ({ browser }) => {
+  const { code, host } = await playingRoom();
+  const { context, page } = await newPhone(browser);
+  // Hold every stem for 4 s: a guest on cellular.
+  await page.route("**/audio/**", async (route) => {
+    await new Promise((r) => setTimeout(r, 4000));
+    await route.continue();
+  });
+
+  await tapJoin(page, code, "On Cellular");
+  await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Loading the song/)).toBeVisible({ timeout: 3_000 });
+  expect((await audio(page)).rms).toBeLessThan(0.001);
+
+  // When the stems land the notice goes away and the music is there.
+  await expect.poll(async () => (await audio(page)).rms, { timeout: 20_000 }).toBeGreaterThan(0.01);
+  await expect(page.getByText(/Loading the song/)).toHaveCount(0);
+
+  host.close();
+  await context.close();
+});

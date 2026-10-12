@@ -197,6 +197,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         status={status}
         connection={connection}
         muted={audio.muted}
+        audioState={audio.state}
+        loadProgress={audio.loadProgress}
         roomCode={roomCode}
         name={name}
       />

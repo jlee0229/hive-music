@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ClientRecord, RoomState } from "@hive/protocol";
+import type { AudioState, ClientRecord, RoomState } from "@hive/protocol";
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
 import { beatPhase, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
@@ -18,6 +18,8 @@ export function PlayerPlayingScreen({
   connection,
   muted,
   roomCode,
+  audioState = "ready",
+  loadProgress = 1,
 }: {
   client: HiveClient;
   room: RoomState;
@@ -28,6 +30,9 @@ export function PlayerPlayingScreen({
   muted: boolean;
   roomCode: string;
   name: string;
+  /** The engine's audio state; anything but "ready" means this phone is not making sound yet. */
+  audioState?: AudioState;
+  loadProgress?: number;
 }) {
   const assignment = me?.assignment ?? null;
   const roleColor = assignment ? ROLE_COLORS[assignment.role] : ROLE_COLORS.unison;
@@ -54,6 +59,21 @@ export function PlayerPlayingScreen({
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [client, room.track?.bpm, assignment]);
+
+  let statusLine: React.ReactNode;
+  if (audioState !== "ready") {
+    // Joined mid-song, or the playlist moved on: the room is playing and this phone is still
+    // fetching the song. Without this line it sat on a full-colour "playing" screen in silence.
+    statusLine = <span>Loading the song…{audioState === "loading" && loadProgress > 0 ? ` ${Math.round(loadProgress * 100)}%` : ""}</span>;
+  } else if (muted) {
+    statusLine = <span>Muted</span>;
+  } else {
+    statusLine = (
+      <span>
+        {room.track?.title ?? "—"} · {formatTrackTime(trackTimeSec)}
+      </span>
+    );
+  }
 
   return (
     <main
@@ -96,9 +116,7 @@ export function PlayerPlayingScreen({
         <span className="font-display text-[76px] leading-none font-extrabold tracking-tight uppercase">
           {assignment?.label ?? "Unison"}
         </span>
-        <span className="text-[15px] opacity-80">
-          {room.track?.title ?? "—"} · {formatTrackTime(trackTimeSec)}
-        </span>
+        <span className="text-[15px] opacity-80">{statusLine}</span>
       </div>
 
       {/* No nudge slider here anymore: timing is automatic (live latency + the tuning moment), and
