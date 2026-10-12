@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CLIENT_MESSAGE_TYPES, ClientMessageSchema, SERVER_MESSAGE_TYPES, ServerMessageSchema, parseClientMessage } from "../messages";
+import { CLIENT_MESSAGE_TYPES, ClientMessageSchema, SERVER_MESSAGE_TYPES, ServerMessageSchema, parseClientMessage, parseServerMessage } from "../messages";
 import { RoomStateSchema, IDLE_CALIBRATION } from "../room";
 import { ScenePlanSchema, activeSceneIndex } from "../scene";
 import { PROTOCOL_VERSION } from "../constants";
@@ -75,6 +75,60 @@ describe("message schemas", () => {
   });
 });
 
+describe("PROTO-13 · an old tab survives a newer server", () => {
+  const rec = {
+    id: "c1-00000000", kind: "player", plays: true, name: "P", device, joinIndex: 1, joinedAtServerTime: 0, position: null, pinnedRole: null,
+    nudgeMs: 0, tableLatencyMs: null, calibratedOffsetMs: null, connected: true, audioReadyTrackId: null,
+    assignment: { label: "drums", role: "drums", color: "#F59E0B", gainsDb: { mix: 0 }, delayMs: 0, compensationMs: 12, pattern: null, applyAtServerTime: null },
+  };
+  const base = {
+    code: "BZQ7", protocolVersion: PROTOCOL_VERSION + 1, createdAtServerTime: 0, hostClientIds: [],
+    track: { id: "t", title: "T", durationSec: 60, stems: ["mix"], somethingNew: 1 },
+    transport: { state: "playing", serverTimeAtTrackZero: 123 }, mode: { kind: "UNISON", params: {} }, scenePlan: null,
+    calibration: IDLE_CALIBRATION, clients: { "c1-00000000": rec },
+  };
+  const wire = (room: unknown) => parseServerMessage(JSON.stringify({ type: "ROOM_STATE", room }));
+
+  test("a mode this bundle has never heard of does not cost it the whole snapshot", () => {
+    // what CHOIR was to every tab that predated it: strict parsing dropped every ROOM_STATE while it was on
+    const future = { ...base, mode: { kind: "DISCO", params: { sparkle: 9, groups: 64 } } };
+    expect(RoomStateSchema.safeParse(future).success).toBe(false); // the strict schema still says no
+    const m = wire(future);
+    expect(m).not.toBeNull();
+    if (m?.type !== "ROOM_STATE") throw new Error("not a ROOM_STATE");
+    expect(m.room.mode).toEqual({ kind: "UNISON", params: {} });
+    // and what the phone needs to keep playing is intact
+    expect(m.room.transport).toEqual({ state: "playing", serverTimeAtTrackZero: 123 });
+    expect(m.room.clients["c1-00000000"]!.assignment!.compensationMs).toBe(12);
+  });
+
+  test("a scene plan it cannot read becomes no plan; unknown kinds, roles, patterns and devices degrade one field", () => {
+    const m = wire({
+      ...base,
+      scenePlan: { prompt: "p", source: "rules", createdAtServerTime: 0, scenes: [{ atTrackSec: 0, mode: "DISCO", params: {}, note: "n" }] },
+      clients: {
+        "c1-00000000": { ...rec, kind: "robot", device: { ...device, browserFamily: "vision-pro" }, assignment: { ...rec.assignment, role: "piano", pattern: { kind: "sparkle", periodMs: 5, phaseMs: 0 } } },
+      },
+    });
+    if (m?.type !== "ROOM_STATE") throw new Error("not a ROOM_STATE");
+    expect(m.room.scenePlan).toBeNull();
+    const c = m.room.clients["c1-00000000"]!;
+    expect(c.kind).toBe("viewer");
+    expect(c.device.browserFamily).toBe("other");
+    expect(c.assignment).toMatchObject({ role: "unison", pattern: null, label: "drums", gainsDb: { mix: 0 } });
+  });
+
+  test("what a phone cannot play without stays strict, and everything valid parses exactly as before", () => {
+    expect(wire({ ...base, transport: { state: "warp" } })).toBeNull();
+    expect(wire({ ...base, clients: { "c1-00000000": { ...rec, assignment: { ...rec.assignment, compensationMs: null } } } })).toBeNull();
+    expect(wire({ ...base, track: { id: "t", title: "T", durationSec: -1, stems: [] } })).toBeNull();
+    const valid = { ...base, track: { id: "t", title: "T", durationSec: 60, stems: ["mix"] }, mode: { kind: "STROBE", params: { groups: 4, beatsPerSwitch: 0.5 } } };
+    const m = wire(valid);
+    if (m?.type !== "ROOM_STATE") throw new Error("not a ROOM_STATE");
+    expect(m.room).toEqual(RoomStateSchema.parse(valid));
+  });
+});
+
 describe("scene plan", () => {
   test("requires ascending scenes and finds the active one", () => {
     const ok = ScenePlanSchema.safeParse({ prompt: "p", source: "rules", createdAtServerTime: 0, scenes: [{ atTrackSec: 0, mode: "UNISON", params: {}, note: "a" }, { atTrackSec: 30, mode: "WAVE", params: {}, note: "b" }] });
@@ -87,5 +141,30 @@ describe("scene plan", () => {
       expect(activeSceneIndex(ok.data, 30)).toBe(1);
     }
     expect(activeSceneIndex(null, 10)).toBe(-1);
+  });
+
+  test("PROTO-16 · boundaries: before the first scene, past the last, the limits of the schema", () => {
+    const mk = (ats: number[]) => ({ prompt: "p", source: "rules" as const, createdAtServerTime: 0, scenes: ats.map((atTrackSec, i) => ({ atTrackSec, mode: "UNISON" as const, params: {}, note: `s${i}` })) });
+    const late = ScenePlanSchema.parse(mk([10, 20]));
+    expect(activeSceneIndex(late, 0)).toBe(-1); // a plan need not start at 0: nothing is active before its first scene
+    expect(activeSceneIndex(late, 9.999)).toBe(-1);
+    expect(activeSceneIndex(late, 10)).toBe(0);
+    expect(activeSceneIndex(late, 1e9)).toBe(1);
+    expect(activeSceneIndex(late, -5)).toBe(-1);
+    expect(activeSceneIndex(late, NaN)).toBe(-1);
+    expect(activeSceneIndex(undefined, 0)).toBe(-1);
+    expect(ScenePlanSchema.safeParse(mk([])).success).toBe(false);
+    expect(ScenePlanSchema.safeParse(mk([0, 0])).success).toBe(false); // strictly ascending: a duplicate boundary is refused
+    expect(ScenePlanSchema.safeParse(mk([-1])).success).toBe(false);
+    expect(ScenePlanSchema.safeParse(mk(Array.from({ length: 12 }, (_, i) => i))).success).toBe(true);
+    expect(ScenePlanSchema.safeParse(mk(Array.from({ length: 13 }, (_, i) => i))).success).toBe(false);
+    expect(ScenePlanSchema.safeParse({ ...mk([0]), prompt: "x".repeat(501) }).success).toBe(false);
+    const withNote = mk([0]);
+    withNote.scenes[0]!.note = "n".repeat(41);
+    expect(ScenePlanSchema.safeParse(withNote).success).toBe(false);
+    // scene params go through the same bounded ModeParamsSchema as SET_MODE, unknown keys stripped
+    const parsed = ScenePlanSchema.parse({ ...mk([0]), scenes: [{ atTrackSec: 0, mode: "STROBE", params: { groups: 4, laser: true }, note: "n" }] });
+    expect(parsed.scenes[0]!.params).toEqual({ groups: 4 });
+    expect(ScenePlanSchema.safeParse({ ...mk([0]), scenes: [{ atTrackSec: 0, mode: "STROBE", params: { groups: 99 }, note: "n" }] }).success).toBe(false);
   });
 });

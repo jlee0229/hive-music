@@ -8,6 +8,12 @@ export const PROTOCOL_VERSION = 4 as const;
 // ---- timeline & scheduling --------------------------------------------------
 /** PLAY is scheduled this far ahead so every phone can line up on the same instant. */
 export const LEAD_MS = 600;
+/**
+ * Gap between songs when the playlist auto-advances: long enough for most phones to download and decode
+ * the next track's stems (they arrive in the same ROOM_STATE that moves the transport), so the room comes
+ * in together instead of straggling. Slower phones still join mid-song when ready.
+ */
+export const TRACK_ADVANCE_LEAD_MS = 5000;
 /** Hard resync (20 ms crossfade) when |playhead error| exceeds this. */
 export const RESYNC_THRESHOLD_MS = 10;
 export const RESYNC_CROSSFADE_MS = 20;
@@ -115,6 +121,15 @@ export const WAVE_DEFAULT_SPAN_MS = 240;
 export const WAVE_SWELL_PERIOD_MS = 2000;
 export const STROBE_DEFAULT_PERIOD_MS = 500;
 export const STROBE_DEFAULT_DUTY = 0.5;
+/**
+ * Beat-locked STROBE: bounds on one group's turn. A turn outside them is doubled or halved until it
+ * fits — stays on the beat grid — rather than clamped. 50 ms admits sixteenths up to 300 BPM; 8 s admits
+ * whole notes down to 30 BPM.
+ */
+export const STROBE_MIN_SLOT_MS = 50;
+export const STROBE_MAX_SLOT_MS = 8000;
+/** Edge softening of the strobe gate, ms. */
+export const STROBE_RAMP_MS = 10;
 
 // ---- devices ----------------------------------------------------------------
 export const BROWSER_FAMILIES = ["ios-safari", "android-chrome", "desktop-chrome", "desktop-safari", "other"] as const;

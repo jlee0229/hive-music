@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { BROWSER_FAMILIES, NUDGE_RANGE_MS, ROLES, STEMS } from "./constants";
-import { ModeSchema } from "./mode";
+import { BROWSER_FAMILIES, MODES, NUDGE_RANGE_MS, ROLES, STEMS } from "./constants";
+import { ModeParamsSchema, ModeSchema } from "./mode";
 import { PatternSchema } from "./pattern";
 import { ScenePlanSchema } from "./scene";
 
@@ -89,12 +89,13 @@ export const ClientRecordSchema = z.object({
   assignment: AssignmentSchema.nullable(),
   connected: z.boolean(),
   /** Track id this client has fully decoded (all stems), or null. */
-  audioReadyTrackId: z.string().nullable(),
+  audioReadyTrackId: z.string().max(64).nullable(),
 });
 export type ClientRecord = z.infer<typeof ClientRecordSchema>;
 
 export const CalibrationResultSchema = z.object({
-  residualMs: z.number(),
+  /** Finite: this is added to `calibratedOffsetMs`, and an Infinity there serializes as null (see messages.ts). */
+  residualMs: z.number().finite(),
   confidence: z.number().min(0).max(1),
 });
 export const CalibrationStateSchema = z.object({
@@ -120,6 +121,42 @@ export const RoomStateSchema = z.object({
   clients: z.record(z.string(), ClientRecordSchema),
 });
 export type RoomState = z.infer<typeof RoomStateSchema>;
+
+/**
+ * RoomState **as a client reads it off the wire** — the same shape and the same TypeScript type as
+ * `RoomStateSchema`, but forgiving about values a *newer* server may send that this bundle has never
+ * heard of.
+ *
+ * Why it exists: web (Vercel) and server (Fly) deploy at different times and phones keep a tab open for
+ * hours, so an old bundle talking to a new server is the normal state of the world for a while after
+ * every deploy. A ROOM_STATE is one zod parse; with the strict schema a single unknown enum value
+ * anywhere in it makes the phone drop the whole snapshot, silently, and keep dropping them. That is what
+ * adding the CHOIR mode did to every tab that predated it: the moment a host picked CHOIR (or a vibe
+ * plan merely *contained* a CHOIR scene) those phones stopped receiving track changes, transport and
+ * assignments until the mode changed back — and PROTOCOL_VERSION had not moved, so nothing told them
+ * to reload.
+ *
+ * So, on receive only: an unknown mode reads as UNISON (the phone's own `assignment` — gains, delay,
+ * pattern — still comes from the server and is still applied), out-of-range mode params read as {},
+ * an unparsable scene plan as none, an unknown client kind as a viewer, an unknown role as `unison`, an
+ * unknown pattern as no pattern (audible, ungated), an unknown browser family as `other`. Everything a
+ * phone needs in order to keep playing in time stays strict. The server keeps producing against the
+ * strict `RoomStateSchema`; tests validate against the strict one.
+ */
+const WireAssignmentSchema = AssignmentSchema.extend({
+  role: z.enum(ROLES).catch("unison"),
+  pattern: PatternSchema.nullable().catch(null),
+});
+const WireClientRecordSchema = ClientRecordSchema.extend({
+  kind: z.enum(["host", "player", "viewer"]).catch("viewer"),
+  device: DeviceInfoSchema.extend({ browserFamily: z.enum(BROWSER_FAMILIES).catch("other") }),
+  assignment: WireAssignmentSchema.nullable(),
+});
+export const RoomStateWireSchema = RoomStateSchema.extend({
+  mode: z.object({ kind: z.enum(MODES).catch("UNISON"), params: ModeParamsSchema.catch({}) }),
+  scenePlan: ScenePlanSchema.nullable().catch(null),
+  clients: z.record(z.string(), WireClientRecordSchema),
+});
 
 /** Track position in seconds for a transport at a given server time (0 when stopped). */
 export function trackTimeSec(transport: Transport, serverTime: number): number {

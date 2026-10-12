@@ -43,5 +43,5 @@ export const REST_ROUTES = {
   tracks: "GET /tracks?q=",
   audio: "GET /audio/:trackId/:stem.wav",
   vibe: "POST /rooms/:code/vibe",
-  uploadTrack: "POST /tracks (stretch)",
+  uploadTrack: "POST /tracks",
 } as const;

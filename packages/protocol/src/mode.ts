@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { MODES, STROBE_DEFAULT_DUTY, STROBE_DEFAULT_PERIOD_MS, WAVE_DEFAULT_SPAN_MS, WAVE_SPAN_MAX_MS } from "./constants";
 
+/** A track has at most 6 stems (TrackInfoSchema); a trim map has no business being larger than that plus slack. */
+export const MAX_STEM_TRIMS = 8;
+
 /** Mode parameters. Unknown keys are stripped; every field is optional so `{}` is always valid. */
 export const ModeParamsSchema = z.object({
   /** WAVE: which axis of the map the delay grows along. */
@@ -19,7 +22,14 @@ export const ModeParamsSchema = z.object({
    */
   beatsPerSwitch: z.number().min(0.25).max(4).optional(),
   /** Any mode: global per-stem trim in dB applied on top of the mode's gains. */
-  stemGainsDb: z.record(z.string(), z.number().min(-60).max(12)).optional(),
+  stemGainsDb: z
+    .record(z.string(), z.number().min(-60).max(12))
+    // Bounded by a refinement rather than a key schema: this object is also the Vibe Director's
+    // structured-output format, and a refinement is invisible to the JSON-schema conversion.
+    .refine((g) => Object.keys(g).length <= MAX_STEM_TRIMS && Object.keys(g).every((k) => k.length > 0 && k.length <= 32), {
+      message: `at most ${MAX_STEM_TRIMS} stems, names 1..32 chars`,
+    })
+    .optional(),
 });
 export type ModeParams = z.infer<typeof ModeParamsSchema>;
 
