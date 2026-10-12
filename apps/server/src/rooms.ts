@@ -40,6 +40,14 @@ const now = () => performance.timeOrigin + performance.now();
 const TRACK_ADVANCE_LEAD_MS = 5000;
 
 /**
+ * Hard ceiling on client records in one room (connected or retained). Not the product limit — that
+ * is MAX_PLAYERS (64) and nothing enforces it yet — but the point past which a room is certainly
+ * under attack: ROOM_STATE grows ~520 bytes per record and goes to every phone at up to 2 Hz, so an
+ * unbounded room is an amplifier that takes the whole process down (audit SG-04).
+ */
+export const MAX_ROOM_CLIENTS = 256;
+
+/**
  * Per-socket state. `host` is the privilege bit: true only for a socket whose own JOIN presented the
  * room's hostKey. Authority is checked per socket, not per client record — client ids are public
  * (every ROOM_STATE lists them), so "this socket says it is client X" proves nothing (audit SG-02).
@@ -425,6 +433,10 @@ export class Room {
     // those clauses any more: its signed key re-creates the room (RoomManager, audit SG-01).
     const wantsHost = msg.kind === "host" && typeof msg.hostKey === "string" && safeEqual(msg.hostKey, this.hostKey);
     if (existing?.kind === "host" && !wantsHost) return this.observe(ws, msg.clientId);
+    // The key holder is exempt: a host must always be able to get in and KICK.
+    if (!existing && !wantsHost && Object.keys(this.room.clients).length >= MAX_ROOM_CLIENTS) {
+      return send(ws, { type: "ERROR", code: "ROOM_FULL", message: `this hive is full (${MAX_ROOM_CLIENTS} devices)` });
+    }
     // userAgent (up to 512 chars, required by DeviceInfoSchema) is dead weight on every ROOM_STATE
     // broadcast — nothing server-side reads it, only browserFamily/platform/model do — and it's most
     // of a snapshot's size at scale (~26-30KB at 30 phones). Never store the real string.
@@ -818,6 +830,10 @@ export class RoomManager {
     const msg = parseClientMessage(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
     if (!msg) return send(ws, { type: "ERROR", code: "BAD_MESSAGE", message: "message failed schema validation" });
     if (msg.type === "JOIN") {
+      // One socket, one seat. A socket that could JOIN again under a new client id each time left
+      // every earlier record "connected" forever (its close only ever disconnects the last id), so a
+      // single connection could mint records without bound and the room could never idle out.
+      if (ws.data.roomCode !== null) return send(ws, { type: "ERROR", code: "ALREADY_JOINED", message: "this connection has already joined a room" });
       const upper = msg.roomCode.toUpperCase();
       let room = this.rooms.get(upper);
       if (!room) {
