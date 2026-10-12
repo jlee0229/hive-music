@@ -193,13 +193,13 @@ test("a phone whose AudioContext.resume() never settles still joins the hive and
     .poll(() => Object.values(host.state.room?.clients ?? {}).some((c) => c.name === "Stuck Phone" && c.connected), { timeout: 15_000 })
     .toBe(true);
   // ...and the guest gets a fresh gesture to try again, instead of a dead "Joining…" / "Resuming…".
-  await expect(page.getByText("Tap to resume")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Tap to resume" })).toBeVisible({ timeout: 15_000 });
 
   // Once the platform lets resume() through, one tap is enough.
   await page.evaluate(() => {
     (window as unknown as { __hangResume: boolean }).__hangResume = false;
   });
-  await page.getByText("Tap to resume").click();
+  await page.getByRole("button", { name: "Tap to resume" }).click();
   await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 15_000 });
   await expect.poll(async () => (await audio(page)).rms, { timeout: 15_000 }).toBeGreaterThan(0.01);
 

@@ -114,7 +114,7 @@ export default function LandingPage() {
               autoComplete="off"
               spellCheck={false}
               enterKeyHint="go"
-              className="font-mono h-13 w-full rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none"
+              className="font-mono h-13 w-full rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none focus-visible:border-[color:var(--text)]"
               style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
             />
           </label>

@@ -274,8 +274,10 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   if (view === "removed") {
     body = (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="font-display text-3xl font-bold">{gone!.heading}</h1>
-        <p style={{ color: "var(--muted)" }}>{gone!.detail}</p>
+        <div role="alert" className="flex flex-col items-center gap-4">
+          <h1 className="font-display text-3xl font-bold">{gone!.heading}</h1>
+          <p style={{ color: "var(--muted)" }}>{gone!.detail}</p>
+        </div>
         <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>
@@ -290,8 +292,14 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         style={{ overscrollBehavior: "none", touchAction: "manipulation" }}
         onClick={handleResume}
       >
-        <h1 className="font-display text-3xl font-bold">{resuming ? "Resuming…" : "Tap to resume"}</h1>
-        <p style={{ color: "var(--muted)" }}>Sound paused — a call, the lock screen, or Siri interrupted it.</p>
+        {/* The whole screen is the tap target, but a keyboard or a screen reader needs a control
+            to land on; the tap bubbles to <main>, and handleResume ignores the second call. */}
+        <div role="alert" className="flex flex-col items-center gap-4">
+          <h1 className="font-display text-3xl font-bold">
+            <button onClick={handleResume}>{resuming ? "Resuming…" : "Tap to resume"}</button>
+          </h1>
+          <p style={{ color: "var(--muted)" }}>Sound paused — a call, the lock screen, or Siri interrupted it.</p>
+        </div>
       </main>
     );
   }
@@ -514,10 +522,29 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     );
   }
 
+  // One polite live region for the whole page, kept mounted across screens so that each change of
+  // state is spoken: without it a screen-reader user hears nothing between tapping "join" and the
+  // music starting, and nothing at all when the host pauses or removes them.
+  //
+  // The wording deliberately differs from what is printed on each screen, so the hidden copy never
+  // doubles a visible string. The two screens that interrupt (resume, removed) are role="alert"
+  // themselves and need nothing here.
+  let announcement = "";
+  if (view === "calibrating") announcement = "Tuning. Stay still and quiet for a moment.";
+  else if (view === "playing") {
+    const part = me?.assignment?.label ?? "unison";
+    if (audio.state !== "ready") announcement = "The music is playing. This phone is still getting the song.";
+    else if (audio.muted) announcement = "This phone is muted.";
+    else announcement = `Now playing. Your part is ${part}.`;
+  } else if (view === "ready") announcement = room?.transport.state === "paused" ? "The host paused the music." : "You're in. The host hasn't started the music yet.";
+
   return (
     <>
       {body}
       {flashOverlay}
+      <p className="sr-only" role="status" aria-live="polite" data-testid="announcer">
+        {announcement}
+      </p>
     </>
   );
 }
