@@ -8,7 +8,8 @@ import type { CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
-import { getHostKey, setHostKey } from "@/lib/hive/storage";
+import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
+import { classifyHostClaim } from "@/lib/hive/host-claim";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
@@ -25,6 +26,9 @@ import { PlayersDrawer } from "@/components/PlayersDrawer";
 import { SongsDrawer } from "@/components/SongsDrawer";
 import { Creators } from "@/components/Creators";
 
+/** Why this phone cannot host this code right now; each renders a screen with a way out (lib/hive/host-claim.ts). */
+type HostProblem = "ended" | "elsewhere" | "unreachable";
+
 /**
  * Bootstraps (or recovers) the hostKey, then mounts HostRoom keyed on that hostKey. A room can be
  * re-created server-side with a fresh key (a Fly restart, or the idle-room timeout) out from under
@@ -36,28 +40,35 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const roomCode = code.toUpperCase();
 
   const [hostKeyState, setHostKeyState] = useState<string | null>(() => getHostKey(roomCode));
-  const [roomError, setRoomError] = useState<string | null>(null);
+  const [problem, setProblem] = useState<HostProblem | null>(null);
   const [recoveryClientId, setRecoveryClientId] = useState<string | null>(null);
   const recoveryAttemptedRef = useRef(false);
 
   const claimHostKey = useCallback(async () => {
+    let status: number | null = null;
+    let body: unknown = null;
     try {
       const res = await fetch(`${apiUrl()}/rooms`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code: roomCode }),
       });
-      if (!res.ok) throw new Error(String(res.status));
-      const data = (await res.json()) as { code: string; hostKey: string };
-      setHostKey(data.code, data.hostKey);
-      setHostKeyState(data.hostKey);
+      status = res.status;
+      body = await res.json().catch(() => null);
     } catch {
-      setRoomError("Could not start the hive. Is the server running?");
+      /* network error: status stays null */
+    }
+    const claim = classifyHostClaim(status, body);
+    if (claim.kind === "ok") {
+      setHostKey(claim.code, claim.hostKey);
+      setHostKeyState(claim.hostKey);
+    } else {
+      setProblem(claim.kind);
     }
   }, [roomCode]);
 
   useEffect(() => {
-    if (hostKeyState) return;
+    if (hostKeyState || problem) return;
     let cancelled = false;
     (async () => {
       if (!cancelled) await claimHostKey();
@@ -65,14 +76,13 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     return () => {
       cancelled = true;
     };
-  }, [hostKeyState, claimHostKey]);
+  }, [hostKeyState, problem, claimHostKey]);
 
   const handleDemoted = useCallback(() => {
     // At most one automatic recovery per page load: a second demotion right after a re-claimed
-    // key means re-asking isn't the fix (the other half of this lives in apps/server, accepting a
-    // host claim on a room that has none yet), so loop no further and surface it instead.
+    // key means re-asking isn't the fix (someone else holds this hive), so loop no further.
     if (recoveryAttemptedRef.current) {
-      setRoomError("This phone lost host control and could not reclaim it. Refresh, or start a new hive.");
+      setProblem("elsewhere");
       return;
     }
     recoveryAttemptedRef.current = true;
@@ -86,11 +96,44 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     setHostKeyState(null);
   }, []);
 
-  if (roomError) {
+  // The server answered NO_ROOM to our JOIN: it restarted (rooms live in memory) or the hive idled
+  // out. Nothing on this page can work any more, and the stored key is for a room that is gone.
+  const handleGone = useCallback(() => {
+    clearHostKey(roomCode);
+    setProblem("ended");
+  }, [roomCode]);
+
+  if (problem) {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
-        <h1 className="font-display text-2xl font-bold">Couldn&apos;t start the hive</h1>
-        <p style={{ color: "var(--muted)" }}>{roomError}</p>
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
+        <h1 className="font-display text-2xl font-bold">
+          {problem === "ended" ? "This hive has ended" : problem === "elsewhere" ? "This hive is hosted on another phone" : "Can’t reach the hive"}
+        </h1>
+        {problem === "unreachable" ? (
+          <button
+            onClick={() => setProblem(null)}
+            className="flex h-13 items-center justify-center rounded-2xl px-6 font-semibold"
+            style={{ height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" }}
+          >
+            Try again
+          </button>
+        ) : null}
+        {problem === "elsewhere" ? (
+          <Link
+            href={`/j/${roomCode}`}
+            className="flex h-13 items-center justify-center rounded-2xl px-6 font-semibold"
+            style={{ height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" }}
+          >
+            Join it instead
+          </Link>
+        ) : null}
+        <Link
+          href="/"
+          className="flex h-13 items-center justify-center rounded-2xl border px-6 font-semibold"
+          style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+        >
+          {problem === "ended" ? "Host a new hive" : "Back home"}
+        </Link>
       </main>
     );
   }
@@ -110,6 +153,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
       hostKey={hostKeyState}
       clientId={recoveryClientId ?? undefined}
       onDemoted={handleDemoted}
+      onGone={handleGone}
     />
   );
 }
@@ -119,11 +163,13 @@ function HostRoom({
   hostKey,
   clientId,
   onDemoted,
+  onGone,
 }: {
   roomCode: string;
   hostKey: string;
   clientId?: string;
   onDemoted: () => void;
+  onGone: () => void;
 }) {
   const [speakerOn, setSpeakerOn] = useState(false);
   const speakerOnInitialised = useRef(false);
@@ -162,6 +208,7 @@ function HostRoom({
   useEffect(() => {
     return client.on("error", (code, message) => {
       if (code === "NOT_HOST") onDemoted();
+      else if (code === "NO_ROOM") onGone();
       else setHostToast(message || code);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
