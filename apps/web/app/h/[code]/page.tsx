@@ -40,7 +40,16 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   const { code } = use(params);
   const roomCode = code.toUpperCase();
 
-  const [hostKeyState, setHostKeyState] = useState<string | null>(() => getHostKey(roomCode));
+  // The stored key is read after mount, not in the initial state: the server render cannot see
+  // localStorage, so a key in the first client render made every reload a hydration mismatch
+  // (React threw the server HTML away and logged an error).
+  const [hostKeyState, setHostKeyState] = useState<string | null>(null);
+  const [storageRead, setStorageRead] = useState(false);
+  useEffect(() => {
+    const stored = getHostKey(roomCode);
+    if (stored) setHostKeyState(stored);
+    setStorageRead(true);
+  }, [roomCode]);
   const [problem, setProblem] = useState<HostProblem | null>(null);
   const [recoveryClientId, setRecoveryClientId] = useState<string | null>(null);
   const recoveryAttemptedRef = useRef(false);
@@ -69,7 +78,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   }, [roomCode]);
 
   useEffect(() => {
-    if (hostKeyState || problem) return;
+    if (!storageRead || hostKeyState || problem) return;
     let cancelled = false;
     (async () => {
       if (!cancelled) await claimHostKey();
@@ -77,7 +86,7 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     return () => {
       cancelled = true;
     };
-  }, [hostKeyState, problem, claimHostKey]);
+  }, [storageRead, hostKeyState, problem, claimHostKey]);
 
   const handleDemoted = useCallback(() => {
     // At most one automatic recovery per page load: a second demotion right after a re-claimed
