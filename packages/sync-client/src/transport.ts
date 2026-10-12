@@ -17,8 +17,19 @@ export class Emitter {
   off<K extends keyof HiveEvents>(event: K, handler: HiveEvents[K]): void {
     this.handlers.get(event)?.delete(handler as (...a: never[]) => void);
   }
+  /**
+   * One listener throwing must not stop the others — or the caller. `state` is emitted from inside the
+   * socket's message handler *before* the audio engine is handed the snapshot, so an exception in any
+   * UI listener used to mean the phone silently never applied that ROOM_STATE.
+   */
   emit<K extends keyof HiveEvents>(event: K, ...args: Parameters<HiveEvents[K]>): void {
-    for (const h of this.handlers.get(event) ?? []) (h as unknown as (...a: Parameters<HiveEvents[K]>) => void)(...args);
+    for (const h of [...(this.handlers.get(event) ?? [])]) {
+      try {
+        (h as unknown as (...a: Parameters<HiveEvents[K]>) => void)(...args);
+      } catch (err) {
+        console.error(`[hive] a "${event}" listener threw`, err);
+      }
+    }
   }
 }
 

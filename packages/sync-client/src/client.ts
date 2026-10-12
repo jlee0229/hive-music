@@ -191,6 +191,8 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
         ev.emit("status", status());
         break;
       case "ROOM_STATE": {
+        // Not ours: a snapshot for another room must never reach the scheduler.
+        if (msg.room.code.toUpperCase() !== opts.roomCode.toUpperCase()) break;
         const previous = JSON.stringify(assignmentOf());
         room = msg.room;
         ev.emit("state", room);
