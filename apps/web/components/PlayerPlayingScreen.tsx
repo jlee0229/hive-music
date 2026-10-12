@@ -11,6 +11,7 @@ import { AdSlot } from "@/components/AdSlot";
 import { Creators } from "@/components/Creators";
 
 const DARK = "#0B0F14";
+const LIGHT_INK = "#F8FAFC";
 /** How far a STROBE/WAVE "off" phase dims the role colour (opacity of the dark overlay). */
 const FULL_DIM_DEPTH = 0.85;
 /**
@@ -63,6 +64,9 @@ export function dimDepth(pattern: Pattern | null | undefined, fill: string, redu
   return lo;
 }
 
+/** Below this background luminance light ink has the better contrast ratio; above it, dark ink. */
+const LIGHT_INK_BELOW = 0.18;
+
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
@@ -107,6 +111,7 @@ export function PlayerPlayingScreen({
   const depth = dimDepth(pattern, roleColor, reducedMotion);
 
   const [trackSec, setTrackSec] = useState(0);
+  const mainRef = useRef<HTMLElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const ringsRef = useRef<SVGSVGElement>(null);
 
@@ -122,6 +127,8 @@ export function PlayerPlayingScreen({
       const gain = patternGain(pattern, t);
       const dim = (1 - gain) * depth;
       if (overlayRef.current) overlayRef.current.style.opacity = String(dim);
+      // Dark ink on a dimmed role colour is ~1.3:1 — the label vanished for the whole "off" phase.
+      if (mainRef.current) mainRef.current.style.color = dim > 0 && dimmedLuminance(roleColor, dim) < LIGHT_INK_BELOW ? LIGHT_INK : ink;
       if (ringsRef.current) {
         // a short decaying pulse right on the downbeat, scaled by the pattern's current gain
         const pulse = reducedMotion ? 0 : Math.max(0, 1 - beatPhase(t, bpm) * 3) * gain;
@@ -136,10 +143,11 @@ export function PlayerPlayingScreen({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [client, room.track?.bpm, pattern, depth, reducedMotion]);
+  }, [client, room.track?.bpm, pattern, depth, roleColor, ink, reducedMotion]);
 
   const label = assignment?.label ?? "Unison";
-  const soft = 0.8;
+  // Light ink on the one dark fill (bass) is only ~4:1, so its small print is not faded further.
+  const soft = ink === DARK ? 0.8 : 1;
 
   let statusLine: React.ReactNode;
   if (audioState !== "ready") {
@@ -158,6 +166,7 @@ export function PlayerPlayingScreen({
 
   return (
     <main
+      ref={mainRef}
       className="relative flex h-dvh flex-col justify-between overflow-hidden"
       style={{
         background: roleColor,
