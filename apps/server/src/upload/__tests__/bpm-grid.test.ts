@@ -77,35 +77,44 @@ describe("ENGINE-DSP-02: the grid is still on the beat four minutes in", () => {
 });
 
 describe("ENGINE-DSP-03: the planner keeps the strobe on the detected grid", () => {
+  // One phone per group: the planner folds the rotation down to the phones actually present, so
+  // a lone phone in a "2 group" strobe is (rightly) always on and has no switch to measure.
   const strobeRoom = (bpm: number, groups: number, beatsPerSwitch: number): RoomState => ({
     code: "BZQ7", protocolVersion: PROTOCOL_VERSION, createdAtServerTime: 0, hostClientIds: [],
     track: { id: "t", title: "t", durationSec: 240, stems: ["mix"], bpm, beatOffsetSec: 0 },
     transport: { state: "stopped" }, mode: { kind: "STROBE", params: { groups, beatsPerSwitch } }, scenePlan: null,
     calibration: IDLE_CALIBRATION,
-    clients: {
-      "c0-00000000": {
-        id: "c0-00000000", kind: "player", plays: true, name: "P0", device: { userAgent: "ua", platform: "x", browserFamily: "other" },
-        joinIndex: 0, joinedAtServerTime: 0, position: null, pinnedRole: null, nudgeMs: 0, tableLatencyMs: null, calibratedOffsetMs: null,
-        assignment: null, connected: true, audioReadyTrackId: null,
-      },
-    },
+    clients: Object.fromEntries(
+      Array.from({ length: groups }, (_, i) => [
+        `c${i}-00000000`,
+        {
+          id: `c${i}-00000000`, kind: "player" as const, plays: true, name: `P${i}`, device: { userAgent: "ua", platform: "x", browserFamily: "other" as const },
+          joinIndex: i, joinedAtServerTime: 0, position: null, pinnedRole: null, nudgeMs: 0, tableLatencyMs: null, calibratedOffsetMs: null,
+          assignment: null, connected: true, audioReadyTrackId: null,
+        },
+      ]),
+    ),
   });
-  /** Where group 0 actually switches on nearest to `atMs`, by scanning the pattern itself. */
+  /**
+   * Where the first phone's group switches on nearest to `atMs`, by scanning the pattern itself.
+   * "On" is the half-gain crossing: handoff ramps are centred on the window edge, so that is the
+   * instant the edge sits at.
+   */
   const switchOnNear = (room: RoomState, atMs: number): number => {
     const pattern = plan(room)["c0-00000000"]!.pattern!;
     let best = Infinity;
     for (let t = atMs - 2000; t < atMs + 2000; t += 0.25) {
-      if (evaluatePattern(pattern, t - 0.25) === 0 && evaluatePattern(pattern, t) > 0 && Math.abs(t - atMs) < Math.abs(best - atMs)) best = t;
+      if (evaluatePattern(pattern, t - 0.25) < 0.5 && evaluatePattern(pattern, t) >= 0.5 && Math.abs(t - atMs) < Math.abs(best - atMs)) best = t;
     }
     return best;
   };
 
-  // PROPOSED (packages/protocol/src/planner.ts, not this agent's file): the planner rounds the
-  // strobe period to whole milliseconds. 128 BPM, 2 groups, quarter notes is 937.5 ms → 938: the
-  // switch is 123 ms late by 3:50, and at sixteenths (234.375 → 234) it is 370 ms early — more
-  // than a whole step. The detector is now good to ~0.002 BPM; this rounding throws that away.
+  // Was a known failure: the planner rounded the strobe period to whole milliseconds. 128 BPM,
+  // 2 groups, quarter notes is 937.5 ms → 938: the switch was 123 ms late by 3:50, and at
+  // sixteenths (234.375 → 234) 370 ms early — more than a whole step. Fixed in the planner
+  // (fractional periods); this is the end-to-end guard that detector precision is not thrown away.
   for (const [groups, beatsPerSwitch] of [[2, 1], [2, 0.25], [3, 1]] as const) {
-    test.failing(`128 BPM, ${groups} groups, ${beatsPerSwitch} beat(s) per switch: the switch at ~3:50 is within 5 ms of a beat`, () => {
+    test(`128 BPM, ${groups} groups, ${beatsPerSwitch} beat(s) per switch: the switch at ~3:50 is within 5 ms of a beat`, () => {
       const beatMs = 60000 / 128;
       const rotationMs = beatMs * beatsPerSwitch * groups;
       const k = Math.round(230000 / rotationMs);
