@@ -58,6 +58,18 @@ export const MAX_ROOM_OBSERVERS = 8;
  */
 export const ROOM_UNCLAIMED_TTL_MS = 120_000;
 
+/**
+ * Restart recovery for guests (audit SG-15). After a deploy every phone reconnects within the same
+ * second, and whether a guest's JOIN lands before or after the host's is a coin flip. Before the
+ * host's, the room does not exist yet: the guest got NO_ROOM, and the client never asks again — so
+ * each restart silently dropped about half the party. For a short while after boot, a JOIN for a
+ * room that is not there is therefore held instead of refused; when the host's signed key brings
+ * the room back, the held JOINs are admitted as if nothing had happened.
+ */
+export const RESTART_GRACE_MS = 120_000; // how long after boot a missing room may still be on its way back
+export const JOIN_PARK_MS = 15_000; // how long one JOIN waits for it before the usual NO_ROOM
+export const MAX_PARKED_JOINS = 1000; // process-wide; past this a miss is answered at once
+
 /** Rooms alive at once, process-wide. Far above real use; the point is that the number is finite. */
 export const MAX_ROOMS = 2000;
 
@@ -102,7 +114,7 @@ export const MAX_MESSAGES_PER_SECOND = 100;
  * room's hostKey. Authority is checked per socket, not per client record — client ids are public
  * (every ROOM_STATE lists them), so "this socket says it is client X" proves nothing (audit SG-02).
  */
-export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean; rate?: { windowStart: number; count: number }; /** Caller address, set at upgrade. */ ip?: string };
+export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean; rate?: { windowStart: number; count: number }; /** Caller address, set at upgrade. */ ip?: string; /** Room code this socket's JOIN is waiting on (RoomManager.park). */ parked?: string };
 type WS = Bun.ServerWebSocket<Conn>;
 
 interface HealthRecord {
@@ -805,6 +817,54 @@ export class RoomManager {
    * code a few times; a whole party reconnecting to a restarted server is one miss per phone.
    */
   private missedJoins = new RateLimiter(60, 60_000);
+  private bootAt = performance.now();
+  private parked = new Map<string, Array<{ ws: WS; msg: Extract<ClientMessage, { type: "JOIN" }>; timer: ReturnType<typeof setTimeout> }>>();
+  private parkedTotal = 0;
+
+  get parkedCount(): number {
+    return this.parkedTotal;
+  }
+
+  /** Holds a JOIN for a room that does not exist (yet). See RESTART_GRACE_MS. */
+  private park(ws: WS, msg: Extract<ClientMessage, { type: "JOIN" }>, code: string) {
+    const timer = setTimeout(() => {
+      this.unpark(ws);
+      this.missedJoins.allow(ws.data.ip ?? "local");
+      send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
+    }, JOIN_PARK_MS);
+    const list = this.parked.get(code) ?? [];
+    list.push({ ws, msg, timer });
+    this.parked.set(code, list);
+    this.parkedTotal++;
+    ws.data.parked = code;
+  }
+
+  private unpark(ws: WS) {
+    const code = ws.data.parked;
+    if (!code) return;
+    ws.data.parked = undefined;
+    const rest = (this.parked.get(code) ?? []).filter((e) => {
+      if (e.ws !== ws) return true;
+      clearTimeout(e.timer);
+      this.parkedTotal--;
+      return false;
+    });
+    if (rest.length > 0) this.parked.set(code, rest);
+    else this.parked.delete(code);
+  }
+
+  /** The room is back: let in everyone who was waiting for it, in the order they arrived. */
+  private admitParked(room: Room) {
+    const list = this.parked.get(room.code);
+    if (!list) return;
+    this.parked.delete(room.code);
+    for (const e of list) {
+      clearTimeout(e.timer);
+      this.parkedTotal--;
+      e.ws.data.parked = undefined;
+      room.join(e.ws, e.msg);
+    }
+  }
 
   /**
    * `hostKeySecret` signs every hostKey (host-key.ts). Give it a value that survives restarts and a
@@ -905,7 +965,9 @@ export class RoomManager {
       }
       if (this.canRestore(upper, presentedKey)) {
         if (this.isFull()) return { error: "server_full", status: 503 };
-        return { code: upper, hostKey: this.spawn(upper, presentedKey).hostKey, restored: true };
+        const restoredRoom = this.spawn(upper, presentedKey);
+        this.admitParked(restoredRoom);
+        return { code: upper, hostKey: restoredRoom.hostKey, restored: true };
       }
       if (fixed && upper === fixed) return { code: upper, hostKey: this.spawn(upper).hostKey };
       return { error: "unknown room code", status: 400 };
@@ -951,7 +1013,7 @@ export class RoomManager {
       // One socket, one seat. A socket that could JOIN again under a new client id each time left
       // every earlier record "connected" forever (its close only ever disconnects the last id), so a
       // single connection could mint records without bound and the room could never idle out.
-      if (ws.data.roomCode !== null) return send(ws, { type: "ERROR", code: "ALREADY_JOINED", message: "this connection has already joined a room" });
+      if (ws.data.roomCode !== null || ws.data.parked) return send(ws, { type: "ERROR", code: "ALREADY_JOINED", message: "this connection has already joined a room" });
       const caller = ws.data.ip ?? "local";
       const upper = msg.roomCode.toUpperCase();
       let room = this.rooms.get(upper);
@@ -968,9 +1030,14 @@ export class RoomManager {
         // The host's own socket reconnecting after a restart / the idle timeout brings the room back
         // under its old code, exactly like POST /rooms {code, hostKey} does: the signed key is the
         // proof. Players reconnecting to a vanished room cannot — they get NO_ROOM until the host is back.
-        if (msg.kind === "host" && !this.isFull() && this.canRestore(upper, msg.hostKey)) room = this.spawn(upper, msg.hostKey);
-        else if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
-        else {
+        if (msg.kind === "host" && !this.isFull() && this.canRestore(upper, msg.hostKey)) {
+          room = this.spawn(upper, msg.hostKey);
+          room.join(ws, msg); // the host first, then everyone who was waiting for the room
+          return this.admitParked(room);
+        } else if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
+        else if (performance.now() - this.bootAt < RESTART_GRACE_MS && this.isDealtCode(upper) && this.parkedTotal < MAX_PARKED_JOINS) {
+          return this.park(ws, msg, upper);
+        } else {
           this.missedJoins.allow(caller);
           return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
         }
@@ -984,6 +1051,7 @@ export class RoomManager {
   }
 
   handleClose(ws: WS) {
+    this.unpark(ws);
     const code = ws.data.roomCode;
     const room = code ? this.rooms.get(code) : undefined;
     room?.disconnect(ws);

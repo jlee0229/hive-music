@@ -50,7 +50,7 @@ describe("SG-04: a room's client records are bounded", () => {
   test("a JOIN that failed (NO_ROOM) does not burn the socket's one seat", () => {
     const a = newRoom();
     const s = fakeWs();
-    manager.handleMessage(s.ws, joinMsg("retry-000001", "ZZZZ"));
+    manager.handleMessage(s.ws, joinMsg("retry-000001", "ZZZ1")); // "1" is not in the code alphabet: refused at once
     expect(errors(s)).toEqual(["NO_ROOM"]);
     manager.handleMessage(s.ws, joinMsg("retry-000001", a.code));
     expect(s.sent.some((m) => m.type === "WELCOME")).toBe(true);

@@ -28,7 +28,10 @@ import type { LibraryEntry } from "../library";
  *   - hostClientIds is exactly the set of host records, and viewers never play;
  *   - a record is `connected` exactly when a live socket is registered for it;
  *   - everything the server sent or published parses as a ServerMessage;
- *   - a message from a socket that never presented the hostKey changed no host-only state.
+ *   - a message from a socket that never presented the hostKey changed no host-only state, and
+ *     every host-only message it sent was answered NOT_HOST;
+ *   - every id in hostClientIds got there through a JOIN that carried that room's hostKey — never
+ *     through a client id alone, and never because the room had no host at the time.
  * And at the end: with every socket closed, every room is collected and no timer is left behind.
  *
  * Reproduce a failure with the seed and step it prints.
@@ -63,7 +66,12 @@ interface Sock {
   clientId: string | null;
   room: string | null;
   welcomes: Array<{ isHost: boolean }>;
+  errors: string[];
+  /** The JOIN this socket sent and has not had an answer to yet (it may be held: SG-15). */
+  pendingJoin: { clientId: string; code: string; keyOk: boolean } | null;
 }
+
+const HOST_ONLY_TYPES = new Set(["SET_TRACK", "TRANSPORT", "SET_MODE", "ASSIGN", "SET_POSITION", "KICK", "CALIBRATION_START", "CALIBRATION_CANCEL", "CALIBRATION_RESET"]);
 
 /** What the run actually exercised — asserted at the end, so the fuzz cannot quietly stop reaching things. */
 const coverage = {
@@ -74,6 +82,8 @@ const coverage = {
   duplicateTabs: 0,
   serverHangups: 0,
   restoredRooms: 0,
+  heldJoinsAdmitted: 0,
+  notHostAnswers: 0,
   collectedRooms: 0,
   playlistAdvances: 0,
   sceneModeSwitches: 0,
@@ -102,6 +112,8 @@ function runSeed(seed: number, steps: number) {
   const roomsOf = () => (mgr as unknown as { rooms: Map<string, Room> }).rooms;
 
   const keys = new Map<string, string>(); // code → hostKey, as the legitimate hosts know them
+  /** code → client ids that have JOINed that room with its hostKey. Nobody else may ever be a host. */
+  const keyed = new Map<string, Set<string>>();
   const socks: Sock[] = [];
   const knownIds: string[] = [];
 
@@ -110,17 +122,39 @@ function runSeed(seed: number, steps: number) {
     if ("error" in res) return;
     keys.set(res.code, res.hostKey);
   };
-  newRoom();
-  newRoom();
+  // Each run starts as a server that has just restarted: two rooms existed in the previous process,
+  // their hosts still hold the keys, and nobody is connected yet.
+  const previous = new RoomManager({ fixturesDir: "/nonexistent", hostKeySecret: "fuzz-secret-fuzz-secret-fuzz-secret-0123" });
+  previous.attachServer({ publish: () => {} } as unknown as Bun.Server<Conn>);
+  for (let i = 0; i < 2; i++) {
+    const res = previous.createRoom();
+    if ("error" in res) throw new Error(res.error);
+    keys.set(res.code, res.hostKey);
+    previous.get(res.code)!.destroy();
+  }
 
   function openSock(): Sock {
-    const s: Sock = { ws: null as unknown as WS, open: true, pendingClose: false, privileged: false, clientId: null, room: null, welcomes: [] };
+    const s: Sock = { ws: null as unknown as WS, open: true, pendingClose: false, privileged: false, clientId: null, room: null, welcomes: [], errors: [], pendingJoin: null };
     s.ws = {
       data: { clientId: null, roomCode: null },
       send: (raw: string) => {
         const msg = parseServerMessage(raw);
         if (!msg) throw new Error(`sent an unparsable message: ${raw.slice(0, 300)}`);
-        if (msg.type === "WELCOME") s.welcomes.push({ isHost: msg.isHost });
+        if (msg.type === "ERROR") s.errors.push(msg.code);
+        if (msg.type === "WELCOME") {
+          // The model is settled here, when the answer arrives — a held JOIN is answered steps later.
+          s.welcomes.push({ isHost: msg.isHost });
+          const j = s.pendingJoin;
+          if (!j) throw new Error("WELCOME for a socket that had no JOIN outstanding");
+          s.pendingJoin = null;
+          if (msg.isHost !== j.keyOk) throw new Error(`WELCOME.isHost=${msg.isHost} for a JOIN whose key was ${j.keyOk ? "right" : "absent/wrong"}`);
+          const rec = mgr.get(j.code)?.room.clients[j.clientId];
+          s.room = j.code;
+          s.privileged = j.keyOk;
+          // without the key, a record that is a host's can only mean "observer": no identity at all
+          s.clientId = !j.keyOk && rec?.kind === "host" ? null : j.clientId;
+          if (j.keyOk) keyed.set(j.code, (keyed.get(j.code) ?? new Set()).add(j.clientId));
+        }
       },
       subscribe: () => {},
       close: () => void (s.pendingClose = true), // Bun delivers the close event later, not inside close()
@@ -289,7 +323,9 @@ function runSeed(seed: number, steps: number) {
 
   function checkInvariants(afterAdvance: boolean) {
     expect(roomsOf().size).toBeLessThanOrEqual(MAX_ROOMS);
-    if (roomsOf().size === 0 && jest.getTimerCount() !== 0) throw new Error(`no rooms left, but ${jest.getTimerCount()} timer(s) still armed`);
+    // (a held JOIN owns exactly one timer: its NO_ROOM deadline)
+    if (roomsOf().size === 0 && jest.getTimerCount() !== mgr.parkedCount) throw new Error(`no rooms left, but ${jest.getTimerCount()} timer(s) still armed (${mgr.parkedCount} held JOINs)`);
+    for (const code of keyed.keys()) if (!roomsOf().has(code)) keyed.delete(code); // a re-created room starts with no hosts
     for (const room of roomsOf().values()) {
       const state = room.room;
       const wire = JSON.stringify(state);
@@ -307,6 +343,9 @@ function runSeed(seed: number, steps: number) {
         const sock = room.sockets.get(c.id);
         if (c.connected !== (sock !== undefined)) throw new Error(`client ${c.id}: connected=${c.connected} but socket registered=${sock !== undefined}`);
         if (sock && sock.data.clientId !== c.id) throw new Error(`socket registered for ${c.id} identifies as ${sock.data.clientId}`);
+      }
+      for (const id of state.hostClientIds) {
+        if (!keyed.get(room.code)?.has(id)) throw new Error(`${id} is in hostClientIds of ${room.code} but never JOINed with that room's hostKey`);
       }
       const hostIds = clients.filter((c) => c.kind === "host").map((c) => c.id).sort();
       expect([...state.hostClientIds].sort()).toEqual(hostIds);
@@ -364,6 +403,8 @@ function runSeed(seed: number, steps: number) {
         const existing = room?.room.clients[j.clientId];
         const keyOk = j.kind === "host" && j.hostKey !== undefined && j.hostKey === (room?.hostKey ?? keys.get(j.code));
         const before = room && !keyOk ? joinView(room.room) : null;
+        const waiting = socks.filter((o) => o.pendingJoin && o.welcomes.length === 0).length;
+        s.pendingJoin = { clientId: j.clientId, code: j.code, keyOk };
         mgr.handleMessage(s.ws, j.raw);
         const welcomed = s.welcomes.length > 0;
         if (!welcomed) coverage.refusedJoins++;
@@ -372,12 +413,9 @@ function runSeed(seed: number, steps: number) {
         else coverage.guestWelcomes++;
         if (welcomed && existing?.connected && !(existing.kind === "host" && !keyOk)) coverage.duplicateTabs++;
         if (welcomed && !room) coverage.restoredRooms++;
-        if (welcomed) {
-          s.room = j.code;
-          s.privileged = keyOk;
-          s.clientId = existing?.kind === "host" && !keyOk ? null : j.clientId; // keyless on a host record: observer
-          if (s.welcomes[0]!.isHost !== keyOk) throw new Error(`WELCOME.isHost=${s.welcomes[0]!.isHost} for a JOIN whose key was ${keyOk ? "right" : "absent/wrong"}`);
-        }
+        // a restore lets in whoever was being held for that room
+        coverage.heldJoinsAdmitted += waiting - socks.filter((o) => o !== s && o.pendingJoin && o.welcomes.length === 0).length;
+        if (!welcomed && s.errors.length > 0) s.pendingJoin = null; // refused outright; otherwise it is being held
         if (before !== null && mgr.get(j.code)) {
           const after = JSON.parse(joinView(mgr.get(j.code)!.room)) as { ids: string[] };
           const b = JSON.parse(before) as { ids: string[] };
@@ -393,7 +431,13 @@ function runSeed(seed: number, steps: number) {
         const room = s.room ? mgr.get(s.room) : undefined;
         const before = room && !s.privileged ? hostOnlyView(room.room, s.clientId) : null;
         const idsBefore = room ? Object.keys(room.room.clients).length : 0;
+        const errorsBefore = s.errors.length;
         mgr.handleMessage(s.ws, r.chance(0.05) ? new TextEncoder().encode(JSON.stringify(msg)) : JSON.stringify(msg));
+        if (!s.privileged && room && !s.pendingClose && HOST_ONLY_TYPES.has((msg as { type: string }).type)) {
+          // (pendingClose: it just went over its message budget and was dropped unanswered)
+          if (s.errors[errorsBefore] !== "NOT_HOST") throw new Error(`a socket without the hostKey sent ${(msg as { type: string }).type} and was answered ${s.errors[errorsBefore] ?? "nothing"}, not NOT_HOST`);
+          coverage.notHostAnswers++;
+        }
         if (room && Object.keys(room.room.clients).length < idsBefore) coverage.kicks++;
         if (before !== null && s.room && mgr.get(s.room)) expect(hostOnlyView(mgr.get(s.room)!.room, s.clientId)).toBe(before);
       } else if (roll < 0.7) {

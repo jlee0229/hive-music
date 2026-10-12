@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, jest, test } from "bun:test";
 import { PROTOCOL_VERSION, ROOM_CODE_ALPHABET, type ServerMessage } from "@hive/protocol";
 import { HOST_KEY_RESTORE_TTL_MS, HostKeys } from "../host-key";
-import { RoomManager, type Conn } from "../rooms";
+import { JOIN_PARK_MS, RoomManager, type Conn } from "../rooms";
 
 /**
  * Audit SG-01. `POST /rooms {code}` used to answer with the existing room's hostKey for anyone who
@@ -120,16 +120,18 @@ describe("SG-01: the host's own socket brings the room back (no page reload need
     const room = ok(before.createRoom());
     const after = tracked(newManager());
 
-    // A player's reconnect arrives first: the room is gone and a player cannot conjure it.
+    // A player's reconnect arrives first: the room is gone and a player cannot conjure it. (Just
+    // after a restart its JOIN is held rather than refused — restart-recovery.test.ts, SG-15.)
     const early = fakeWs();
     after.handleMessage(early.ws, joinMsg("player-early-01", room.code, "player"));
-    expect(early.sent[0]).toMatchObject({ type: "ERROR", code: "NO_ROOM" });
+    expect(early.sent).toEqual([]);
     expect(after.get(room.code)).toBeUndefined();
 
     const host = fakeWs();
     after.handleMessage(host.ws, joinMsg("host-restore-01", room.code, "host", room.hostKey));
     expect(host.sent.find((x) => x.type === "WELCOME")).toMatchObject({ type: "WELCOME", isHost: true, roomCode: room.code });
     expect(after.get(room.code)!.hostKey).toBe(room.hostKey);
+    expect(early.sent.find((x) => x.type === "WELCOME")).toMatchObject({ type: "WELCOME", isHost: false }); // and the waiting player is let in
 
     const late = fakeWs();
     after.handleMessage(late.ws, joinMsg("player-late-001", room.code, "player"));
@@ -137,18 +139,25 @@ describe("SG-01: the host's own socket brings the room back (no page reload need
   });
 
   test("a JOIN with a forged key, or kind:player carrying a real key, re-creates nothing", () => {
-    const before = tracked(newManager());
-    const room = ok(before.createRoom());
-    const after = tracked(newManager());
+    jest.useFakeTimers();
+    try {
+      const before = tracked(newManager());
+      const room = ok(before.createRoom());
+      const after = tracked(newManager());
 
-    const forged = fakeWs();
-    after.handleMessage(forged.ws, joinMsg("host-forged-01", room.code, "host", "made-up-key"));
-    expect(forged.sent[0]).toMatchObject({ type: "ERROR", code: "NO_ROOM" });
+      const forged = fakeWs();
+      after.handleMessage(forged.ws, joinMsg("host-forged-01", room.code, "host", "made-up-key"));
+      const asPlayer = fakeWs();
+      after.handleMessage(asPlayer.ws, joinMsg("player-key-0001", room.code, "player", room.hostKey));
+      expect(after.get(room.code)).toBeUndefined();
 
-    const asPlayer = fakeWs();
-    after.handleMessage(asPlayer.ws, joinMsg("player-key-0001", room.code, "player", room.hostKey));
-    expect(asPlayer.sent[0]).toMatchObject({ type: "ERROR", code: "NO_ROOM" });
-    expect(after.get(room.code)).toBeUndefined();
+      jest.advanceTimersByTime(JOIN_PARK_MS + 100); // nobody with the key showed up
+      expect(forged.sent).toEqual([expect.objectContaining({ type: "ERROR", code: "NO_ROOM" })]);
+      expect(asPlayer.sent).toEqual([expect.objectContaining({ type: "ERROR", code: "NO_ROOM" })]);
+      expect(after.get(room.code)).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
