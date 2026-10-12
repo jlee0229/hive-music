@@ -48,6 +48,17 @@ const TRACK_ADVANCE_LEAD_MS = 5000;
 export const MAX_ROOM_CLIENTS = 256;
 
 /**
+ * A room nobody has joined yet lives this long. The idle timer used to be armed only when the last
+ * client record expired, so a room that never had a client never had a timer: every POST /rooms
+ * leaked a room and two intervals for the life of the process (audit SG-06). Short is safe — a host
+ * whose first JOIN arrives later than this simply re-creates the room with its signed key (SG-01).
+ */
+export const ROOM_UNCLAIMED_TTL_MS = 120_000;
+
+/** Rooms alive at once, process-wide. Far above real use; the point is that the number is finite. */
+export const MAX_ROOMS = 2000;
+
+/**
  * What the wire schema lets through but the room cannot afford to store (audit SG-05). Everything a
  * client sends that lands in RoomState is re-broadcast to every phone, so one bad value is a
  * room-wide problem:
@@ -158,6 +169,7 @@ export class Room {
     };
     this.healthTimer = setInterval(() => this.publishHealth(), 1000 / HEALTH_HZ);
     this.pingTimer = setInterval(() => this.tickPing(), PING_INTERVAL_MS);
+    this.idleTimer = setTimeout(() => this.onEmpty(), ROOM_UNCLAIMED_TTL_MS); // cleared by the first JOIN
   }
 
   // ---- lifecycle -------------------------------------------------------------
@@ -788,6 +800,10 @@ export class RoomManager {
   }
 
   /** `hostKey` is only ever a key `this.keys.verify()` accepted for this code (a restore); otherwise a fresh one is issued. */
+  private isFull(): boolean {
+    return this.rooms.size >= MAX_ROOMS;
+  }
+
   private spawn(code: string, hostKey?: string): Room {
     if (!this.server) throw new Error("RoomManager.attachServer must be called before spawning rooms");
     const room: Room = new Room(
@@ -840,7 +856,10 @@ export class RoomManager {
         if (upper === fixed || (typeof presentedKey === "string" && safeEqual(presentedKey, existing.hostKey))) return { code: upper, hostKey: existing.hostKey };
         return { error: "NOT_HOST", status: 403 };
       }
-      if (this.canRestore(upper, presentedKey)) return { code: upper, hostKey: this.spawn(upper, presentedKey).hostKey, restored: true };
+      if (this.canRestore(upper, presentedKey)) {
+        if (this.isFull()) return { error: "server_full", status: 503 };
+        return { code: upper, hostKey: this.spawn(upper, presentedKey).hostKey, restored: true };
+      }
       if (fixed && upper === fixed) return { code: upper, hostKey: this.spawn(upper).hostKey };
       return { error: "unknown room code", status: 400 };
     }
@@ -848,9 +867,14 @@ export class RoomManager {
       const room = this.rooms.get(fixed) ?? this.spawn(fixed);
       return { code: fixed, hostKey: room.hostKey };
     }
+    if (this.isFull()) return { error: "server_full", status: 503 };
     const code = this.randomCode();
     const room = this.spawn(code);
     return { code, hostKey: room.hostKey };
+  }
+
+  get roomCount(): number {
+    return this.rooms.size;
   }
 
   get(code: string): Room | undefined {
@@ -887,7 +911,7 @@ export class RoomManager {
         // The host's own socket reconnecting after a restart / the idle timeout brings the room back
         // under its old code, exactly like POST /rooms {code, hostKey} does: the signed key is the
         // proof. Players reconnecting to a vanished room cannot — they get NO_ROOM until the host is back.
-        if (msg.kind === "host" && this.canRestore(upper, msg.hostKey)) room = this.spawn(upper, msg.hostKey);
+        if (msg.kind === "host" && !this.isFull() && this.canRestore(upper, msg.hostKey)) room = this.spawn(upper, msg.hostKey);
         else if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
         else return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
       }

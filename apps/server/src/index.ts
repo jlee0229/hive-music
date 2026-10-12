@@ -5,6 +5,7 @@ import { directScene } from "./vibe/director";
 import { withUrls } from "./library";
 import { RoomManager, type Conn } from "./rooms";
 import { handleUploadTracks } from "./upload/route";
+import { RateLimiter, callerKey } from "./rate-limit";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
@@ -46,6 +47,9 @@ async function resolveHostKeySecret(): Promise<string | undefined> {
   }
 }
 
+// Per-caller budgets (one address = one NAT = possibly a whole party, hence generous).
+const roomCreations = new RateLimiter(Number(process.env.ROOMS_PER_MINUTE ?? 30), 60_000);
+
 const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret() });
 
 const server = Bun.serve<Conn>({
@@ -64,6 +68,7 @@ const server = Bun.serve<Conn>({
     }
 
     if (req.method === "POST" && url.pathname === "/rooms") {
+      if (!roomCreations.allow(callerKey(req, srv))) return json({ error: "rate_limited" }, 429);
       // {code?, hostKey?} — see RoomManager.createRoom for the contract. Anything that is not a short
       // string is treated as absent rather than trusted.
       const body = ((await req.json().catch(() => null)) ?? {}) as { code?: unknown; hostKey?: unknown };
