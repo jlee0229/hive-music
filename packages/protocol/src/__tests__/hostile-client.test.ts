@@ -118,3 +118,51 @@ describe("PROTO-02 · 1e999 is valid JSON and parses to Infinity", () => {
     host.close(); victim.close(); attacker.close();
   });
 });
+
+describe("PROTO-03 · fields a client can stuff with unbounded data", () => {
+  test("every string and collection that reaches room state is bounded", () => {
+    const big = "x".repeat(100_000);
+    expect(parseClientMessage({ type: "AUDIO_READY", trackId: big })).toBeNull();
+    expect(parseClientMessage({ type: "CALIBRATION_START", referenceClientId: big })).toBeNull();
+    expect(parseClientMessage({ type: "SET_MODE", mode: "UNISON", params: { stemGainsDb: { [big]: 0 } } })).toBeNull();
+    const manyKeys = Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`k${i}`, 0]));
+    expect(parseClientMessage({ type: "SET_MODE", mode: "UNISON", params: { stemGainsDb: manyKeys } })).toBeNull();
+    const manyMeasurements = Array.from({ length: 5000 }, (_, i) => ({ clientId: `c${i}`, residualMs: 0, confidence: 1 }));
+    expect(parseClientMessage({ type: "CALIBRATION_REPORT", measurements: manyMeasurements })).toBeNull();
+    expect(parseClientMessage({ type: "KICK", clientId: big })).toBeNull();
+
+    // what real clients send is untouched
+    expect(parseClientMessage({ type: "AUDIO_READY", trackId: "synthetic-60s" })).not.toBeNull();
+    expect(parseClientMessage({ type: "SET_MODE", mode: "ORCHESTRA", params: { stemGainsDb: { drums: -6, bass: 3, vocals: 0, other: 0, mix: 0 } } })).not.toBeNull();
+    const sixtyFour = Array.from({ length: 64 }, (_, i) => ({ clientId: `c${i}`, residualMs: 0, confidence: 1 }));
+    expect(parseClientMessage({ type: "CALIBRATION_REPORT", measurements: sixtyFour })).not.toBeNull();
+  });
+
+  test("unknown keys are stripped, never carried into room state", () => {
+    const m = parseClientMessage({ type: "SET_MODE", mode: "WAVE", params: { axis: "y", evil: big() }, extra: big() });
+    expect(m).toEqual({ type: "SET_MODE", mode: "WAVE", params: { axis: "y" } });
+    const j = parseClientMessage({ ...JSON.parse(join("stripper-0001")), admin: true, device: { ...device, serial: big() } });
+    expect(j).not.toBeNull();
+    expect(Object.keys(j!).sort()).toEqual(["clientId", "device", "kind", "plays", "protocolVersion", "roomCode", "type"]);
+    expect(Object.keys((j as { device: object }).device).sort()).toEqual(["browserFamily", "platform", "userAgent"]);
+    function big() { return "x".repeat(10_000); }
+  });
+
+  test("a 1 MB AUDIO_READY from a player is refused instead of being broadcast to the room at 2 Hz", async () => {
+    const { host, victim } = await hostAndVictim();
+    const attacker = new Raw(PORT);
+    await attacker.open();
+    attacker.sendRaw(join("attacker-big-0001"));
+    await attacker.next("WELCOME");
+    await sleep(600); // let the join snapshot go out, then measure only what follows
+    victim.maxFrameBytes = 0;
+    attacker.forget();
+    attacker.sendRaw(JSON.stringify({ type: "AUDIO_READY", trackId: "x".repeat(1_000_000) }));
+    await sleep(700);
+    host.send({ type: "SET_MODE", mode: "UNISON", params: {} });
+    await sleep(700);
+    expect(victim.maxFrameBytes).toBeLessThan(16_000);
+    expect(mock.room.clients["attacker-big-0001"]?.audioReadyTrackId ?? null).toBeNull();
+    host.close(); victim.close(); attacker.close();
+  });
+});

@@ -43,6 +43,9 @@ export const ScenarioSchema = z.object({
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type ScenarioInput = z.input<typeof ScenarioSchema>;
 
+/** Upper bound on one client→server frame (proposed for apps/server too: PROTO-03). */
+export const MAX_CLIENT_FRAME_BYTES = 64 * 1024;
+
 const now = () => performance.timeOrigin + performance.now();
 const HEALTH_SYNC_ERR: Record<HealthLevel, number | null> = { good: 3, warn: 12, bad: 38, unknown: null };
 
@@ -183,6 +186,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
       return json({ error: "not found" }, 404);
     },
     websocket: {
+      // No legitimate client frame is near this (the largest is a 64-phone CALIBRATION_REPORT, ~6 KB);
+      // Bun's default is 16 MB, which is 16 MB of JSON.parse per hostile frame.
+      maxPayloadLength: MAX_CLIENT_FRAME_BYTES,
       open(ws) {
         ws.subscribe(room.code);
       },

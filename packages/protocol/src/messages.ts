@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NUDGE_RANGE_MS, MODES } from "./constants";
+import { MAX_PLAYERS, NUDGE_RANGE_MS, MODES } from "./constants";
 import { ModeParamsSchema } from "./mode";
 import { CalibrationResultSchema, DeviceInfoSchema, RoomStateSchema, StemRoleSchema } from "./room";
 
@@ -43,6 +43,9 @@ export const ClientIdSchema = z.string().min(8).max(64).refine(notReserved, RESE
 /** A reference to some client inside a control message. An unknown id is a no-op, so no minimum. */
 export const ClientRefSchema = z.string().max(64).refine(notReserved, RESERVED_ID);
 
+/** One measurement per speaker, with headroom over MAX_PLAYERS for hosts that also play. */
+export const MAX_CALIBRATION_MEASUREMENTS = MAX_PLAYERS * 4;
+
 // ---- client → server --------------------------------------------------------
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
@@ -83,7 +86,12 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("NUDGE"), clientId: ClientRefSchema, nudgeMs: z.number().min(-NUDGE_RANGE_MS).max(NUDGE_RANGE_MS) }),
   z.object({ type: z.literal("SET_PLAYS"), plays: z.boolean() }),
   z.object({ type: z.literal("KICK"), clientId: ClientRefSchema }),
-  z.object({ type: z.literal("AUDIO_READY"), trackId: z.string() }),
+  /**
+   * `trackId` is stored on the sender's record and re-broadcast in every ROOM_STATE, by any player:
+   * unbounded, one phone could make the server fan megabytes out to the whole room twice a second.
+   * Same bound as `TrackInfo.id`.
+   */
+  z.object({ type: z.literal("AUDIO_READY"), trackId: z.string().min(1).max(64) }),
   z.object({
     type: z.literal("CLIENT_STATUS"),
     rttMs: finite().nullable(),
@@ -119,7 +127,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("CALIBRATION_RESET"), clientId: ClientRefSchema.optional() }),
   z.object({
     type: z.literal("CALIBRATION_REPORT"),
-    measurements: z.array(CalibrationResultSchema.extend({ clientId: ClientRefSchema })).min(1),
+    measurements: z.array(CalibrationResultSchema.extend({ clientId: ClientRefSchema })).min(1).max(MAX_CALIBRATION_MEASUREMENTS),
   }),
   z.object({ type: z.literal("PONG") }),
 ]);

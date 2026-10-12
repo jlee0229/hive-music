@@ -89,7 +89,7 @@ export const ClientRecordSchema = z.object({
   assignment: AssignmentSchema.nullable(),
   connected: z.boolean(),
   /** Track id this client has fully decoded (all stems), or null. */
-  audioReadyTrackId: z.string().nullable(),
+  audioReadyTrackId: z.string().max(64).nullable(),
 });
 export type ClientRecord = z.infer<typeof ClientRecordSchema>;
 
