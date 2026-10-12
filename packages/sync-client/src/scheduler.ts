@@ -161,6 +161,8 @@ interface Branch {
   startedAtCtx: number;
   startOffsetSec: number;
   stopped: boolean;
+  /** Ctx time its sources were told to stop at; Infinity while it is live. */
+  endsAtCtx: number;
   /**
    * Content-seconds consumed beyond nominal because `playbackRate !== 1` (B9e). Positive = this branch
    * has eaten *more* of the track than wall time says, i.e. it is further along.
@@ -200,6 +202,13 @@ export class Scheduler {
   private durationSec = 0;
   private trackId: string | null = null;
   private branches: Branch[] = [];
+  /**
+   * Branches fading out under a crossfade. They are no longer "the music", but they are still sounding
+   * for up to RESYNC_START_MARGIN_SEC + RESYNC_CROSSFADE_MS, and a stop that lands inside that window
+   * has to silence them too — a seek 10 ms after a resync otherwise left the old position audible, at
+   * full level, on top of the new one.
+   */
+  private retiring: Branch[] = [];
   private applied: AppliedKey | null = null;
   private assignment: Assignment | null = null;
   private patternTimer: ReturnType<typeof setInterval> | null = null;
@@ -434,6 +443,7 @@ export class Scheduler {
       startedAtCtx: decision.whenCtx,
       startOffsetSec: decision.offsetSec,
       stopped: false,
+      endsAtCtx: Infinity,
       slewSec: 0,
       slewRate: 1,
       slewAtCtx: decision.whenCtx,
@@ -472,6 +482,8 @@ export class Scheduler {
     const at = this.deps.ctx.currentTime;
     for (const branch of this.branches) this.fadeOutAndStop(branch, at, STOP_FADE_SEC);
     this.branches = [];
+    for (const branch of this.retiring) this.cutShort(branch, at, STOP_FADE_SEC);
+    this.retiring = [];
     this.stopPatternAutomation();
     this.stopDriftCheck();
   }
@@ -480,6 +492,7 @@ export class Scheduler {
   private fadeOutAndStop(branch: Branch, at: number, fadeSec: number): void {
     if (branch.stopped) return;
     branch.stopped = true;
+    branch.endsAtCtx = at + fadeSec;
     branch.fadeGain.gain.cancelScheduledValues(at);
     branch.fadeGain.gain.setValueAtTime(branch.fadeGain.gain.value, at);
     branch.fadeGain.gain.linearRampToValueAtTime(0, at + fadeSec);
@@ -488,6 +501,22 @@ export class Scheduler {
         source.stop(at + fadeSec);
       } catch {
         /* a source that never started throws on stop in some engines */
+      }
+    }
+  }
+
+  /** Brings an already-retiring branch's end forward to `at + fadeSec`, if it was going to outlast that. */
+  private cutShort(branch: Branch, at: number, fadeSec: number): void {
+    if (branch.endsAtCtx <= at + fadeSec) return;
+    branch.endsAtCtx = at + fadeSec;
+    branch.fadeGain.gain.cancelScheduledValues(at);
+    branch.fadeGain.gain.setValueAtTime(branch.fadeGain.gain.value, at);
+    branch.fadeGain.gain.linearRampToValueAtTime(0, at + fadeSec);
+    for (const source of branch.sources.values()) {
+      try {
+        source.stop(at + fadeSec);
+      } catch {
+        /* an engine that refuses a second stop() keeps the first one, 70 ms away at most */
       }
     }
   }
@@ -637,6 +666,7 @@ export class Scheduler {
     fresh.fadeGain.gain.linearRampToValueAtTime(1, whenCtx + fadeSec);
     for (const branch of old) this.fadeOutAndStop(branch, whenCtx, fadeSec);
     this.branches = this.branches.filter((b) => !b.stopped);
+    this.retiring = [...this.retiring.filter((b) => b.endsAtCtx > ctxNow), ...old];
 
     this.lastDecision = decision;
     // The branch now embodies today's shift (a Bluetooth route that added 150 ms of output latency was
