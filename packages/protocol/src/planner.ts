@@ -33,11 +33,108 @@ function gains(room: RoomState, audible: readonly string[]): Record<string, numb
   return out;
 }
 
-/** Stable per-client stem choice: pinned role wins, else joinIndex modulo the stem count. */
-export function stemForClient(c: ClientRecord, roles: StemRole[]): StemRole | null {
-  if (roles.length === 0) return null;
-  if (c.pinnedRole && roles.includes(c.pinnedRole)) return c.pinnedRole;
-  return roles[c.joinIndex % roles.length]!;
+const byJoin = (a: ClientRecord, b: ClientRecord) => a.joinIndex - b.joinIndex || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/**
+ * The speakers that are actually making sound right now: connected ones. Coverage rules ("every stem is
+ * audible somewhere") count only these — a phone in a pocket with its screen locked keeps its record for
+ * the retention window, but it is not covering anything. With nobody connected, everyone counts.
+ */
+function presentSpeakers(speakers: ClientRecord[]): ClientRecord[] {
+  const connected = speakers.filter((c) => c.connected);
+  return connected.length > 0 ? connected : speakers;
+}
+
+/**
+ * Hands `options` out to `clients` (already in priority order) so the counts stay balanced: each client
+ * takes the least-used option, and among equals the one its own joinIndex points at, rotating from
+ * there. Earlier clients never depend on later ones — a joiner cannot reshuffle anyone — and because the
+ * tie-break is the client's own joinIndex rather than its rank, a leaver moves only the clients that
+ * have to move to restore the balance. `counts` is pre-seeded by the caller (pins).
+ */
+function dealBalanced<T extends string | number>(clients: ClientRecord[], options: readonly T[], counts: Map<T, number>): Map<string, T> {
+  const out = new Map<string, T>();
+  for (const c of clients) {
+    let best: T | null = null;
+    for (let i = 0; i < options.length; i++) {
+      const o = options[(c.joinIndex + i) % options.length]!;
+      if (best === null || (counts.get(o) ?? 0) < (counts.get(best) ?? 0)) best = o;
+    }
+    if (best === null) break;
+    counts.set(best, (counts.get(best) ?? 0) + 1);
+    out.set(c.id, best);
+  }
+  return out;
+}
+
+/**
+ * The order ORCHESTRA hands instruments out in: rhythm and melody alternate, so any two phones that
+ * joined back to back get one of each and the band splits into halves that make sense on their own.
+ */
+const ORCHESTRA_ORDER: readonly StemRole[] = ["drums", "vocals", "bass", "other"];
+/** The stem a lone instrument is folded together with when there are fewer phones than stems. */
+const STEM_PARTNER: Record<string, string> = { drums: "bass", bass: "drums", vocals: "other", other: "vocals" };
+
+export interface OrchestraSeat {
+  /** The instrument this phone is: its label, role and colour. null when the track has no real stems. */
+  primary: StemRole | null;
+  /** Every stem this phone plays: the primary first, then anything folded onto it. */
+  stems: string[];
+}
+
+/**
+ * ORCHESTRA's arrangement. The promise is that **the whole song is always in the room**:
+ *
+ *  - every phone is one instrument (its *primary*): a pin if the host set one, otherwise dealt out
+ *    balanced in `ORCHESTRA_ORDER`, so N > stems doubles instruments evenly and joiners never move anyone;
+ *  - a stem that no connected phone has as its primary is *folded* onto a connected, unpinned phone —
+ *    onto its rhythm/melody partner when there is one, else onto whoever is playing the least. One phone
+ *    alone plays everything; two play drums+bass / vocals+other; three play drums+bass / vocals / other;
+ *    and when the drums phone drops off the Wi-Fi, the bass phone carries drums until it is back;
+ *  - a pinned phone plays exactly its pin and is never folded onto. Pin every phone and the host has
+ *    chosen what the room hears.
+ */
+export function arrangeOrchestra(room: RoomState): Map<string, OrchestraSeat> {
+  const stems = allStems(room);
+  const roles = ORCHESTRA_ORDER.filter((r) => stems.includes(r));
+  const speakers = Object.values(room.clients).filter((c) => c.plays).sort(byJoin);
+  const seats = new Map<string, OrchestraSeat>();
+  if (roles.length === 0) {
+    for (const c of speakers) seats.set(c.id, { primary: null, stems: [...stems] });
+    return seats;
+  }
+  const pinOf = (c: ClientRecord) => (c.pinnedRole && roles.includes(c.pinnedRole) ? c.pinnedRole : null);
+  const counts = new Map<StemRole, number>();
+  for (const c of speakers) {
+    const pin = pinOf(c);
+    if (pin) counts.set(pin, (counts.get(pin) ?? 0) + 1);
+  }
+  const dealt = dealBalanced(speakers.filter((c) => !pinOf(c)), roles, counts);
+  for (const c of speakers) {
+    const primary = pinOf(c) ?? dealt.get(c.id)!;
+    seats.set(c.id, { primary, stems: [primary] });
+  }
+
+  const present = presentSpeakers(speakers);
+  const covered = new Set<string>(present.map((c) => seats.get(c.id)!.primary!));
+  const carriers = present.filter((c) => !pinOf(c));
+  if (carriers.length > 0) {
+    for (const stem of stems) {
+      if (covered.has(stem)) continue;
+      const partner = carriers.find((c) => seats.get(c.id)!.primary === STEM_PARTNER[stem]);
+      const fewest = carriers.reduce((a, b) => (seats.get(b.id)!.stems.length < seats.get(a.id)!.stems.length ? b : a));
+      seats.get((partner ?? fewest).id)!.stems.push(stem);
+    }
+  }
+  return seats;
+}
+
+/** "drums", "drums + bass", "unison" (everything) — what the phone's screen says it is playing. */
+function orchestraLabel(seat: OrchestraSeat, stems: readonly string[]): string {
+  if (seat.primary === null || stems.every((s) => seat.stems.includes(s))) return "unison";
+  const names = stems.filter((s) => seat.stems.includes(s)); // track order, not fold order
+  const label = names.join(" + ");
+  return label.length <= 24 ? label : `${seat.primary} + ${names.length - 1}`;
 }
 
 /**
@@ -57,12 +154,15 @@ function base(c: ClientRecord, label: string, role: Role, gainsDb: Record<string
 /**
  * plan(room) → assignment per client id. Pure and deterministic:
  * - hosts with plays=false get null (they are controllers, not speakers);
- * - existing clients never reshuffle when someone joins (joinIndex is monotonic);
+ * - a joiner never changes which instrument / group / voice an existing client is (joinIndex is
+ *   monotonic and every deal is made in joinIndex order); it can only take load *off* them;
+ * - the whole song stays in the room: ORCHESTRA and STEREO fold stems nobody present is covering;
  * - pins always win; UNISON = every stem at 0 dB; a "mix"-only track collapses every mode to unison gains.
  */
 export function plan(room: RoomState, applyAtServerTime: number | null = null): Record<string, Assignment | null> {
   const out: Record<string, Assignment | null> = {};
   const roles = stemRoles(room);
+  const orchestra = room.mode.kind === "ORCHESTRA" ? arrangeOrchestra(room) : null;
   const stems = allStems(room);
   const p = resolveModeParams(room.mode);
   const clients = Object.values(room.clients).sort((a, b) => a.joinIndex - b.joinIndex);
@@ -79,9 +179,10 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
     }
     switch (room.mode.kind) {
       case "ORCHESTRA": {
-        const stem = stemForClient(c, roles);
-        if (!stem) { out[c.id] = base(c, "unison", "unison", gains(room, stems), applyAtServerTime); break; }
-        out[c.id] = base(c, stem, roleForStem(stem), gains(room, [stem]), applyAtServerTime);
+        const seat = orchestra!.get(c.id)!;
+        const label = orchestraLabel(seat, stems);
+        const role = label === "unison" ? "unison" : roleForStem(seat.primary!);
+        out[c.id] = base(c, label, role, gains(room, seat.stems), applyAtServerTime);
         break;
       }
       case "STEREO": {

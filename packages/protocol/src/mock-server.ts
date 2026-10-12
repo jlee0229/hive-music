@@ -213,7 +213,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (sockets.get(id) !== ws) return;
         room.clients[id]!.connected = false;
         sockets.delete(id);
-        dirty = true;
+        // Re-plan, not just re-publish: the planner covers for a speaker that is not there (ORCHESTRA
+        // folds its stem onto a partner, STEREO and STROBE close the gap), so who is connected is an input.
+        replan();
       },
     },
   });

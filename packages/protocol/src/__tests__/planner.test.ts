@@ -1,27 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION, ROLE_COLORS, STEMS } from "../constants";
+import { ROLE_COLORS, STEMS } from "../constants";
 import { speakerLayout } from "../layout";
 import { compensationMs, plan, SILENT_DB, withAssignments } from "../planner";
-import { IDLE_CALIBRATION, type ClientRecord, type RoomState } from "../room";
+import { client, room } from "./room-fixture";
 
-function client(i: number, over: Partial<ClientRecord> = {}): ClientRecord {
-  return {
-    id: `c${i}-00000000`, kind: "player", plays: true, name: `P${i}`,
-    device: { userAgent: "ua", platform: "x", browserFamily: "other" },
-    joinIndex: i, joinedAtServerTime: 0, position: null, pinnedRole: null, nudgeMs: 0,
-    tableLatencyMs: null, calibratedOffsetMs: null, assignment: null, connected: true, audioReadyTrackId: null,
-    ...over,
-  };
-}
-function room(clients: ClientRecord[], mode: RoomState["mode"] = { kind: "UNISON", params: {} }, stems: string[] = [...STEMS]): RoomState {
-  const rec: RoomState["clients"] = {};
-  for (const c of clients) rec[c.id] = c;
-  return {
-    code: "BZQ7", protocolVersion: PROTOCOL_VERSION, createdAtServerTime: 0, hostClientIds: [],
-    track: { id: "t", title: "t", durationSec: 60, stems }, transport: { state: "stopped" }, mode, scenePlan: null,
-    calibration: IDLE_CALIBRATION, clients: rec,
-  };
-}
 const audible = (g: Record<string, number>) => Object.entries(g).filter(([, db]) => db > SILENT_DB).map(([s]) => s).sort();
 
 describe("planner", () => {
