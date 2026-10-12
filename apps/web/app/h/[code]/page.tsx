@@ -4,7 +4,7 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { TrackLibraryEntry } from "@hive/protocol";
-import type { CalibrationProgress } from "@hive/sync-client";
+import { reconnectDelayMs, type CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
@@ -237,16 +237,30 @@ function HostRoom({
     }
   }, [me]);
 
+  // The library is what ends the "Setting up your hive…" splash (the first track is auto-picked
+  // from it) and what fills the Songs drawer, so one failed request must not be the end of it:
+  // retry with the socket's own backoff until an answer arrives.
   useEffect(() => {
     let cancelled = false;
-    fetch(`${apiUrl()}/tracks`)
-      .then((r) => r.json())
-      .then((d: { tracks: TrackLibraryEntry[] }) => {
-        if (!cancelled) setTracks(d.tracks);
-      })
-      .catch(() => {});
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    const load = () => {
+      fetch(`${apiUrl()}/tracks`)
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.json();
+        })
+        .then((d: { tracks: TrackLibraryEntry[] }) => {
+          if (!cancelled) setTracks(d.tracks);
+        })
+        .catch(() => {
+          if (!cancelled) retry = setTimeout(load, reconnectDelayMs(attempt++));
+        });
+    };
+    load();
     return () => {
       cancelled = true;
+      if (retry) clearTimeout(retry);
     };
   }, [tracksVersion]);
 
@@ -255,17 +269,23 @@ function HostRoom({
   // pre-seed a track, but a fresh real room starts with track: null, so "Start" would otherwise
   // send TRANSPORT into a room with nothing loaded (ERROR NO_TRACK) until the user happened to
   // click a radio button that was already visually checked.
+  // Sent only while the socket is open (a message sent while it is down is dropped, not queued),
+  // and sent again if the room still has no track after a reconnect.
+  const autoPickSentAt = useRef<number | null>(null);
   useEffect(() => {
     if (!room) return;
     if (room.track) {
       setSelectedTrackId(room.track.id);
       return;
     }
-    if (!selectedTrackId && tracks[0]) {
-      setSelectedTrackId(tracks[0].id);
-      client.host.setTrack(tracks[0].id);
-    }
-  }, [room, tracks, selectedTrackId, client]);
+    const first = tracks[0];
+    if (!first || connection !== "open") return;
+    const now = performance.now();
+    if (autoPickSentAt.current !== null && now - autoPickSentAt.current < 3000) return;
+    autoPickSentAt.current = now;
+    setSelectedTrackId(first.id);
+    client.host.setTrack(first.id);
+  }, [room, tracks, connection, client]);
 
   useEffect(() => {
     setStartAnywayReady(false);
@@ -599,6 +619,9 @@ function HostRoom({
       <span className="text-[15px]" style={{ color: "var(--muted)" }}>
         Setting up your hive…
       </span>
+      {/* If the server cannot be reached this is where the host waits, so say so here too. */}
+      <ReconnectBanner connection={connection} />
+      <ProtocolMismatchBanner show={protocolMismatch} />
     </main>
   );
 }
