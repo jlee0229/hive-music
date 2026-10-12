@@ -103,6 +103,22 @@ export class VirtualTime {
     }
   }
 
+  /**
+   * A main thread that was held and then let go: every armed interval fires `times` times, `gapMs`
+   * apart, regardless of its period. Browsers mostly coalesce missed ticks, but "a late tick with the
+   * next one right behind it" is routine, and this is the cheapest way to produce it.
+   */
+  burst(times: number, gapMs: number): void {
+    for (let i = 0; i < times; i++) {
+      this.nowMs += gapMs;
+      for (const t of [...this.timers.values()]) {
+        if (t.every === null || !this.timers.has(t.id)) continue;
+        t.at = this.nowMs + t.every;
+        t.fn();
+      }
+    }
+  }
+
   /** Jumps the clock without firing anything in between (a frozen page: timers do not catch up). */
   freeze(ms: number): void {
     this.nowMs += ms;
