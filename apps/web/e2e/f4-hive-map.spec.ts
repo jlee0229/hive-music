@@ -13,10 +13,14 @@ function captureFrames(page: import("@playwright/test").Page, type: string, sink
   });
 }
 
-test("F4: 12 dots render", async ({ page }) => {
+test("F4: one dot per connected phone (11 of party-12's 12; the disconnected one is not drawn)", async ({ page }) => {
   await page.goto("/h/BZQ7");
+  // party-12 seeds 12 players, one of them (Omar, health "bad") with connected: false. The map draws
+  // who is in the room right now: a phone that left must not sit there looking like a speaker.
   const dots = page.locator('svg[aria-label^="Hive map"] g[data-client-id]');
-  await expect(dots).toHaveCount(12, { timeout: 10_000 });
+  await expect(dots).toHaveCount(11, { timeout: 10_000 });
+  await expect(page.locator('g[data-client-id="mock-08-omar"]')).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "Hive map: 11 player phones" })).toBeVisible();
 });
 
 test("F4: dragging a dot emits SET_POSITION with 0 <= x,y <= 1", async ({ page }) => {
