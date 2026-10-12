@@ -4,6 +4,7 @@
  * cases that were wrong in production, pinned.
  */
 import { describe, expect, test } from "bun:test";
+import { evaluatePattern, IDLE_CALIBRATION, plan, PROTOCOL_VERSION, type RoomState } from "@hive/protocol";
 import { classifyTempo, gridErrorSec, renderTrack, type Style, type TrackSpec } from "../../../scripts/bpm-eval";
 import { detectBeatGrid } from "../bpm";
 
@@ -73,4 +74,43 @@ describe("ENGINE-DSP-02: the grid is still on the beat four minutes in", () => {
       expect(classifyTempo(grid.bpm, s.bpm).verdict).toMatch(/exact|octave/);
     }
   });
+});
+
+describe("ENGINE-DSP-03: the planner keeps the strobe on the detected grid", () => {
+  const strobeRoom = (bpm: number, groups: number, beatsPerSwitch: number): RoomState => ({
+    code: "BZQ7", protocolVersion: PROTOCOL_VERSION, createdAtServerTime: 0, hostClientIds: [],
+    track: { id: "t", title: "t", durationSec: 240, stems: ["mix"], bpm, beatOffsetSec: 0 },
+    transport: { state: "stopped" }, mode: { kind: "STROBE", params: { groups, beatsPerSwitch } }, scenePlan: null,
+    calibration: IDLE_CALIBRATION,
+    clients: {
+      "c0-00000000": {
+        id: "c0-00000000", kind: "player", plays: true, name: "P0", device: { userAgent: "ua", platform: "x", browserFamily: "other" },
+        joinIndex: 0, joinedAtServerTime: 0, position: null, pinnedRole: null, nudgeMs: 0, tableLatencyMs: null, calibratedOffsetMs: null,
+        assignment: null, connected: true, audioReadyTrackId: null,
+      },
+    },
+  });
+  /** Where group 0 actually switches on nearest to `atMs`, by scanning the pattern itself. */
+  const switchOnNear = (room: RoomState, atMs: number): number => {
+    const pattern = plan(room)["c0-00000000"]!.pattern!;
+    let best = Infinity;
+    for (let t = atMs - 2000; t < atMs + 2000; t += 0.25) {
+      if (evaluatePattern(pattern, t - 0.25) === 0 && evaluatePattern(pattern, t) > 0 && Math.abs(t - atMs) < Math.abs(best - atMs)) best = t;
+    }
+    return best;
+  };
+
+  // PROPOSED (packages/protocol/src/planner.ts, not this agent's file): the planner rounds the
+  // strobe period to whole milliseconds. 128 BPM, 2 groups, quarter notes is 937.5 ms → 938: the
+  // switch is 123 ms late by 3:50, and at sixteenths (234.375 → 234) it is 370 ms early — more
+  // than a whole step. The detector is now good to ~0.002 BPM; this rounding throws that away.
+  for (const [groups, beatsPerSwitch] of [[2, 1], [2, 0.25], [3, 1]] as const) {
+    test.failing(`128 BPM, ${groups} groups, ${beatsPerSwitch} beat(s) per switch: the switch at ~3:50 is within 5 ms of a beat`, () => {
+      const beatMs = 60000 / 128;
+      const rotationMs = beatMs * beatsPerSwitch * groups;
+      const k = Math.round(230000 / rotationMs);
+      const expected = k * rotationMs; // beatOffsetSec is 0: group 0 switches on at whole rotations
+      expect(Math.abs(switchOnNear(strobeRoom(128, groups, beatsPerSwitch), expected) - expected)).toBeLessThan(5);
+    });
+  }
 });
