@@ -88,6 +88,11 @@ export function createBrowserAudioEngine(
   let appliedPitchSemitones = 0;
   const pitchedCache = new Map<string, Map<string, BufferLike>>();
   let pitchJobKey: string | null = null;
+  /**
+   * Variants whose render threw (an allocation failure on a long track, mostly). Without this the next
+   * snapshot — and every one after it — started the same seconds-long render again.
+   */
+  const pitchFailed = new Set<string>();
   /*
    * Read live, never cached. `ctx.outputLatency` is not a constant of the device: on iOS it changes when
    * the audio session does — a calibration run switches to play-and-record, a Bluetooth speaker or a
@@ -419,6 +424,7 @@ export function createBrowserAudioEngine(
       originalBuffers = map;
       appliedPitchSemitones = 0;
       pitchedCache.clear(); // pitched copies are ~35MB each; only the current track earns them
+      pitchFailed.clear();
       scheduler?.setBuffers(map, track.id);
       loadedTrackId = track.id;
       loadFailures.delete(track.id);
@@ -465,7 +471,10 @@ export function createBrowserAudioEngine(
     const key = `${trackId}:${want}`;
     let pitched = pitchedCache.get(key);
     if (!pitched) {
-      if (pitchJobKey === key) return; // already rendering this exact variant
+      // One render at a time: it is seconds of main-thread work per stem, and a second one started
+      // beside it (the assignment moved again) only makes both late. The snapshot or the finishing
+      // render below comes back for whatever is wanted by then.
+      if (pitchJobKey !== null || pitchFailed.has(key)) return;
       pitchJobKey = key;
       try {
         const rendered = new Map<string, BufferLike>();
@@ -480,8 +489,18 @@ export function createBrowserAudioEngine(
         }
         pitchedCache.set(key, rendered);
         pitched = rendered;
+      } catch (err) {
+        // The phone keeps playing the unshifted audio; note it once instead of retrying forever.
+        pitchFailed.add(key);
+        // (Not an `error` event: the host screen toasts those verbatim, and this one has no action.)
+        console.warn("[hive] CHOIR render failed; playing unshifted", err);
+        return;
       } finally {
         if (pitchJobKey === key) pitchJobKey = null;
+        // What is wanted may have changed while this one rendered (or was abandoned for a new track).
+        if ((lastAssignment?.pitchSemitones ?? 0) !== want || loadedTrackId !== trackId) {
+          queueMicrotask(() => void ensurePitchedBuffers());
+        }
       }
     }
     // Only apply if this variant is still what the (possibly newer) assignment wants. `scheduler` is read
