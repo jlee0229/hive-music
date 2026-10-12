@@ -118,7 +118,10 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
 
   let view: View = "join";
   if (removed) view = "removed";
-  else if (joinRequested && audio.state === "locked") view = "resume";
+  // audio.state is still "locked" between the join tap and the moment unlock() resolves; that is
+  // the join in progress ("Joining…"), not an interruption — showing "Tap to resume" there flashed
+  // the interruption screen at every guest on every join.
+  else if (joinRequested && audio.state === "locked") view = joining ? "join" : "resume";
   else if (joinRequested) {
     if (room?.calibration.state === "countdown" || room?.calibration.state === "running") view = "calibrating";
     else if (room?.transport.state === "playing") view = "playing";

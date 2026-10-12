@@ -135,6 +135,30 @@ async function playingRoom(fromSec = 0) {
   return { code, host };
 }
 
+test("join mid-song: sound really starts, at the room's position, and the resume screen never flashes", async ({ browser }) => {
+  const { code, host } = await playingRoom(5);
+  const { context, page } = await newPhone(browser);
+
+  await tapJoin(page, code, "Latecomer");
+  await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(async () => (await audio(page)).rms, { timeout: 15_000 }).toBeGreaterThan(0.01);
+
+  const a = await audio(page);
+  expect(a.ctxState).toBe("running");
+  // The on-screen clock and the server transport must agree to the second.
+  const transport = host.state.room!.transport;
+  const expectedSec = transport.state === "playing" ? (performance.timeOrigin + performance.now() - transport.serverTimeAtTrackZero) / 1000 : -1;
+  const shown = await page.locator("main").innerText();
+  const m = shown.match(/(\d+):(\d\d)/);
+  expect(m, `no track clock in: ${shown}`).not.toBeNull();
+  expect(Math.abs(Number(m![1]) * 60 + Number(m![2]) - expectedSec)).toBeLessThan(2);
+
+  expect(a.sawResume, '"Tap to resume" appeared during an ordinary join').toBe(false);
+
+  host.close();
+  await context.close();
+});
+
 test("a phone the host removes goes silent, not just to a 'Removed' screen", async ({ browser }) => {
   const { code, host } = await playingRoom();
   const { context, page } = await newPhone(browser);
