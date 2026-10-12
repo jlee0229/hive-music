@@ -80,6 +80,26 @@ describe("planner", () => {
     expect(audible(a["c1-00000000"]!.gainsDb)).toEqual(["other", "vocals"]);
   });
 
+  test("STEREO never plays half a song: with nobody on one side, everyone plays the full mix (PROTO-06)", () => {
+    const STEREO = { kind: "STEREO" as const, params: {} };
+    const all = [...STEMS].sort();
+    // one phone alone — before, it played drums+bass or vocals+other and the rest of the song was gone
+    const lone = plan(room([client(0, { kind: "host", plays: false }), client(1)], STEREO));
+    expect(audible(lone["c1-00000000"]!.gainsDb)).toEqual(all);
+    expect(lone["c1-00000000"]!.label).toBe("unison");
+    // every dot dragged into the left half
+    const leftOnly = plan(room([client(1, { position: { x: 0.1, y: 0.2 } }), client(2, { position: { x: 0.3, y: 0.8 } })], STEREO));
+    for (const v of Object.values(leftOnly)) expect(audible(v!.gainsDb)).toEqual(all);
+    // the only phone on the right is offline: the left side covers until it is back
+    const rightGone = plan(room([client(1, { position: { x: 0.1, y: 0.5 } }), client(2, { position: { x: 0.9, y: 0.5 }, connected: false })], STEREO));
+    expect(audible(rightGone["c1-00000000"]!.gainsDb)).toEqual(all);
+    // and with both sides present it is the real split
+    const both = plan(room([client(1, { position: { x: 0.1, y: 0.5 } }), client(2, { position: { x: 0.9, y: 0.5 } })], STEREO));
+    expect(both["c1-00000000"]!.label).toBe("left");
+    expect(audible(both["c1-00000000"]!.gainsDb)).toEqual(["bass", "drums"]);
+    expect(audible(both["c2-00000000"]!.gainsDb)).toEqual(["other", "vocals"]);
+  });
+
   test("WAVE delay grows along the axis up to spanMs and carries a wave pattern", () => {
     const r3 = room([client(0, { position: { x: 0, y: 0 } }), client(1, { position: { x: 1, y: 0 } }), client(2)], { kind: "WAVE", params: { axis: "x", spanMs: 300 } });
     const a = plan(r3);

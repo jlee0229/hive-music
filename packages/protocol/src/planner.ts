@@ -171,6 +171,9 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
   const spatial = room.mode.kind === "WAVE" || room.mode.kind === "STEREO";
   const where: Record<string, Position> = spatial ? speakerLayout(room).positions : {};
   const at = (c: ClientRecord): Position | null => (Object.hasOwn(where, c.id) ? where[c.id]! : c.position);
+  const isLeft = (c: ClientRecord) => projection(c, "x", at(c)) < 0.5;
+  const present = presentSpeakers(clients.filter((c) => c.plays));
+  const stereoSplit = present.some(isLeft) && present.some((c) => !isLeft(c));
 
   for (const c of clients) {
     if (!c.plays) {
@@ -188,7 +191,10 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
       case "STEREO": {
         // zone-based stem grouping: left = drums+bass, right = vocals+other, by which half of the map
         // the dot is in (auto-layout slots alternate sides, so an untouched room still splits evenly)
-        const left = projection(c, "x", at(c)) < 0.5;
+        const left = isLeft(c);
+        // Half a song is worse than no effect: until there is a connected speaker on BOTH sides (one
+        // phone alone, or every dot dragged to the same half), everyone plays the full mix.
+        if (!stereoSplit) { out[c.id] = base(c, "unison", "unison", gains(room, stems), applyAtServerTime); break; }
         const group = left ? ["drums", "bass"] : ["vocals", "other"];
         const audible = roles.length ? group.filter((s) => roles.includes(s as StemRole)) : stems;
         out[c.id] = base(c, left ? "left" : "right", left ? "drums" : "vocals", gains(room, audible.length ? audible : stems), applyAtServerTime);
