@@ -10,6 +10,7 @@ import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
 import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
 import { classifyHostClaim } from "@/lib/hive/host-claim";
+import { planStart, showTuningScreen, tuningNote } from "@/lib/hive/start-flow";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
@@ -186,6 +187,10 @@ function HostRoom({
   const [tracksVersion, setTracksVersion] = useState(0);
   const [hostToast, setHostToast] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  /** The microphone refused (denied, or no input device): tuning cannot work from this phone until that changes. */
+  const [micBlocked, setMicBlocked] = useState(false);
+  /** This page asked for the current/last tuning moment (as opposed to finding one in the room after a reload). */
+  const [tuningStartedHere, setTuningStartedHere] = useState(false);
   /**
    * Armed by "Start the hive" when an automatic tuning moment should run first: play the moment
    * that tuning lands (done, failed, or cancelled — the show starts either way). Refs, not state:
@@ -371,7 +376,9 @@ function HostRoom({
 
   function startTuning() {
     setCalibrateDismissed(false);
+    setTuningStartedHere(true);
     setMicError(null);
+    setMicBlocked(false);
     // The stub engine (mock/e2e testing) has no microphone by design -- it never calls
     // runAsReference() and the mock server measures its own synthetic players on a timer
     // regardless, so the countdown/rows UI works the same either way. Only the real engine
@@ -386,13 +393,18 @@ function HostRoom({
         .catch((err: unknown) => {
           const name = err instanceof Error ? err.name : "";
           if (name === "CalibrationCancelledError") return; // the user pressed Cancel; not an error
-          setMicError(err instanceof Error ? err.message : "could not start listening");
-          // An auto-started tuning with no mic (permission denied, no input device) would click to a
-          // dead room until the server's failure timeout. Cancel it and start the show untuned.
-          if (autoStartRef.current) {
+          const message = err instanceof Error ? err.message : "could not start listening";
+          setMicError(message);
+          // No microphone (permission denied, no input device): every phone would click to a room
+          // nobody is listening to until the server's failure timeout. Cancel the run — whether it
+          // was Start's automatic one or a tap on "Tune the hive" — and remember, so the next Start
+          // does not flash the tuning screen on every phone again just to fail the same way.
+          if (/^microphone denied/.test(message)) {
+            setMicBlocked(true);
             client.host.cancelCalibration();
-            finishAutoStart();
           }
+          // An automatic tuning that cannot run must not hold the music back.
+          if (autoStartRef.current) finishAutoStart();
         });
     }
     client.host.startCalibration().catch(() => {});
@@ -402,23 +414,22 @@ function HostRoom({
    * "Start the hive": when tuning can actually help — real engine (the stub has no mic), at least
    * one ready speaker still on table/guessed compensation, calibration idle — run the tuning moment
    * automatically and play the instant it lands. No separate tap. Everything else starts as before.
+   * The decision itself is planStart (lib/hive/start-flow.ts, unit-tested).
    */
   function startHive() {
     if (!selectedTrackId) return;
-    const readyPlayers = room
-      ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected && c.plays && c.audioReadyTrackId === room.track?.id)
-      : [];
-    const untuned = readyPlayers.some((c) => c.calibratedOffsetMs == null);
-    if (engineKind() === "real" && untuned && room?.calibration.state === "idle") {
-      autoStartRef.current = true;
-      autoStartSawTuningRef.current = false;
-      // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
-      // the party on the countdown screen; worst case the show starts on table compensation.
-      autoStartTimerRef.current = setTimeout(finishAutoStart, 30_000);
-      startTuning();
-    } else {
+    const plan = planStart({ engine: engineKind(), room, startInFlight: autoStartRef.current, micBlocked });
+    if (plan.kind === "ignore") return; // a second tap while the first start's tuning is still running
+    if (plan.kind === "play") {
       client.host.play(0);
+      return;
     }
+    autoStartRef.current = true;
+    autoStartSawTuningRef.current = false;
+    // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
+    // the party on the countdown screen; worst case the show starts on table compensation.
+    autoStartTimerRef.current = setTimeout(finishAutoStart, plan.failsafeMs);
+    startTuning();
   }
 
   const router = useRouter();
@@ -449,8 +460,8 @@ function HostRoom({
   // the Songs drawer, joining in the Join QR code page, and Start appears whenever the transport
   // is stopped. `room.track` is auto-picked seconds after the room exists (effect above).
   const showStage = !!room?.track;
-  const calibrationActive = room ? room.calibration.state === "countdown" || room.calibration.state === "running" || room.calibration.state === "failed" : false;
-  const showCalibrate = calibrationActive && !calibrateDismissed;
+  const showCalibrate = showTuningScreen({ calibrationState, startedHere: tuningStartedHere, dismissed: calibrateDismissed });
+  const tuneNote = tuningNote({ calibrationState, micBlocked });
 
   if (showCalibrate && room) {
     return (
@@ -542,9 +553,12 @@ function HostRoom({
         <VibeBox host={client.host} />
         <SceneStrip room={room} clock={client.clock} />
 
-        <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
-          Phones were tuned automatically at start. Re-tune anytime — best between songs, with the room quiet.
-        </div>
+        {/* Says something only when tuning did not happen; silence means nothing is wrong. */}
+        {tuneNote ? (
+          <div className="rounded-2xl border p-3 text-sm" style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}>
+            {tuneNote}
+          </div>
+        ) : null}
 
         <div className="flex justify-center">
           <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} host={client.host} onOpenSheet={setSheetClientId} />
