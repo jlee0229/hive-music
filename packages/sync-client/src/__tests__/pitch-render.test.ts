@@ -106,3 +106,29 @@ describe("pitchShiftMono stays on the shared timeline (ENGINE-DSP-20)", () => {
     });
   }
 });
+
+describe("pitchShiftMono renders the whole clip (ENGINE-DSP-21)", () => {
+  for (const semitones of [12, -12, 7]) {
+    test(`${semitones > 0 ? "+" : ""}${semitones} semitones: the last 100 ms are audio, not zeros`, async () => {
+      const input = musicLike(4);
+      const out = await pitchShiftMono(input, semitones);
+      expect(out.length).toBe(input.length);
+      const from = input.length - Math.round(0.1 * RATE);
+      // Unfixed: 0.24-0.44 s of exact zeros at the end of every render (rms 0).
+      expect(rms(out, from)).toBeGreaterThan(0.5 * rms(input, from));
+    });
+  }
+
+  test("a clip shorter than SoundTouch's 16384-frame input block is still rendered", async () => {
+    const input = musicLike(0.25); // 11025 samples; unfixed this comes back as pure silence
+    for (const semitones of [12, -12, 7]) {
+      const out = await pitchShiftMono(input, semitones);
+      expect(out.length).toBe(input.length);
+      expect(rms(out)).toBeGreaterThan(0.5 * rms(input));
+    }
+  });
+
+  test("an empty clip stays empty", async () => {
+    expect((await pitchShiftMono(new Float32Array(0), 12)).length).toBe(0);
+  });
+});

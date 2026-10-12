@@ -10,6 +10,11 @@ import { SimpleFilter, SoundTouch } from "soundtouchjs";
 /** Samples processed between yields: ~5 seconds of audio per slice keeps the page responsive. */
 const YIELD_EVERY_SAMPLES = 44100 * 5;
 
+/** Frames pulled from SoundTouch per call; also the size of SimpleFilter's internal input block. */
+const CHUNK_FRAMES = 16384;
+/** Silence fed after the clip: two input blocks, more than everything SoundTouch can hold back. */
+const TAIL_PAD_FRAMES = 2 * CHUNK_FRAMES;
+
 /**
  * How far SoundTouch's raw output trails its input, in samples (negative: the output is early).
  *
@@ -36,11 +41,15 @@ export async function pitchShiftMono(input: Float32Array, semitones: number): Pr
   st.tempo = 1.0;
   st.pitchSemitones = semitones;
   const lag = rawLagSamples(st);
+  // SimpleFilter only processes whole 16384-frame input blocks and the stretcher holds back up to
+  // a window more, so without a tail the last 0.24-0.44 s of every render came back as zeros (and a
+  // clip under one block as pure silence). Zeros appended to the source flush the real ending out.
+  const sourceFrames = input.length === 0 ? 0 : input.length + TAIL_PAD_FRAMES;
   const source = {
     extract(target: Float32Array, numFrames: number, position: number): number {
-      const frames = Math.min(numFrames, Math.max(0, input.length - position));
+      const frames = Math.min(numFrames, Math.max(0, sourceFrames - position));
       for (let i = 0; i < frames; i++) {
-        const s = input[position + i]!;
+        const s = position + i < input.length ? input[position + i]! : 0;
         target[i * 2] = s;
         target[i * 2 + 1] = s;
       }
@@ -49,10 +58,8 @@ export async function pitchShiftMono(input: Float32Array, semitones: number): Pr
   };
   const filter = new SimpleFilter(source, st);
 
-  // Output pinned to the input's length: WSOLA can come up a few hundred samples short at the
-  // tail, and that remainder stays silent rather than shifting the timeline mapping.
+  // Output pinned to the input's length, so the timeline mapping never depends on the shifter.
   const out = new Float32Array(input.length);
-  const CHUNK_FRAMES = 16384;
   const chunk = new Float32Array(CHUNK_FRAMES * 2);
   // Re-align onto the input's timeline: a late render loses its first `lag` raw samples, an early
   // one starts that far into the output (leaving the head silent).
