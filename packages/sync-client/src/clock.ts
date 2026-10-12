@@ -294,6 +294,16 @@ export class CtxMapper {
     return this.samples.length;
   }
 
+  /**
+   * Forgets every sample. The relation between the local clock and `ctx.currentTime` is only constant
+   * while one context runs uninterrupted: a suspension stops ctx time while local time carries on, and a
+   * rebuilt context counts from zero. Samples from before either describe a mapping that no longer
+   * exists, and the median would keep answering with it until six newer ones had arrived.
+   */
+  reset(): void {
+    this.samples = [];
+  }
+
   /** median(ctx − local/1000), seconds; null before the first sample. */
   get localToCtxSec(): number | null {
     if (this.samples.length === 0) return null;

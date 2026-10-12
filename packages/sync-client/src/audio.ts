@@ -329,11 +329,18 @@ export function createBrowserAudioEngine(
     }, WATCHDOG_INTERVAL_MS);
   }
 
+  /** Starts the local↔ctx mapping afresh for a context that has just (re)started. */
+  function remap(current: AudioContext): void {
+    mapper.reset();
+    mapper.addSample(host.now(), current.currentTime);
+  }
+
   function bindContextState(current: AudioContext): void {
     current.onstatechange = () => {
       // 'interrupted' is iOS-only and not in the TS union.
       const s = current.state as AudioContextState | "interrupted";
       if (s === "running") {
+        remap(current);
         if (loadedTrackId) setState("ready");
         reschedule(true, "context running");
       } else if (s === "suspended" || s === "interrupted") {
@@ -675,7 +682,9 @@ export function createBrowserAudioEngine(
       return muted;
     },
 
-    ctxNow: () => (ctx && ctx.state !== "closed" ? ctx.currentTime : null),
+    // Only while running: a suspended context's clock stands still, so pairing it with a moving local
+    // clock would feed the mapping one wrong sample per probe for as long as the interruption lasts.
+    ctxNow: () => (ctx && ctx.state === "running" ? ctx.currentTime : null),
 
     applyRoom(room: RoomState, assignment: Assignment | null): void {
       lastRoom = room;
