@@ -26,6 +26,12 @@ const READY_REANNOUNCE_MIN_MS = 1000 / ROOM_STATE_MAX_HZ;
 /** Web Audio's render quantum, frames. The granularity of every `start(when)` we make. */
 const RENDER_QUANTUM = 128;
 
+/**
+ * How long `AudioContext.resume()` may stay pending before unlock() gives up on that context. iOS can
+ * leave the promise unsettled (neither resolved nor rejected) while the audio session is interrupted.
+ */
+const RESUME_TIMEOUT_MS = 4000;
+
 /** Silence watchdog: how often it looks, and the least real time a "the audio clock stood still" verdict needs. */
 const WATCHDOG_INTERVAL_MS = 2000;
 const WATCHDOG_MIN_WALL_MS = 1000;
@@ -215,6 +221,28 @@ export function createBrowserAudioEngine(
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+
+  /**
+   * `context.resume()`, but bounded. A resume() that never settles left unlock() pending forever, and
+   * the player page ignores further taps while one is in flight — the phone sat on "Resuming…" for the
+   * rest of the party. On a timeout the context is marked as a zombie, so the *next* tap rebuilds it
+   * instead of asking the same dead context again.
+   */
+  async function resumeOrGiveUp(context: AudioContext): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const gaveUp = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), RESUME_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([context.resume().then(() => "resumed" as const), gaveUp]);
+      if (outcome === "timeout" && context.state !== "running") {
+        if (context === ctx) zombieSuspected = true;
+        throw new Error("AudioContext.resume() did not settle; tap again to rebuild the audio context");
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Creates the AudioContext and the scheduler on first use. Safe to call inside a gesture. */
@@ -518,7 +546,7 @@ export function createBrowserAudioEngine(
       // The Calibrate tap doubles as unlock() for the host (docs/04): the worklet has to run in a
       // context that is already running, and this is the gesture we are inside.
       const context = ensureContext();
-      if (context.state !== "running") await context.resume();
+      if (context.state !== "running") await resumeOrGiveUp(context);
       const signal = { cancelled: false };
       cancelState = signal;
       try {
@@ -598,7 +626,7 @@ export function createBrowserAudioEngine(
       } catch {
         /* older engines: resume() alone is enough */
       }
-      await context.resume();
+      await resumeOrGiveUp(context);
       bindLifecycle();
       void requestWakeLock();
 
