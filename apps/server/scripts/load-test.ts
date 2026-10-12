@@ -368,7 +368,9 @@ class LoadClient {
 // ---- server process ---------------------------------------------------------------------------------
 let fixtures: TmpFixtures | null = null;
 function spawnServer() {
-  return Bun.spawn([process.execPath, `${import.meta.dir}/../src/index.ts`], {
+  // --server-entry swaps in another entry point (e.g. scripts/proto-per-recipient-server.ts) so a
+  // prototype is measured by exactly the same instrument as the real server.
+  return Bun.spawn([process.execPath, args.get("server-entry") ?? `${import.meta.dir}/../src/index.ts`], {
     env: {
       ...process.env,
       PORT: String(PORT),
