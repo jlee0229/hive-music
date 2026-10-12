@@ -521,7 +521,10 @@ export class Scheduler {
   private accrueSlew(branch: Branch): void {
     const ctxNow = this.deps.ctx.currentTime;
     const dt = ctxNow - branch.slewAtCtx;
-    if (dt > 0) branch.slewSec += (branch.slewRate - 1) * dt;
+    // Before the branch's start instant nothing is being consumed, at any rate: `slewAtCtx` begins at
+    // the start time and must not be dragged back to "now", or the wait would be booked as playback.
+    if (dt <= 0) return;
+    branch.slewSec += (branch.slewRate - 1) * dt;
     branch.slewAtCtx = ctxNow;
   }
 
@@ -571,6 +574,19 @@ export class Scheduler {
     if (errorMs === null) return null;
     this.lastDriftErrorMs = errorMs;
     const live = this.branches.find((b) => !b.stopped);
+    /*
+     * A branch still waiting for its start instant (the 5 s lead of a playlist advance, mostly). Neither
+     * tool below works on it: a crossfade has nothing to fade from and was refused ("outside the track"),
+     * so an error that appeared during the wait — the clock stepped, the output route changed — was
+     * carried into the first second of the song; and a rate trim was applied to a source that was not
+     * playing, then booked as content consumed. Moving a start that has not happened is free and exact,
+     * so do that instead. (A start closer than the resync margin is left to the paths below: it is as
+     * good as playing, and too near to re-place reliably.)
+     */
+    if (live && live.startedAtCtx - this.deps.ctx.currentTime > RESYNC_START_MARGIN_SEC) {
+      if (Math.abs(errorMs) > PLAYBACK_RATE_DEADBAND_MS) this.rebuildBeforeStart(assignment, useOutputLatency);
+      return { errorMs, resynced: false };
+    }
     if (Math.abs(errorMs) <= RESYNC_THRESHOLD_MS) {
       // B9e: absorb it by rate instead of letting it grow into a crossfade.
       if (live) this.lastSlewPpm = this.applySlew(live, errorMs);
@@ -582,6 +598,21 @@ export class Scheduler {
     this.lastCorrectionMs = errorMs;
     this.resyncCount++;
     return { errorMs, resynced: true };
+  }
+
+  /** Re-places a branch that has not sounded yet on the start time the timeline gives now. */
+  private rebuildBeforeStart(assignment: Assignment | null, useOutputLatency: boolean): void {
+    if (this.applied === null) return;
+    const ctxNow = this.deps.ctx.currentTime;
+    const startCtxForZero = this.ctxTimeForTrackPosition(this.applied.serverTimeAtTrackZero, 0, assignment, useOutputLatency);
+    const decision = decideStart({ ctxNow, startCtxForZero, durationSec: this.durationSec });
+    for (const branch of this.branches) this.fadeOutAndStop(branch, ctxNow, 0); // stops before it ever starts
+    this.branches = [];
+    if (!decision) return this.stopAll("past the end of the track");
+    this.applied = { ...this.applied, timingShiftMs: this.netTimingShiftMs(assignment, useOutputLatency) };
+    this.startBranch(decision, assignment);
+    this.lastDecision = decision;
+    this.lastSlewPpm = 0;
   }
 
   /**

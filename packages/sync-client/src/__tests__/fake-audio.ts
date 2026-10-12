@@ -122,6 +122,30 @@ export class FakeSource implements SourceLike {
     const s = this.starts[0]!;
     return s.offset + (t - s.when);
   }
+  /**
+   * Track position actually sounding at ctx time `t`, integrating every `playbackRate` step the scheduler
+   * wrote. This is the ground truth the scheduler itself cannot read back from Web Audio — it has to keep
+   * its own books (`slewSec`) — so a test that uses it catches the books being wrong.
+   */
+  contentPositionAt(t: number): number {
+    const s = this.starts[0]!;
+    const steps = this.playbackRate.events
+      .filter((e) => e.kind === "setValueAtTime")
+      .map((e) => ({ time: e.time, rate: e.value! }))
+      .sort((a, b) => a.time - b.time);
+    let pos = s.offset;
+    let at = s.when;
+    let rate = 1;
+    for (const step of steps) {
+      if (step.time >= t) break;
+      const from = Math.max(at, step.time);
+      if (from > at) pos += (from - at) * rate;
+      at = Math.max(at, from);
+      rate = step.rate;
+    }
+    if (t > at) pos += (t - at) * rate;
+    return pos;
+  }
 }
 
 export class FakeBuffer implements BufferLike {
