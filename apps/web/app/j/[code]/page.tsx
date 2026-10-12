@@ -37,9 +37,17 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   });
 
   useEffect(() => {
-    return client.on("error", (code, message) => {
-      if (code === "KICKED") setRemoved({ heading: "Removed from hive", detail: message || "The host removed this phone." });
-      if (code === "NO_ROOM") setRemoved({ heading: "Hive not found", detail: `No hive is running at code ${roomCode}.` });
+    // Either way this phone is out of the room, and the screen says so — so the sound has to stop
+    // too. The engine keeps playing whatever it had scheduled (nothing tells it the room is gone),
+    // which left a kicked phone blasting the song under a "Removed" screen with no mute button.
+    // disconnect() closes the AudioContext and the socket, and ends the reconnect loop.
+    const leave = (heading: string, detail: string) => {
+      setRemoved({ heading, detail });
+      client.disconnect();
+    };
+    return client.on("error", (code) => {
+      if (code === "KICKED") leave("Removed from hive", "The host removed this phone.");
+      if (code === "NO_ROOM") leave("Hive not found", `No hive is running at code ${roomCode}.`);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
