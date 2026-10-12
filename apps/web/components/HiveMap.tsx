@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HEALTH_COLORS, HOST_RING_COLOR, ROLE_COLORS, STEMS, healthLevel, type ClientRecord, type HealthSnapshot, type RoomState, type StemRole } from "@hive/protocol";
 import type { HiveClock, HiveHostControls } from "@hive/sync-client";
 import { patternGain } from "@/lib/hive/derive";
+import { MAP_SIZE, autoLayout, dotMetrics, drawnCentre, fitLabel } from "@/lib/hive/map-layout";
 
-const SIZE = 350;
+const SIZE = MAP_SIZE;
 const LONG_PRESS_MS = 500;
 const DRAG_THRESHOLD_PX = 6;
 
@@ -98,37 +99,26 @@ export function HiveMap({
   const hostRecord = Object.values(room.clients).find((c) => c.kind === "host" && !c.plays && c.connected);
 
   /**
-   * Auto-placement fills the map from the centre out — a hive forming, not a queue at the edge —
-   * and never overlaps: candidate slots are concentric rings spaced at least MIN_DIST apart, and a
-   * slot within MIN_DIST of anything already on the map (a dragged phone, an earlier auto dot, the
-   * host marker) is skipped. Dragging still writes a real position; this only lays out the rest.
+   * Auto-placement (lib/hive/map-layout.ts) fills the map from the centre out — a hive forming, not
+   * a queue at the edge — and never overlaps: slots within reach of anything already on the map (a
+   * dragged phone, the host marker) are skipped, and the dots step down a size when a big party no
+   * longer fits. Dragging still writes a real position; this only lays out the rest.
    */
-  const MIN_DIST = 0.17; // ≈60px at the 350 viewBox: outer ring (24px) plus label clearance
   const placedXY = placed.map((c) => ({ x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y }));
   const hostXY = hostRecord ? { x: hostRecord.position?.x ?? 0.1, y: hostRecord.position?.y ?? 0.9 } : null;
-  const autoXY = new Map<string, { x: number; y: number }>();
-  {
-    const slots: Array<{ x: number; y: number }> = [{ x: 0.5, y: 0.5 }];
-    for (let k = 1; k <= 6; k++) {
-      const r = Math.min(0.19 * k, 0.42);
-      const n = 6 * k;
-      for (let j = 0; j < n; j++) {
-        const a = (2 * Math.PI * j) / n + k * 0.5; // stagger each ring so spokes don't line up
-        slots.push({ x: 0.5 + r * Math.cos(a), y: 0.5 + r * Math.sin(a) });
-      }
-    }
-    const taken = [...placedXY, ...(hostXY ? [hostXY] : [])];
-    for (const c of [...unplaced].sort((a, b) => a.joinIndex - b.joinIndex)) {
-      const slot = slots.find((s) => taken.every((t) => Math.hypot(s.x - t.x, s.y - t.y) >= MIN_DIST)) ?? { x: 0.5, y: 0.5 };
-      autoXY.set(c.id, slot);
-      taken.push(slot);
-    }
-  }
+  const unplacedIds = [...unplaced].sort((a, b) => a.joinIndex - b.joinIndex).map((c) => c.id);
+  // Keyed on a string so the layout is recomputed when the room changes, not on every animation frame.
+  const layoutKey = JSON.stringify([unplacedIds, placedXY, hostXY]);
+  const layout = useMemo(() => {
+    const [ids, taken, hostAt] = JSON.parse(layoutKey) as [string[], Array<{ x: number; y: number }>, { x: number; y: number } | null];
+    return autoLayout(ids, hostAt ? [...taken, hostAt] : taken);
+  }, [layoutKey]);
+  const metrics = dotMetrics(layout.scale);
 
   const dots: Dot[] = [
     ...placed.map((c) => ({ client: c, x: livePositions[c.id]?.x ?? c.position!.x, y: livePositions[c.id]?.y ?? c.position!.y, isHost: c.kind === "host" })),
     ...unplaced.map((c) => {
-      const p = autoXY.get(c.id)!;
+      const p = layout.positions[c.id] ?? { x: 0.5, y: 0.5 };
       return { client: c, x: p.x, y: p.y, isHost: c.kind === "host" };
     }),
   ];
@@ -215,25 +205,10 @@ export function HiveMap({
       <rect x="0" y="0" width={SIZE} height={SIZE} rx="24" fill="var(--surface)" stroke="var(--border)" />
       <rect x="12" y="12" width={SIZE - 24} height={SIZE - 24} rx="16" fill="url(#hive-map-dots)" />
 
-      {hostRecord ? (
+      {hostXY ? (
         <g>
-          <circle
-            cx={(hostRecord.position?.x ?? 0.1) * SIZE}
-            cy={(hostRecord.position?.y ?? 0.9) * SIZE}
-            r="14"
-            fill="none"
-            stroke={HOST_RING_COLOR}
-            strokeWidth="2"
-            strokeDasharray="4 3"
-          />
-          <text
-            x={(hostRecord.position?.x ?? 0.1) * SIZE}
-            y={(hostRecord.position?.y ?? 0.9) * SIZE - 18}
-            textAnchor="middle"
-            fontSize="10"
-            fill={HOST_RING_COLOR}
-            fontFamily="IBM Plex Sans, sans-serif"
-          >
+          <circle cx={hostXY.x * SIZE} cy={hostXY.y * SIZE} r={14 * layout.scale} fill="none" stroke={HOST_RING_COLOR} strokeWidth="2" strokeDasharray="4 3" />
+          <text x={hostXY.x * SIZE} y={hostXY.y * SIZE - 14 * layout.scale - 4} textAnchor="middle" fontSize="10" fill={HOST_RING_COLOR} fontFamily="IBM Plex Sans, sans-serif">
             you
           </text>
         </g>
@@ -247,8 +222,8 @@ export function HiveMap({
         // lights — there the host is actively managing parts and wants the signal.
         const ringColor = !client.assignment || client.assignment.role === "unison" ? "#0B0F14" : HEALTH_COLORS[level];
         const gain = client.assignment?.pattern ? (gains[client.id] ?? 1) : 1;
-        const cx = x * SIZE;
-        const cy = y * SIZE;
+        // Drawn inside the map even when the stored position is on the very edge (ring and name stay whole).
+        const { x: cx, y: cy } = drawnCentre({ x, y }, metrics);
         return (
           <g
             key={client.id}
@@ -260,19 +235,21 @@ export function HiveMap({
             onPointerCancel={endGesture}
             style={{ cursor: host ? "pointer" : "default" }}
           >
-            <circle cx={cx} cy={cy} r="24" fill="none" stroke={ringColor} strokeWidth="3" />
+            {/* Invisible, finger-sized: the visible dot shrinks at a big party, the thing you can grab does not. */}
+            <circle cx={cx} cy={cy} r={Math.max(metrics.ring, Math.min(22, metrics.pitchY / 2))} fill="transparent" />
+            <circle cx={cx} cy={cy} r={metrics.ring} fill="none" stroke={ringColor} strokeWidth={metrics.ringWidth} />
             <circle
               cx={cx}
               cy={cy}
-              r="17"
+              r={metrics.fill}
               fill={fill}
               fillOpacity={0.3 + 0.7 * gain}
               stroke={isHost ? HOST_RING_COLOR : "none"}
               strokeDasharray={isHost ? "3 2" : undefined}
               strokeWidth={isHost ? 2 : 0}
             />
-            <text x={cx} y={cy + 40} textAnchor="middle" fontSize="11" fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
-              {client.name}
+            <text x={cx} y={cy + metrics.labelDy} textAnchor="middle" fontSize={metrics.font} fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
+              {fitLabel(client.name, metrics.labelChars)}
             </text>
           </g>
         );
