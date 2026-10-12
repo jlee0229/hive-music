@@ -122,6 +122,15 @@ describe("SG-14: probing for room codes over the socket is budgeted per caller",
       expect(closed).toBe(true);
       expect(Object.keys(m.get(real.code)!.room.clients)).toEqual([]);
 
+      // …but the HOST behind that same address is never held up by other people's misses: after a
+      // restart every phone at the party misses at once, and the host's JOIN is what brings the room back
+      const host = from("203.0.113.9");
+      m.handleMessage(host.ws, joinMsg("host-nat-0001", real.code, "host", real.hostKey));
+      expect(host.sent.find((x) => x.type === "WELCOME")).toMatchObject({ isHost: true });
+      const fakeHost = from("203.0.113.9");
+      m.handleMessage(fakeHost.ws, joinMsg("host-nat-0002", real.code, "host", "not-the-key"));
+      expect(errors(fakeHost)).toEqual(["RATE_LIMITED"]);
+
       // a guest at another address is unaffected
       const guest = from("198.51.100.20");
       m.handleMessage(guest.ws, joinMsg("guest-000001", real.code));

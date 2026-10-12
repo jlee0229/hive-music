@@ -953,13 +953,17 @@ export class RoomManager {
       // single connection could mint records without bound and the room could never idle out.
       if (ws.data.roomCode !== null) return send(ws, { type: "ERROR", code: "ALREADY_JOINED", message: "this connection has already joined a room" });
       const caller = ws.data.ip ?? "local";
-      if (this.missedJoins.blocked(caller)) {
-        // Answered before the room is even looked up, so the reply says nothing about the code.
+      const upper = msg.roomCode.toUpperCase();
+      let room = this.rooms.get(upper);
+      // A JOIN that proves it is the host of this code (the room's key, or a signed key that can
+      // re-create it) is never held up by other people's misses on the same address: after a
+      // restart every phone at the party misses at once, and the host's JOIN is the one that fixes it.
+      const provenHost = msg.kind === "host" && typeof msg.hostKey === "string" && (room ? safeEqual(msg.hostKey, room.hostKey) : this.canRestore(upper, msg.hostKey));
+      if (!provenHost && this.missedJoins.blocked(caller)) {
+        // Same answer whether or not the room exists, so the reply says nothing about the code.
         send(ws, { type: "ERROR", code: "RATE_LIMITED", message: "too many attempts — wait a minute" });
         return ws.close(1008, "rate limit");
       }
-      const upper = msg.roomCode.toUpperCase();
-      let room = this.rooms.get(upper);
       if (!room) {
         // The host's own socket reconnecting after a restart / the idle timeout brings the room back
         // under its old code, exactly like POST /rooms {code, hostKey} does: the signed key is the
