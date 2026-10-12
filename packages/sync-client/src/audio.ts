@@ -127,6 +127,12 @@ export function createBrowserAudioEngine(
    * That is a thundering herd on the one code path where the server is least able to take it.
    */
   const loadFailures = new Map<string, { attempts: number; atMs: number }>();
+  /**
+   * The retry for a failed load. It cannot be left to "the next snapshot": the server publishes
+   * ROOM_STATE only when something changes, so in a settled room the next snapshot may be a whole song
+   * away — and a phone whose download failed once would sit silent until then.
+   */
+  let loadRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /*
    * The clock arrives asynchronously, so the refused schedule has to be retried by an event rather than
@@ -284,12 +290,27 @@ export function createBrowserAudioEngine(
     });
   }
 
+  const loadBackoffMs = (attempts: number): number =>
+    Math.min(LOAD_RETRY_MAX_MS, LOAD_RETRY_BASE_MS * 2 ** (attempts - 1));
+
   /** True while a previously failed track is still inside its backoff window. */
   function loadBackoffHolds(trackId: string): boolean {
     const failure = loadFailures.get(trackId);
     if (!failure) return false;
-    const waitMs = Math.min(LOAD_RETRY_MAX_MS, LOAD_RETRY_BASE_MS * 2 ** (failure.attempts - 1));
-    return performance.now() - failure.atMs < waitMs;
+    return performance.now() - failure.atMs < loadBackoffMs(failure.attempts);
+  }
+
+  /** Arms the one retry timer for the end of `trackId`'s backoff window. */
+  function scheduleLoadRetry(trackId: string): void {
+    if (loadRetryTimer) clearTimeout(loadRetryTimer);
+    const attempts = loadFailures.get(trackId)?.attempts ?? 1;
+    loadRetryTimer = setTimeout(() => {
+      loadRetryTimer = null;
+      // Only if the room still wants what failed; a newer track has its own load (and its own timer).
+      if (ctx && lastRoom?.track && loadedTrackId !== lastRoom.track.id && !loadBackoffHolds(lastRoom.track.id)) {
+        void loadTrack(lastRoom);
+      }
+    }, loadBackoffMs(attempts) + 1);
   }
 
   async function loadTrack(room: RoomState): Promise<void> {
@@ -310,6 +331,8 @@ export function createBrowserAudioEngine(
           const buffer = opts.loadStem
             ? await opts.loadStem(url, context)
             : await defaultLoadStem(url, context, (fraction) => {
+                // A superseded download stops here instead of competing with the track that replaced it.
+                if (loadingTrackId !== track.id) throw new Error("superseded by a newer track");
                 done[i] = fraction;
                 // Decode is the last 5 %: a stem that has arrived is not yet a stem you can play.
                 loadProgress = (done.reduce((a, b) => a + b, 0) / total) * 0.95;
@@ -319,7 +342,8 @@ export function createBrowserAudioEngine(
           return [stem, buffer] as const;
         }),
       );
-      if (loadingTrackId !== track.id) return; // SET_TRACK landed again while we were decoding
+      // The track changed again while this one was downloading: the newer load owns the engine now.
+      if (loadingTrackId !== track.id) return;
       const map = new Map<string, BufferLike>(buffers);
       originalBuffers = map;
       appliedPitchSemitones = 0;
@@ -336,10 +360,13 @@ export function createBrowserAudioEngine(
       reschedule(true, "track loaded");
       void ensurePitchedBuffers(); // a CHOIR assignment may already be waiting for this track
     } catch (err) {
+      // A superseded load failing is not news, and must not drag the state back from the live one.
+      if (loadingTrackId !== track.id) return;
       const previous = loadFailures.get(track.id);
       loadFailures.set(track.id, { attempts: (previous?.attempts ?? 0) + 1, atMs: performance.now() });
       emit.emit("error", "AUDIO_LOAD_FAILED", err instanceof Error ? err.message : String(err));
       setState("unlocked");
+      scheduleLoadRetry(track.id);
     } finally {
       if (loadingTrackId === track.id) loadingTrackId = null;
     }
@@ -585,7 +612,13 @@ export function createBrowserAudioEngine(
         }
       }
       if (!ctx) return; // still locked: nothing to schedule, the snapshot is remembered
-      if (room.track && room.track.id !== loadedTrackId && state !== "loading" && !loadBackoffHolds(room.track.id)) {
+      /*
+       * `loadingTrackId`, not `state === "loading"`: a second track change that lands while the first is
+       * still downloading has to start *its* load now. Waiting for the stale one to finish meant decoding
+       * a song nobody will hear, announcing AUDIO_READY for it, and then relying on a further snapshot —
+       * which a quiet room does not send — to notice the room had moved on.
+       */
+      if (room.track && room.track.id !== loadedTrackId && room.track.id !== loadingTrackId && !loadBackoffHolds(room.track.id)) {
         if (loadedTrackId && room.track.id !== loadedTrackId) {
           loadedTrackId = null; // SET_TRACK to something else: drop the old buffers' claim
           scheduler?.stopAll("track changed");
@@ -688,6 +721,8 @@ export function createBrowserAudioEngine(
     },
 
     dispose(): void {
+      if (loadRetryTimer) clearTimeout(loadRetryTimer);
+      loadRetryTimer = null;
       scheduler?.dispose();
       scheduler = null;
       if (wakeLock && !wakeLock.released) void wakeLock.release().catch(() => {});
@@ -723,7 +758,12 @@ async function defaultLoadStem(
       if (done) break;
       chunks.push(value);
       received += value.byteLength;
-      onProgress(Math.min(1, received / totalBytes));
+      try {
+        onProgress(Math.min(1, received / totalBytes));
+      } catch (err) {
+        void reader.cancel().catch(() => {});
+        throw err;
+      }
     }
     bytes = new Uint8Array(received);
     let at = 0;
