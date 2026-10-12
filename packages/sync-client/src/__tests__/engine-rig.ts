@@ -50,6 +50,7 @@ export class SimCtx extends FakeAudioContext {
     this.resumeCalls++;
     if (this.hangResume) return new Promise<void>(() => {});
     if (this.state === "closed") throw new Error("InvalidStateError: context is closed");
+    if (this.state === "running") return; // a browser fires statechange only when the state changes
     this.state = "running";
     this.onstatechange?.();
   }

@@ -56,6 +56,8 @@ export interface SourceLike {
   playbackRate?: ParamLike;
 }
 export interface CtxLike {
+  /** Optional: when present, the drift check stands down unless it reads "running". */
+  readonly state?: string;
   readonly currentTime: number;
   readonly sampleRate: number;
   readonly destination: unknown;
@@ -88,6 +90,11 @@ export const PATTERN_CURVE_GAP_SEC = 1e-4;
 export const STOP_FADE_SEC = 0.01;
 /** How often the playhead is compared with the timeline while playing. */
 export const DRIFT_CHECK_INTERVAL_MS = 1000;
+/**
+ * The audio clock counts as stalled when it advanced less than this fraction of the wall time between
+ * two drift checks. Generous on purpose: a real clock is within a few hundred ppm of 1.
+ */
+export const AUDIO_CLOCK_STALLED_RATIO = 0.5;
 /** A hard resync starts this far ahead, leaving room to build the new branch. */
 export const RESYNC_START_MARGIN_SEC = 0.05;
 /**
@@ -752,8 +759,28 @@ export class Scheduler {
 
   private startDriftCheck(): void {
     if (this.driftTimer) return;
+    let lastCtx = this.deps.ctx.currentTime;
+    let lastLocalMs = this.deps.now();
     this.driftTimer = setInterval(() => {
       if (!this.playing) return this.stopDriftCheck();
+      const ctxNow = this.deps.ctx.currentTime;
+      const localMs = this.deps.now();
+      const advancedSec = ctxNow - lastCtx;
+      const elapsedSec = (localMs - lastLocalMs) / 1000;
+      lastCtx = ctxNow;
+      lastLocalMs = localMs;
+      /*
+       * Stand down while the audio clock is not running — a suspended or interrupted context, or the
+       * iOS zombie that says 'running' with a frozen clock. Nothing can be corrected by scheduling on a
+       * clock that is not moving, and trying is actively harmful: the measured error grows by a second
+       * every second, so each tick "hard-resynced", building a new branch at `currentTime + 50 ms` — the
+       * same frozen instant every time. A one-minute interruption left sixty branches queued on that
+       * instant, and when the context came back they all started at once, at sixty different positions.
+       * The engine re-checks the moment the context reports running; this loop picks up from there.
+       */
+      const state = this.deps.ctx.state;
+      if (state !== undefined && state !== "running") return;
+      if (elapsedSec > 0 && advancedSec < elapsedSec * AUDIO_CLOCK_STALLED_RATIO) return;
       this.checkDrift(this.assignment, this.useOutputLatency);
     }, DRIFT_CHECK_INTERVAL_MS);
   }

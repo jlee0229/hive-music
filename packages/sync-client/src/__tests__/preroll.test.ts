@@ -37,6 +37,7 @@ function rig() {
   sync();
   const mapper = new CtxMapper(clock);
   const ctx = new FakeAudioContext({ clock: () => CTX0 + vt.nowMs / 1000 });
+  ctx.state = "running"; // the drift check stands down on a context that is not (ENGINE-SYNC-18)
   const scheduler = new Scheduler({ ctx, clock, mapper, now: localMs });
   scheduler.setBuffers(new Map(STEMS.map((s) => [s, new FakeBuffer(60)] as const)), "t");
   const zeroServer = localMs() + 5000; // the 5 s lead of a track advance

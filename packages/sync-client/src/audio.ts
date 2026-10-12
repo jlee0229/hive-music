@@ -854,6 +854,8 @@ export function createBrowserAudioEngine(
         slewPpm: scheduler?.lastSlewPpm ?? 0,
         slewEnabled: scheduler?.slewEnabled ?? false,
         resyncCount: scheduler?.resyncCount ?? 0,
+        // Pattern curves Web Audio refused; anything but 0 is a stretch of STROBE/WAVE left un-automated.
+        patternCurveRejections: scheduler?.patternCurveRejections ?? 0,
         // Decoded buffers this engine keeps reachable: originals, CHOIR copies, and the scheduler's set.
         buffersHeld:
           (originalBuffers?.size ?? 0) +

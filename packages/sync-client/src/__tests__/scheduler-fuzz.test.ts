@@ -71,6 +71,7 @@ function fuzzOne(seed: number, ops: number): { curveRejections: number; resyncs:
   feedClock();
   const mapper = new CtxMapper(clock);
   const ctx = new FakeAudioContext({ clock: () => CTX0 + (vt.nowMs / 1000) * (1 + audioPpm / 1e6) });
+  ctx.state = "running"; // the drift check stands down on a context that is not (ENGINE-SYNC-18)
   ctx.outputLatency = pick([0, 0.012, 0.04]);
   const scheduler = new Scheduler({ ctx, clock, mapper, now: localMs });
 
