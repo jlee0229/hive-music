@@ -1,7 +1,7 @@
 {
   "name": "hive-music",
   "private": true,
-  "packageManager": "bun@1.3.11",
+  "packageManager": "bun@1.4.2",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -12,6 +12,8 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "lint": "turbo run lint",
+    "e2e": "cd apps/web && node ../../node_modules/@playwright/test/cli.js test",
+    "check": "bun scripts/check-versions.ts && bun run typecheck && bun run lint && bun run test && bun run e2e",
     "mock": "bun run --cwd packages/protocol mock",
     "fixtures": "bun run fixtures/gen-synthetic.ts"
   },
