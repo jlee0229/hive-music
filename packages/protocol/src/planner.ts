@@ -1,4 +1,4 @@
-import { CHOIR_STEPS, ROLE_COLORS, STEMS, WAVE_SWELL_PERIOD_MS, type Role } from "./constants";
+import { CHOIR_STEPS, ROLE_COLORS, STEMS, STROBE_MAX_SLOT_MS, STROBE_MIN_SLOT_MS, STROBE_RAMP_MS, WAVE_SWELL_PERIOD_MS, type Role } from "./constants";
 import { speakerLayout } from "./layout";
 import { resolveModeParams } from "./mode";
 import type { Assignment, ClientRecord, Position, RoomState, StemRole } from "./room";
@@ -150,6 +150,41 @@ export function arrangeStrobe(room: RoomState, requestedGroups: number): StrobeS
   return { groups, groupOf: dealBalanced([...present, ...absent], options, new Map()) };
 }
 
+/**
+ * The gate for one STROBE group.
+ *
+ * Beat-locked when the track's tempo is known: a group is audible for one *slot* = `beatsPerSwitch` beats,
+ * the rotation is `groups` slots, and group g opens at `beatOffset + g·slot` — on the drum hit. Patterns
+ * evaluate on track time, so the grid is the song's own.
+ *
+ * Nothing here is rounded or clamped, because the beat is not a whole number of milliseconds: at 128 BPM
+ * a two-group rotation is 937.5 ms, and rounding it to 938 put the last switch of a four-minute song
+ * 128 ms after the beat (160 ms — two whole slots — for sixteenths at 190 BPM). The old clamp of the
+ * *rotation* to [100, 8000] ms broke the lock outright: 8 groups × half notes at 70 BPM is a 13.7 s
+ * rotation, and clamping it to 8 s made each group's turn 1000 ms against a 1714 ms half note.
+ * What does need bounding is a slot too short to hear or too long to be a strobe (a bogus tempo): the
+ * slot is doubled / halved — never scaled — so whatever it becomes still lands on the grid.
+ *
+ * One group has nobody to trade with: it is a plain on/off strobe, one slot on, one slot off.
+ * No bpm → the free-running `periodMs` / `duty` params, staggered evenly across the groups.
+ */
+function strobePattern(room: RoomState, p: ReturnType<typeof resolveModeParams>, group: number, groups: number): Assignment["pattern"] {
+  const bpm = room.track?.bpm;
+  if (!bpm || !Number.isFinite(bpm) || bpm <= 0) {
+    return { kind: "strobe", periodMs: p.periodMs, phaseMs: (group / groups) * p.periodMs, duty: p.duty, rampMs: STROBE_RAMP_MS };
+  }
+  let slotMs = (60000 / bpm) * p.beatsPerSwitch;
+  while (slotMs < STROBE_MIN_SLOT_MS) slotMs *= 2;
+  while (slotMs > STROBE_MAX_SLOT_MS) slotMs /= 2;
+  const periodMs = slotMs * Math.max(2, groups);
+  const duty = 1 / Math.max(2, groups);
+  const gridMs = (room.track?.beatOffsetSec ?? 0) * 1000;
+  // kept inside one period: a beat offset longer than the rotation is the same gate, and small numbers
+  // keep every phone's arithmetic far from the edge of float precision
+  const phaseMs = (((gridMs + group * slotMs) % periodMs) + periodMs) % periodMs;
+  return { kind: "strobe", periodMs, phaseMs, duty, rampMs: STROBE_RAMP_MS };
+}
+
 /** "drums", "drums + bass", "unison" (everything) — what the phone's screen says it is playing. */
 function orchestraLabel(seat: OrchestraSeat, stems: readonly string[]): string {
   if (seat.primary === null || stems.every((s) => seat.stems.includes(s))) return "unison";
@@ -235,17 +270,7 @@ export function plan(room: RoomState, applyAtServerTime: number | null = null): 
         const group = strobe!.groupOf.get(c.id)!;
         const role = STEMS[group % STEMS.length]!;
         const a = base(c, `strobe ${group + 1}`, role, gains(room, stems), applyAtServerTime);
-        // Beat-locked when the track's tempo is known: each group is audible for beatsPerSwitch
-        // beats and a full rotation of all groups is groups·beatsPerSwitch beats; duty 1/groups
-        // hands the song from group to group with no overlap and no gap. Patterns evaluate on
-        // track time, so beat 0 sits at track zero. No bpm → the free-running period, as before.
-        const beatMs = room.track?.bpm ? 60000 / room.track.bpm : null;
-        const periodMs = beatMs ? Math.min(8000, Math.max(100, Math.round(beatMs * p.beatsPerSwitch * groups))) : p.periodMs;
-        const duty = beatMs ? 1 / groups : p.duty;
-        // Anchor the whole rotation to the song's beat grid: switches land ON the drum hits, not
-        // wherever track time 0 happened to fall inside the bar (intros and pickups shift it).
-        const gridMs = beatMs ? Math.round((room.track?.beatOffsetSec ?? 0) * 1000) : 0;
-        a.pattern = { kind: "strobe", periodMs, phaseMs: gridMs + Math.round((group / groups) * periodMs), duty, rampMs: 10 };
+        a.pattern = strobePattern(room, p, group, groups);
         out[c.id] = a;
         break;
       }

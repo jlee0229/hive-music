@@ -115,6 +115,15 @@ export const WAVE_DEFAULT_SPAN_MS = 240;
 export const WAVE_SWELL_PERIOD_MS = 2000;
 export const STROBE_DEFAULT_PERIOD_MS = 500;
 export const STROBE_DEFAULT_DUTY = 0.5;
+/**
+ * Beat-locked STROBE: bounds on one group's turn. A turn outside them is doubled or halved until it
+ * fits — stays on the beat grid — rather than clamped. 50 ms admits sixteenths up to 300 BPM; 8 s admits
+ * whole notes down to 30 BPM.
+ */
+export const STROBE_MIN_SLOT_MS = 50;
+export const STROBE_MAX_SLOT_MS = 8000;
+/** Edge softening of the strobe gate, ms. */
+export const STROBE_RAMP_MS = 10;
 
 // ---- devices ----------------------------------------------------------------
 export const BROWSER_FAMILIES = ["ios-safari", "android-chrome", "desktop-chrome", "desktop-safari", "other"] as const;
