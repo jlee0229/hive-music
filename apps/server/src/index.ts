@@ -150,6 +150,10 @@ const server = Bun.serve<Conn>({
     return json({ error: "not_found", path: url.pathname }, 404);
   },
   websocket: {
+    // Bun's default is 16 MB per frame. The largest legitimate client message is a few kilobytes
+    // (JOIN ~1 KB, a CALIBRATION_REPORT for a full room ~25 KB); anything bigger closes the socket
+    // before it is ever buffered or parsed.
+    maxPayloadLength: 64 * 1024,
     open() {
       /* subscribed to its room's topic once JOIN resolves which room it is */
     },

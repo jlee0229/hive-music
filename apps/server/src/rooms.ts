@@ -48,11 +48,47 @@ const TRACK_ADVANCE_LEAD_MS = 5000;
 export const MAX_ROOM_CLIENTS = 256;
 
 /**
+ * What the wire schema lets through but the room cannot afford to store (audit SG-05). Everything a
+ * client sends that lands in RoomState is re-broadcast to every phone, so one bad value is a
+ * room-wide problem:
+ *  - `z.number()` accepts Infinity, and JSON can carry it (`1e999`). JSON.stringify turns it into
+ *    `null`, which fails RoomStateSchema on every client — one such value in `transport` or a
+ *    client's `calibratedOffsetMs` and no phone in the room can read a ROOM_STATE again.
+ *  - several strings have no length limit (`AUDIO_READY.trackId`, `CALIBRATION_START.referenceClientId`,
+ *    `stemGainsDb` keys): megabytes from any guest, stored and re-sent to everyone at up to 2 Hz.
+ * The longest legitimate string in any ClientMessage is DeviceInfo.userAgent (512); ids are 64.
+ */
+const WIRE_MAX_STRING = 512;
+const WIRE_MAX_ID = 64;
+const WIRE_MAX_ITEMS = 512;
+const WIRE_ID_KEYS = new Set(["trackId", "clientId", "referenceClientId"]);
+export function wireSafe(value: unknown, key = ""): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.length <= (WIRE_ID_KEYS.has(key) ? WIRE_MAX_ID : WIRE_MAX_STRING);
+  if (Array.isArray(value)) return value.length <= WIRE_MAX_ITEMS && value.every((v) => wireSafe(v));
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    return entries.length <= WIRE_MAX_ITEMS && entries.every(([k, v]) => k.length <= WIRE_MAX_ID && wireSafe(v, k));
+  }
+  return true;
+}
+
+/** A measured output latency or calibration residual beyond this is not a measurement, it is a bug or an attack. */
+const LATENCY_SANITY_MAX_MS = 2000;
+
+/**
+ * Per-socket message budget. A healthy client peaks around 15 messages a second (the NTP burst, a
+ * host dragging a phone on the map at SET_POSITION_MAX_HZ); every message costs a JSON parse, a zod
+ * parse and often a replan on the one thread that also timestamps every room's NTP replies.
+ */
+export const MAX_MESSAGES_PER_SECOND = 100;
+
+/**
  * Per-socket state. `host` is the privilege bit: true only for a socket whose own JOIN presented the
  * room's hostKey. Authority is checked per socket, not per client record — client ids are public
  * (every ROOM_STATE lists them), so "this socket says it is client X" proves nothing (audit SG-02).
  */
-export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean };
+export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean; rate?: { windowStart: number; count: number } };
 type WS = Bun.ServerWebSocket<Conn>;
 
 interface HealthRecord {
@@ -408,6 +444,7 @@ export class Room {
     for (const m of msg.measurements) {
       const c = this.room.clients[m.clientId];
       if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored
+      if (Math.abs(m.residualMs) > LATENCY_SANITY_MAX_MS) continue; // not a click heard in a room
       // Before any calibration, a client with no table entry (STARTER_LATENCY_TABLE_MS.other is null)
       // silently subtracts its own ctx.outputLatency locally (docs/02-protocol.md §1: "no table AND no
       // calibration"). Once calibratedOffsetMs is non-null the client stops doing that — so basing the
@@ -577,14 +614,17 @@ export class Room {
         return;
       case "CLIENT_STATUS":
         if (me) {
-          this.health.set(me.id, { rttMs: msg.rttMs, syncErrMs: msg.syncErrMs, outputLatencyMs: msg.outputLatencyMs, audioState: msg.audioState, lastSeenServerTime: now() });
+          // outputLatencyMs is the accumulation base of this client's first calibration (see
+          // handleCalibrationReport), so a nonsense value here becomes a nonsense offset there.
+          const outputLatencyMs = msg.outputLatencyMs != null && msg.outputLatencyMs >= 0 && msg.outputLatencyMs <= LATENCY_SANITY_MAX_MS ? msg.outputLatencyMs : null;
+          this.health.set(me.id, { rttMs: msg.rttMs, syncErrMs: msg.syncErrMs, outputLatencyMs, audioState: msg.audioState, lastSeenServerTime: now() });
           // A phone that reports a live ctx.outputLatency knows its own output path better than the
           // starter table's per-family guess. Nulling tableLatencyMs makes the client subtract that
           // live value itself (useOutputLatency: "no table AND no calibration"), and the replan drops
           // the guess from compensationMs in the same ROOM_STATE snapshot — so the two sides can never
           // double-count. One-way and self-extinguishing: table never comes back, and a later
           // calibration still accumulates onto health.outputLatencyMs (the report handler's base).
-          if (me.calibratedOffsetMs == null && me.tableLatencyMs != null && msg.outputLatencyMs != null && msg.outputLatencyMs > 0) {
+          if (me.calibratedOffsetMs == null && me.tableLatencyMs != null && outputLatencyMs != null && outputLatencyMs > 0) {
             me.tableLatencyMs = null;
             this.replan();
           }
@@ -827,8 +867,15 @@ export class RoomManager {
   }
 
   handleMessage(ws: WS, raw: string | Uint8Array) {
+    const t = performance.now();
+    const rate = ws.data.rate && t - ws.data.rate.windowStart < 1000 ? ws.data.rate : (ws.data.rate = { windowStart: t, count: 0 });
+    if (++rate.count > MAX_MESSAGES_PER_SECOND) {
+      // Over budget: drop it unparsed, and hang up once. A real client reconnects with backoff.
+      if (rate.count === MAX_MESSAGES_PER_SECOND + 1) ws.close(1008, "rate limit");
+      return;
+    }
     const msg = parseClientMessage(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
-    if (!msg) return send(ws, { type: "ERROR", code: "BAD_MESSAGE", message: "message failed schema validation" });
+    if (!msg || !wireSafe(msg)) return send(ws, { type: "ERROR", code: "BAD_MESSAGE", message: "message failed schema validation" });
     if (msg.type === "JOIN") {
       // One socket, one seat. A socket that could JOIN again under a new client id each time left
       // every earlier record "connected" forever (its close only ever disconnects the last id), so a
