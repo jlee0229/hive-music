@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, jest, test } from "bun:test";
 import { PROTOCOL_VERSION, type ServerMessage } from "@hive/protocol";
 import { MAX_ROOM_CLIENTS, RoomManager, type Conn } from "../rooms";
 
@@ -91,5 +91,50 @@ describe("SG-04: a room's client records are bounded", () => {
     expect(host3.sent.find((m) => m.type === "WELCOME")).toMatchObject({ isHost: true });
     manager.handleMessage(host3.ws, JSON.stringify({ type: "KICK", clientId: "full-000001" }));
     expect(room.room.clients["full-000001"]).toBeUndefined();
+  });
+});
+
+describe("SG-14: probing for room codes over the socket is budgeted per caller", () => {
+  test("after 61 JOINs to codes that do not exist, that address is refused without a lookup for the rest of the minute; other addresses are not", () => {
+    jest.useFakeTimers();
+    try {
+      const m = new RoomManager({ fixturesDir: "/nonexistent" });
+      m.attachServer({ publish: () => {} } as unknown as Bun.Server<Conn>);
+      const real = m.createRoom();
+      if ("error" in real) throw new Error(real.error);
+      const from = (ip: string) => {
+        const s = fakeWs();
+        (s.ws.data as Conn).ip = ip;
+        return s;
+      };
+
+      const scanner = from("203.0.113.9");
+      for (let i = 0; i < 61; i++) m.handleMessage(scanner.ws, joinMsg("scan-000001", `Q${String(i).padStart(3, "0")}`));
+      expect(errors(scanner)).toEqual(Array(61).fill("NO_ROOM"));
+
+      // the 62nd probe — this time of a code that DOES exist — learns nothing and is hung up on
+      let closed = false;
+      const next = from("203.0.113.9");
+      next.ws.close = () => void (closed = true);
+      m.handleMessage(next.ws, joinMsg("scan-000002", real.code));
+      expect(errors(next)).toEqual(["RATE_LIMITED"]);
+      expect(next.sent.some((x) => x.type === "WELCOME")).toBe(false);
+      expect(closed).toBe(true);
+      expect(Object.keys(m.get(real.code)!.room.clients)).toEqual([]);
+
+      // a guest at another address is unaffected
+      const guest = from("198.51.100.20");
+      m.handleMessage(guest.ws, joinMsg("guest-000001", real.code));
+      expect(guest.sent.some((x) => x.type === "WELCOME")).toBe(true);
+
+      // and the budget refills
+      jest.advanceTimersByTime(61_000);
+      const later = from("203.0.113.9");
+      m.handleMessage(later.ws, joinMsg("scan-000003", real.code));
+      expect(later.sent.some((x) => x.type === "WELCOME")).toBe(true);
+      m.get(real.code)!.destroy();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

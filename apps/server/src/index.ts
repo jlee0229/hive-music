@@ -51,6 +51,10 @@ async function resolveHostKeySecret(): Promise<string | undefined> {
 // Per-caller budgets (one address = one NAT = possibly a whole party, hence generous).
 const roomCreations = new RateLimiter(Number(process.env.ROOMS_PER_MINUTE ?? 30), 60_000);
 const uploads = new RateLimiter(Number(process.env.UPLOADS_PER_10_MIN ?? 30), 600_000);
+// GET /rooms/:code says whether a code is live. There are only 31^4 = 923 521 codes, so without a
+// budget the whole space can be swept for every running party in minutes. Nothing in the web app
+// calls this route today; 120 a minute leaves room for a join screen that does.
+const roomLookups = new RateLimiter(Number(process.env.LOOKUPS_PER_MINUTE ?? 120), 60_000);
 const vibeCalls = new RateLimiter(Number(process.env.VIBES_PER_MINUTE ?? 20), 60_000);
 /** Rooms with a vibe request in flight: one LLM call per room at a time. */
 const vibeInFlight = new Set<string>();
@@ -102,7 +106,7 @@ const server = Bun.serve<Conn>({
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
     if (url.pathname === "/ws") {
-      return srv.upgrade(req, { data: { clientId: null, roomCode: null } }) ? undefined : new Response("upgrade failed", { status: 400 });
+      return srv.upgrade(req, { data: { clientId: null, roomCode: null, ip: callerKey(req, srv) } }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
@@ -124,6 +128,7 @@ const server = Bun.serve<Conn>({
 
     const roomMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)$/);
     if (roomMatch && req.method === "GET") {
+      if (!roomLookups.allow(callerKey(req, srv))) return json({ error: "rate_limited" }, 429);
       const summary = manager.getSummary(roomMatch[1]!);
       return json(summary, summary.exists ? 200 : 404);
     }

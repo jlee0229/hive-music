@@ -29,6 +29,7 @@ import {
 import { currentScene, nextScene } from "./scene-timer";
 import { loadLibrary, type LibraryEntry } from "./library";
 import { HostKeys, safeEqual } from "./host-key";
+import { RateLimiter } from "./rate-limit";
 
 const now = () => performance.timeOrigin + performance.now();
 
@@ -99,7 +100,7 @@ export const MAX_MESSAGES_PER_SECOND = 100;
  * room's hostKey. Authority is checked per socket, not per client record — client ids are public
  * (every ROOM_STATE lists them), so "this socket says it is client X" proves nothing (audit SG-02).
  */
-export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean; rate?: { windowStart: number; count: number } };
+export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean; rate?: { windowStart: number; count: number }; /** Caller address, set at upgrade. */ ip?: string };
 type WS = Bun.ServerWebSocket<Conn>;
 
 interface HealthRecord {
@@ -785,6 +786,13 @@ export class RoomManager {
   private library: LibraryEntry[] = [];
 
   private keys: HostKeys;
+  /**
+   * JOINs for codes that do not exist, per caller address. NO_ROOM-vs-WELCOME is the same oracle as
+   * GET /rooms/:code, and a socket can ask a hundred times a second: without a budget the 923 521
+   * codes can be swept for every live party in minutes (audit SG-14). A phone only ever mistypes a
+   * code a few times; a whole party reconnecting to a restarted server is one miss per phone.
+   */
+  private missedJoins = new RateLimiter(60, 60_000);
 
   /**
    * `hostKeySecret` signs every hostKey (host-key.ts). Give it a value that survives restarts and a
@@ -932,6 +940,12 @@ export class RoomManager {
       // every earlier record "connected" forever (its close only ever disconnects the last id), so a
       // single connection could mint records without bound and the room could never idle out.
       if (ws.data.roomCode !== null) return send(ws, { type: "ERROR", code: "ALREADY_JOINED", message: "this connection has already joined a room" });
+      const caller = ws.data.ip ?? "local";
+      if (this.missedJoins.blocked(caller)) {
+        // Answered before the room is even looked up, so the reply says nothing about the code.
+        send(ws, { type: "ERROR", code: "RATE_LIMITED", message: "too many attempts — wait a minute" });
+        return ws.close(1008, "rate limit");
+      }
       const upper = msg.roomCode.toUpperCase();
       let room = this.rooms.get(upper);
       if (!room) {
@@ -940,7 +954,10 @@ export class RoomManager {
         // proof. Players reconnecting to a vanished room cannot — they get NO_ROOM until the host is back.
         if (msg.kind === "host" && !this.isFull() && this.canRestore(upper, msg.hostKey)) room = this.spawn(upper, msg.hostKey);
         else if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
-        else return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
+        else {
+          this.missedJoins.allow(caller);
+          return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
+        }
       }
       return room.join(ws, msg);
     }

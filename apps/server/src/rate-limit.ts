@@ -25,6 +25,12 @@ export class RateLimiter {
     }
     return ++w.count <= this.limit;
   }
+
+  /** True when `key` has already gone over budget in the current window. Counts nothing. */
+  blocked(key: string, nowMs: number = performance.now()): boolean {
+    const w = this.windows.get(key);
+    return !!w && nowMs - w.start < this.windowMs && w.count > this.limit;
+  }
 }
 
 /**
