@@ -234,8 +234,12 @@ export class Room {
     const t = now();
     const clients: Record<string, HealthRecord> = {};
     for (const [id, h] of this.health) if (this.room.clients[id]) clients[id] = h;
-    for (const id of this.room.hostClientIds) {
-      const s = this.sockets.get(id);
+    // Hosts and viewers (docs/02-protocol.md: "HEALTH 1 Hz to hosts and viewers"): a /screen
+    // display's "Synced ±N ms" tile is a median over exactly these numbers, and it is the one thing a
+    // viewer cannot derive from ROOM_STATE. The mock already did this; the real server sent hosts only.
+    for (const c of Object.values(this.room.clients)) {
+      if (c.kind !== "host" && c.kind !== "viewer") continue;
+      const s = this.sockets.get(c.id);
       if (s) send(s, { type: "HEALTH", serverTime: t, clients });
     }
   }
