@@ -237,6 +237,17 @@ function HostRoom({
     }
   }, [me]);
 
+  // The engine re-JOINs after a dropped socket with the options it was created with (plays: false),
+  // and the server takes a host's `plays` from the JOIN — so every reconnect silently switched this
+  // phone's speaker off while the checkbox stayed ticked. Whenever the room and the toggle disagree
+  // on an open socket, what the host last asked for (toggleSpeaker) wins.
+  const wantedPlays = useRef<boolean | null>(null);
+  const serverPlays = me?.plays;
+  useEffect(() => {
+    if (wantedPlays.current === null || serverPlays === undefined || connection !== "open") return;
+    if (serverPlays !== wantedPlays.current) client.host.setPlays(wantedPlays.current);
+  }, [serverPlays, connection, client]);
+
   // The library is what ends the "Setting up your hive…" splash (the first track is auto-picked
   // from it) and what fills the Songs drawer, so one failed request must not be the end of it:
   // retry with the socket's own backoff until an answer arrives.
@@ -296,6 +307,7 @@ function HostRoom({
   }, [room?.track?.id]);
 
   function toggleSpeaker(on: boolean) {
+    wantedPlays.current = on;
     setSpeakerOn(on);
     if (on) client.audio.unlock().catch(() => {});
     client.host.setPlays(on);
