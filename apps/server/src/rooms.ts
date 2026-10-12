@@ -173,7 +173,9 @@ export class Room {
   }
 
   // ---- lifecycle -------------------------------------------------------------
+  private destroyed = false;
   destroy() {
+    this.destroyed = true;
     clearInterval(this.healthTimer);
     clearInterval(this.pingTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
@@ -332,6 +334,7 @@ export class Room {
       // mid-song the moment their stems decode, exactly like a late joiner.
       this.setTrack(next);
       this.room.scenePlan = null; // the vibe plan was authored for the song that just ended
+      this.modeVersion++; // and one still in flight for it must not land on the next song
       this.room.transport = { state: "playing", serverTimeAtTrackZero: Math.max(now(), endServerTime) + TRACK_ADVANCE_LEAD_MS };
       this.replan(); // stem choices depend on the track; assignment + snapshot go out together
     } else {
@@ -362,6 +365,9 @@ export class Room {
   /** Called by the vibe route (B6) once a plan is accepted. Returns false if it was dropped as stale. */
   acceptScenePlan(plan: ScenePlan, requestModeVersion?: number): boolean {
     if (requestModeVersion !== undefined && requestModeVersion !== this.modeVersion) return false;
+    // The vibe route awaits an LLM call for up to 5 s; the room can idle out underneath it, and a
+    // scene timer armed on a destroyed room is a timer nothing will ever clear.
+    if (this.destroyed) return false;
     this.room.scenePlan = plan;
     if (this.room.transport.state === "playing") this.syncModeToScenePlan();
     else this.dirty = true;
@@ -456,7 +462,9 @@ export class Room {
 
   private handleCalibrationReport(me: ClientRecord | undefined, msg: Extract<ClientMessage, { type: "CALIBRATION_REPORT" }>) {
     if (!me || me.id !== this.room.calibration.referenceClientId) return;
-    if (this.room.calibration.state === "idle" || this.room.calibration.state === "failed") return;
+    // Only while a run is in flight. `done` used to be accepted too, so a second report for the same
+    // run was added on top of the first: calibratedOffsetMs = base + residual + residual.
+    if (this.room.calibration.state !== "countdown" && this.room.calibration.state !== "running") return;
     for (const m of msg.measurements) {
       const c = this.room.clients[m.clientId];
       if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored
@@ -597,6 +605,7 @@ export class Room {
     this.clearDisconnectTimer(id);
     const timer = setTimeout(() => {
       delete this.room.clients[id];
+      this.health.delete(id); // or the map grows by one entry per device that ever joined
       this.room.hostClientIds = this.room.hostClientIds.filter((hid) => hid !== id);
       this.disconnectTimers.delete(id);
       this.dirty = true;
@@ -626,7 +635,10 @@ export class Room {
         return send(ws, { type: "NTP_RESPONSE", t0: msg.t0, t1, t2: now(), probeGroupId: msg.probeGroupId, probeGroupIndex: msg.probeGroupIndex });
       }
       case "PONG":
-        if (me) this.health.get(me.id)!.lastSeenServerTime = now();
+        if (me) {
+          const h = this.health.get(me.id);
+          if (h) h.lastSeenServerTime = now();
+        }
         return;
       case "CLIENT_STATUS":
         if (me) {
@@ -663,6 +675,13 @@ export class Room {
         if (!hostOnly()) return;
         const track = this.getLibrary().find((t) => t.id === msg.trackId);
         if (!track) return send(ws, { type: "ERROR", code: "NO_TRACK", message: `unknown track ${msg.trackId}` });
+        // A vibe plan is scene boundaries in ONE song's track time. The playlist advance already
+        // drops it (loopBack); switching songs by hand kept it, and the next PLAY drove the new
+        // song's modes off the old song's timeline.
+        if (this.room.track?.id !== track.id) {
+          this.room.scenePlan = null;
+          this.modeVersion++; // …and a plan still being written for the old song must not land on this one
+        }
         this.setTrack(track);
         this.room.transport = { state: "stopped" };
         this.cancelSceneTimer();
@@ -734,6 +753,7 @@ export class Room {
           this.sockets.delete(msg.clientId);
           this.standby.delete(msg.clientId);
           this.clearDisconnectTimer(msg.clientId);
+          this.health.delete(msg.clientId);
           delete this.room.clients[msg.clientId];
           this.room.hostClientIds = this.room.hostClientIds.filter((id) => id !== msg.clientId);
           this.replan();
@@ -742,6 +762,9 @@ export class Room {
         return;
       case "CALIBRATION_START":
         if (!hostOnly()) return;
+        // A reference that is not here cannot hear anything: every phone would click into dead air
+        // for the whole run before it timed out as "failed".
+        if (!this.room.clients[msg.referenceClientId]?.connected) return send(ws, { type: "ERROR", code: "NO_CLIENT", message: `no connected client ${msg.referenceClientId}` });
         return this.startCalibration(msg.referenceClientId);
       case "CALIBRATION_CANCEL":
         if (!hostOnly()) return;
