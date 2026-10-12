@@ -39,7 +39,12 @@ const now = () => performance.timeOrigin + performance.now();
  */
 const TRACK_ADVANCE_LEAD_MS = 5000;
 
-export type Conn = { clientId: string | null; roomCode: string | null };
+/**
+ * Per-socket state. `host` is the privilege bit: true only for a socket whose own JOIN presented the
+ * room's hostKey. Authority is checked per socket, not per client record — client ids are public
+ * (every ROOM_STATE lists them), so "this socket says it is client X" proves nothing (audit SG-02).
+ */
+export type Conn = { clientId: string | null; roomCode: string | null; host?: boolean };
 type WS = Bun.ServerWebSocket<Conn>;
 
 interface HealthRecord {
@@ -405,18 +410,18 @@ export class Room {
   // ---- join / disconnect --------------------------------------------------------
   join(ws: WS, msg: Extract<ClientMessage, { type: "JOIN" }>) {
     const existing = this.room.clients[msg.clientId];
+    // Host is granted by exactly one thing: this JOIN carries the room's hostKey. It used to be
+    // granted as well when the record was already a host, or when the room had no host yet — but
+    // every client id is in every ROOM_STATE, and "no host yet" is true between POST /rooms and the
+    // host's first JOIN and again 2 minutes after the host's phone locks. Either let any guest
+    // become host with no key (audit SG-02). A host that lost its room to a restart does not need
+    // those clauses any more: its signed key re-creates the room (RoomManager, audit SG-01).
+    const wantsHost = msg.kind === "host" && typeof msg.hostKey === "string" && safeEqual(msg.hostKey, this.hostKey);
+    if (existing?.kind === "host" && !wantsHost) return this.observe(ws, msg.clientId);
     // userAgent (up to 512 chars, required by DeviceInfoSchema) is dead weight on every ROOM_STATE
     // broadcast — nothing server-side reads it, only browserFamily/platform/model do — and it's most
     // of a snapshot's size at scale (~26-30KB at 30 phones). Never store the real string.
     const device = { ...msg.device, userAgent: "" };
-    // A ROOM_FIXED_CODE demo room re-spawned lazily (after ROOM_IDLE_TTL_MS, or a restart) mints a
-    // fresh hostKey (constructor above) that the host's stored key can never match, and there is no
-    // `existing` record for a brand-new room either — so without the "nobody holds the room yet"
-    // clause, the host would be silently demoted to a player forever (every host command then answers
-    // NOT_HOST). Accepting kind:"host" once hostClientIds is empty recovers that, and is also what lets
-    // an existing PLAYER record (a host demoted by this exact gap before this fix landed) be promoted
-    // back once it presents the room's real hostKey.
-    const wantsHost = msg.kind === "host" && (msg.hostKey === this.hostKey || existing?.kind === "host" || this.room.hostClientIds.length === 0);
     // A viewer (v4, the /screen projector) is read-only: plays is forced false whatever the JOIN
     // says, it never lands in hostClientIds, and it must not be coerced to "player" — that made
     // every projector a phantom speaker that stole a stem in ORCHESTRA and padded the player count.
@@ -445,6 +450,7 @@ export class Room {
 
     ws.data.clientId = rec.id;
     ws.data.roomCode = this.code;
+    ws.data.host = wantsHost;
     this.sockets.set(rec.id, ws);
     ws.subscribe(this.code);
     this.clearDisconnectTimer(rec.id);
@@ -459,6 +465,24 @@ export class Room {
     // (leading-edge: immediate in a quiet room, coalesced into the next window during a join burst) is
     // also "the joiner's snapshot" — a burst of joins must still respect ROOM_STATE_MAX_HZ.
     this.replan();
+  }
+
+  /**
+   * A JOIN that names the host's client id but does not carry the hostKey. Honest cause: one browser
+   * shares `hive:clientId:<room>` between /h, /j and /screen, so a second tab arrives under the
+   * host's id. Hostile cause: a guest read the id out of ROOM_STATE. Either way the socket may watch
+   * the room and nothing else: it is not registered as the host's socket (so it cannot take the
+   * host's HEALTH / calibration messages, and its close cannot mark the host disconnected), it has
+   * no client identity (`clientId` stays null, so every command is a no-op or NOT_HOST), and the
+   * host's record is left exactly as it was.
+   */
+  private observe(ws: WS, claimedId: string) {
+    ws.data.clientId = null;
+    ws.data.roomCode = this.code;
+    ws.data.host = false;
+    ws.subscribe(this.code);
+    send(ws, { type: "WELCOME", clientId: claimedId, roomCode: this.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: false });
+    send(ws, { type: "ROOM_STATE", room: this.room });
   }
 
   disconnect(ws: WS) {
@@ -490,7 +514,7 @@ export class Room {
   // ---- message dispatch ---------------------------------------------------------
   handle(ws: WS, msg: ClientMessage) {
     const me = ws.data.clientId ? this.room.clients[ws.data.clientId] : undefined;
-    const isHost = !!me && this.room.hostClientIds.includes(me.id);
+    const isHost = !!me && ws.data.host === true && this.room.hostClientIds.includes(me.id);
     const hostOnly = (): boolean => {
       if (!isHost) {
         send(ws, { type: "ERROR", code: "NOT_HOST", message: "host only" });
@@ -532,7 +556,7 @@ export class Room {
         }
         return;
       case "SET_PLAYS":
-        if (me?.kind === "host") {
+        if (me && isHost) {
           me.plays = msg.plays;
           this.replan();
         }
