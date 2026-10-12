@@ -11,6 +11,7 @@ import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-t
 import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
 import { classifyHostClaim } from "@/lib/hive/host-claim";
 import { planStart, showTuningScreen, tuningNote } from "@/lib/hive/start-flow";
+import { HOST_TOAST_MS, hostErrorText } from "@/lib/hive/host-errors";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
@@ -224,10 +225,18 @@ function HostRoom({
     return client.on("error", (code, message) => {
       if (code === "NOT_HOST") onDemoted();
       else if (code === "NO_ROOM") onGone();
-      else setHostToast(message || code);
+      else setHostToast(hostErrorText(code, message));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
+
+  // An error is news for a few seconds, not a banner for the rest of the night: it used to stay
+  // until the page was reloaded, long after whatever caused it was over.
+  useEffect(() => {
+    if (!hostToast) return;
+    const t = setTimeout(() => setHostToast(null), HOST_TOAST_MS);
+    return () => clearTimeout(t);
+  }, [hostToast]);
 
   // A demotion remounts HostRoom under a fresh key (see HostPage); this client's socket is
   // otherwise never closed, so the old, now-demoted connection would sit in the room as a zombie
