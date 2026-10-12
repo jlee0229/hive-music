@@ -254,6 +254,7 @@ export function createBrowserAudioEngine(
   function ensureContext(): AudioContext {
     if (!ctx) {
       ctx = makeContext();
+      mapper.reset(); // samples from a previous context are in another time base altogether
       bindContextState(ctx);
       scheduler = new Scheduler({ ctx: ctx as unknown as CtxLike, clock, mapper, now: host.now });
       scheduler.setMuted(muted);

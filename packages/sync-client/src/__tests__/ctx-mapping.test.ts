@@ -22,6 +22,23 @@ function probeTick(r: ReturnType<typeof engineRig>): void {
   if (c !== null) r.mapper.addSample(r.localMs(), c);
 }
 
+describe("ENGINE-SYNC-16 · the ctx mapping across a rebuilt context", () => {
+  test("samples from the context that was torn down are not mixed with the new one's", async () => {
+    const r = engineRig(vt);
+    await r.engine.unlock();
+    for (let i = 0; i < 12; i++) {
+      vt.advance(1000);
+      probeTick(r);
+    }
+    r.ctx.freeze(); // a zombie: 'running', clock stopped
+    vt.advance(6000);
+    expect(r.engine.state).toBe("locked");
+    await r.engine.unlock(); // rebuilds; the new context counts from a different origin
+    expect(r.contexts).toHaveLength(2);
+    expect(r.mapper.serverTimeForCtx(r.ctx.currentTime)!).toBeCloseTo(r.localMs(), 3);
+  });
+});
+
 describe("ENGINE-SYNC-16 · the ctx mapping across a suspension", () => {
   test("no samples are taken while the context is suspended, and the mapping is right the moment it resumes", async () => {
     const r = engineRig(vt);
