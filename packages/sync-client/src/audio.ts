@@ -436,7 +436,9 @@ export function createBrowserAudioEngine(
       loadedTrackId = track.id;
       loadFailures.delete(track.id);
       loadProgress = 1;
-      setState("ready");
+      // "ready" means it can sound. A context that was interrupted during the download cannot, and the
+      // UI has to be asking for the tap rather than showing the playing screen over silence.
+      setState(context.state === "running" ? "ready" : "locked");
       emit.emit("audio", state, loadProgress);
       // AUDIO_READY means *every* stem is decoded, never "the first one is playable".
       lastReadyAnnounceAt = performance.now();
