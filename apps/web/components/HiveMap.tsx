@@ -212,7 +212,10 @@ export function HiveMap({
       role="img"
       aria-label={`Hive map: ${placed.length + unplaced.length} player phones`}
       className="no-callout"
-      style={{ touchAction: "none" }}
+      // Square at every width: the flex parent may squeeze the width (a 320-375 px phone), and with a
+      // fixed height the drawing was letterboxed inside a taller box — a dragged dot then landed up
+      // to 15 px away from the finger, because the drag maths divides by the box, not the drawing.
+      style={{ touchAction: "none", maxWidth: "100%", height: "auto", aspectRatio: "1 / 1" }}
     >
       <defs>
         <pattern id="hive-map-dots" width="20" height="20" patternUnits="userSpaceOnUse">
