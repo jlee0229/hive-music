@@ -56,6 +56,8 @@ export interface SourceLike {
   playbackRate?: ParamLike;
 }
 export interface CtxLike {
+  /** Optional: when present, the drift check stands down unless it reads "running". */
+  readonly state?: string;
   readonly currentTime: number;
   readonly sampleRate: number;
   readonly destination: unknown;
@@ -76,12 +78,31 @@ export const PATTERN_TICK_MS = 100;
 export const PATTERN_LOOKAHEAD_MS = 200;
 /** Samples per second of pattern curve written into `setValueCurveAtTime`. */
 export const PATTERN_CURVE_HZ = 200;
+/** A top-up shorter than this is left for the next tick, seconds. */
+export const PATTERN_MIN_WINDOW_SEC = 0.02;
+/**
+ * Gap left between one pattern curve and the next, seconds. Web Audio refuses a curve that overlaps one
+ * already scheduled — by a single ulp of float error is enough — so consecutive curves are kept visibly
+ * apart. The gain simply holds its last value across the gap (a handful of samples).
+ */
+export const PATTERN_CURVE_GAP_SEC = 1e-4;
 /** Fade applied when stopping so a pause never clicks. */
 export const STOP_FADE_SEC = 0.01;
 /** How often the playhead is compared with the timeline while playing. */
 export const DRIFT_CHECK_INTERVAL_MS = 1000;
+/**
+ * The audio clock counts as stalled when it advanced less than this fraction of the wall time between
+ * two drift checks. Generous on purpose: a real clock is within a few hundred ppm of 1.
+ */
+export const AUDIO_CLOCK_STALLED_RATIO = 0.5;
 /** A hard resync starts this far ahead, leaving room to build the new branch. */
 export const RESYNC_START_MARGIN_SEC = 0.05;
+/**
+ * How long a branch that is being replaced may keep sounding while it waits for its successor's start,
+ * seconds. Long enough for the server's LEAD_MS (the end of a song, a restart from the top), far too
+ * short for "the old song plays on for five seconds after the host skipped it".
+ */
+export const HANDOVER_MAX_SEC = 2;
 
 export const gainFromDb = (db: number): number => (db <= -60 ? 0 : 10 ** (db / 20));
 
@@ -146,6 +167,8 @@ export interface ApplyResult {
 }
 
 interface Branch {
+  /** The buffer set this branch was built from, so a swap (CHOIR's pitched render) can be detected. */
+  buffers: Map<string, BufferLike>;
   sources: Map<string, SourceLike>;
   stemGains: Map<string, GainLike>;
   patternGain: GainLike;
@@ -159,6 +182,12 @@ interface Branch {
   startedAtCtx: number;
   startOffsetSec: number;
   stopped: boolean;
+  /** Ctx time its sources were told to stop at; Infinity while it is live. */
+  endsAtCtx: number;
+  /** Ctx time up to which this branch's pattern gain has a curve written; −Infinity when it has none. */
+  patternEndCtx: number;
+  /** Length of the audio this branch was built from, seconds. */
+  durationSec: number;
   /**
    * Content-seconds consumed beyond nominal because `playbackRate !== 1` (B9e). Positive = this branch
    * has eaten *more* of the track than wall time says, i.e. it is further along.
@@ -188,7 +217,7 @@ interface AppliedKey {
   timingShiftMs: number;
 }
 
-/** delayMs − compensationMs: the net shift of this device's playhead, in ms. */
+/** delayMs − compensationMs: the assignment's share of this device's playhead shift, in ms. */
 const timingShiftOf = (a: Assignment | null): number => (a?.delayMs ?? 0) - (a?.compensationMs ?? 0);
 
 export class Scheduler {
@@ -198,10 +227,16 @@ export class Scheduler {
   private durationSec = 0;
   private trackId: string | null = null;
   private branches: Branch[] = [];
+  /**
+   * Branches fading out under a crossfade. They are no longer "the music", but they are still sounding
+   * for up to RESYNC_START_MARGIN_SEC + RESYNC_CROSSFADE_MS, and a stop that lands inside that window
+   * has to silence them too — a seek 10 ms after a resync otherwise left the old position audible, at
+   * full level, on top of the new one.
+   */
+  private retiring: Branch[] = [];
   private applied: AppliedKey | null = null;
   private assignment: Assignment | null = null;
   private patternTimer: ReturnType<typeof setInterval> | null = null;
-  private patternWrittenUntilMs = 0;
   /** Serialized last pattern: ROOM_STATE arrives at 2 Hz and must not restart identical automation. */
   private patternKey: string | null = null;
   private muted = false;
@@ -216,8 +251,12 @@ export class Scheduler {
   lastSlewPpm = 0;
   /** B9e on/off. Defaults to the constant; `/diag` can flip it to compare against crossfade-only. */
   slewEnabled = PLAYBACK_RATE_SLEW_DEFAULT;
+  /** Pattern curves Web Audio refused (diagnostics). Anything but 0 is a stretch of un-automated gain. */
+  patternCurveRejections = 0;
   private driftTimer: ReturnType<typeof setInterval> | null = null;
   private useOutputLatency = false;
+  /** Last usable `ctx.outputLatency`, seconds — see `outputLatencySec()`. */
+  private lastOutputLatencySec = 0;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.master = deps.ctx.createGain();
@@ -239,6 +278,20 @@ export class Scheduler {
     this.buffers = buffers;
     this.trackId = trackId;
     this.durationSec = Math.max(0, ...[...buffers.values()].map((b) => b.duration));
+  }
+
+  /**
+   * Lets go of the decoded audio (a track change). Branches that are still sounding keep their own
+   * reference through their source nodes, so the tail of the old song is unaffected.
+   */
+  get bufferCount(): number {
+    return this.buffers.size;
+  }
+
+  clearBuffers(): void {
+    this.buffers = new Map();
+    this.trackId = null;
+    this.durationSec = 0;
   }
 
   setMuted(muted: boolean): void {
@@ -271,8 +324,29 @@ export class Scheduler {
     const base = this.deps.mapper.ctxTimeForNow(serverTime, ctxNow, this.deps.now());
     const delaySec = (a?.delayMs ?? 0) / 1000;
     const compSec = (a?.compensationMs ?? 0) / 1000;
-    const olSec = useOutputLatency ? this.deps.ctx.outputLatency || 0 : 0;
+    const olSec = useOutputLatency ? this.outputLatencySec() : 0;
     return base + delaySec - compSec - olSec;
+  }
+
+  /**
+   * `ctx.outputLatency`, held at its last usable value. Once this phone has reported a latency the
+   * server stops sending a table guess for it, so the live value is the *only* compensation left: a read
+   * of 0 (a context that has not rendered yet, a browser hiccup) would silently play ~40 ms late, and a
+   * NaN would make every `start(when)` throw.
+   */
+  private outputLatencySec(): number {
+    const live = this.deps.ctx.outputLatency;
+    if (typeof live === "number" && Number.isFinite(live) && live > 0) this.lastOutputLatencySec = live;
+    return this.lastOutputLatencySec;
+  }
+
+  /**
+   * The whole shift of this device's playhead, ms: the assignment's delay and compensation *and* the
+   * output latency the client subtracts itself when the server has no number for it. All three move the
+   * audio, so all three belong in the "has the schedule changed?" comparison — see `apply`.
+   */
+  private netTimingShiftMs(a: Assignment | null, useOutputLatency: boolean): number {
+    return timingShiftOf(a) - (useOutputLatency ? this.outputLatencySec() * 1000 : 0);
   }
 
   /**
@@ -296,13 +370,16 @@ export class Scheduler {
      */
     if (assignment === null) {
       const wasPlaying = this.playing;
-      if (wasPlaying) this.stopAll("no assignment: this device is not a speaker");
+      if (wasPlaying || this.retiring.length > 0) this.stopAll("no assignment: this device is not a speaker");
       return { action: wasPlaying ? "stopped" : "idle", decision: null, reason: "assignment is null" };
     }
 
     if (transport.state !== "playing" || !opts.trackId || opts.trackId !== this.trackId || this.buffers.size === 0) {
       const wasPlaying = this.playing;
-      if (wasPlaying) this.stopAll("transport is not playing, or the track is not loaded");
+      // A paused or stopped room is silent, including a tail that was being allowed to play out. (A
+      // track that is merely not loaded yet leaves that tail alone: that is the playlist advance.)
+      const tailToSilence = transport.state !== "playing" && this.retiring.length > 0;
+      if (wasPlaying || tailToSilence) this.stopAll("transport is not playing, or the track is not loaded");
       this.applied = null;
       return { action: wasPlaying ? "stopped" : "idle", decision: null, reason: transport.state };
     }
@@ -311,12 +388,18 @@ export class Scheduler {
       trackId: opts.trackId,
       transportState: "playing",
       serverTimeAtTrackZero: transport.serverTimeAtTrackZero,
-      timingShiftMs: timingShiftOf(assignment),
+      timingShiftMs: this.netTimingShiftMs(assignment, opts.useOutputLatency),
     };
     /*
      * A timing shift under RESYNC_THRESHOLD_MS is left to the drift check (B4) to absorb; a bigger one
      * is rescheduled now. This matters for WAVE: its delayMs is up to 300 ms, so switching into WAVE
      * mid-song has to move the playhead immediately or the mode does nothing audible.
+     *
+     * The shift compared is the *net* one. The server retires its table guess the first time a phone
+     * reports `outputLatency`: one snapshot drops ~45 ms from compensationMs and flips useOutputLatency
+     * on. Comparing compensation alone read that as a 45 ms move and stop-started the music on every
+     * Android phone two seconds after it joined, when the playhead had really moved by the few ms
+     * between the guess and the measurement.
      */
     const same =
       this.applied !== null &&
@@ -325,9 +408,25 @@ export class Scheduler {
       this.applied.serverTimeAtTrackZero === key.serverTimeAtTrackZero &&
       Math.abs(this.applied.timingShiftMs - key.timingShiftMs) <= RESYNC_THRESHOLD_MS;
 
-    if (same && this.playing) {
+    /*
+     * A buffer swap under a running branch (CHOIR: the pitched render finished, or the pitch was cleared).
+     * `setBuffers` only replaces what the *next* branch is built from, so without this the phone kept
+     * playing the old audio until something else — a seek, a pause — happened to rebuild the branch, and
+     * CHOIR switched on mid-song did nothing audible at all. Once the music is sounding it is a crossfade
+     * at the same position (the hard-resync path); a branch still waiting for its start instant is simply
+     * rebuilt below, which is inaudible.
+     */
+    const live = this.branches.find((b) => !b.stopped);
+    const swapped = same && live !== undefined && live.buffers !== this.buffers;
+    const swapBeforeStart = swapped && this.deps.ctx.currentTime < live.startedAtCtx;
+
+    if (same && this.playing && !swapBeforeStart) {
       // Gains and patterns may still have changed — that is a ramp, never a restart (B5e).
       this.applyAssignmentGains(assignment);
+      if (swapped) {
+        const decision = this.crossfadeToTimeline(assignment, opts.useOutputLatency);
+        return { action: decision ? "restarted" : "unchanged", decision: this.lastDecision, reason: "buffers swapped" };
+      }
       if (opts.force) {
         /*
          * A resumed tab or a context that came back from 'interrupted' lands here. Drift-check rather
@@ -355,7 +454,13 @@ export class Scheduler {
     }
 
     const restarted = this.playing;
-    if (restarted) this.stopAll("rescheduling");
+    /*
+     * A start that is still ahead — the server restarting the song on its own end, the next play from
+     * the top — is a hand-over, not a cut: what is sounding runs up to the new start. Stopping it "now"
+     * put LEAD_MS of silence in front of every loop the server had scheduled to be seamless, and took
+     * the last 600 ms off every song.
+     */
+    if (restarted) this.stopAll("rescheduling", decision.mode === "scheduled" ? decision.whenCtx : undefined);
     this.applied = key; // set before startBranch: the drift check reads it
     this.startBranch(decision, assignment);
     this.startDriftCheck();
@@ -378,6 +483,7 @@ export class Scheduler {
     patternGain.connect(fadeGain as never);
 
     const branch: Branch = {
+      buffers: this.buffers,
       sources: new Map(),
       stemGains: new Map(),
       patternGain,
@@ -386,6 +492,9 @@ export class Scheduler {
       startedAtCtx: decision.whenCtx,
       startOffsetSec: decision.offsetSec,
       stopped: false,
+      endsAtCtx: Infinity,
+      patternEndCtx: -Infinity,
+      durationSec: this.durationSec,
       slewSec: 0,
       slewRate: 1,
       slewAtCtx: decision.whenCtx,
@@ -418,12 +527,40 @@ export class Scheduler {
     return branch;
   }
 
-  /** Stops every branch with a short fade so a pause does not click. */
-  stopAll(_reason = "stop"): void {
+  /**
+   * Stops every branch with a short fade so a pause does not click.
+   *
+   * With `handoverCtx`, a branch that is already sounding is instead allowed to run until that instant
+   * (or its own natural end, whichever is first) — provided that is no more than HANDOVER_MAX_SEC away.
+   * It stops being "the music" at once: `playing` is false and the timers stop; it is only still audible.
+   */
+  stopAll(_reason = "stop", handoverCtx?: number): void {
+    const pattern = this.assignment?.pattern ?? null;
     this.patternKey = null;
     const at = this.deps.ctx.currentTime;
-    for (const branch of this.branches) this.fadeOutAndStop(branch, at, STOP_FADE_SEC);
+    for (const branch of this.branches) {
+      const naturalEnd = branch.startCtxForZero - branch.slewSec + branch.durationSec;
+      const until = handoverCtx === undefined ? at : Math.min(handoverCtx, naturalEnd);
+      const sounding = !branch.stopped && at >= branch.startedAtCtx;
+      if (sounding && until > at + STOP_FADE_SEC && until - at <= HANDOVER_MAX_SEC) {
+        // Its pattern has to be written out to the end now: the top-up timer is about to stop.
+        if (pattern) this.writePatternWindow(pattern, branch, until + STOP_FADE_SEC);
+        this.fadeOutAndStop(branch, until, STOP_FADE_SEC);
+        this.retiring.push(branch);
+      } else {
+        this.fadeOutAndStop(branch, at, STOP_FADE_SEC);
+      }
+    }
     this.branches = [];
+    if (handoverCtx === undefined) {
+      for (const branch of this.retiring) this.cutShort(branch, at, STOP_FADE_SEC);
+      this.retiring = [];
+    } else {
+      // A tail already waiting for an earlier hand-over must not outlast this one (the successor's
+      // start just moved): two starts in a row would otherwise leave it playing over the second.
+      this.retiring = this.retiring.filter((b) => b.endsAtCtx > at);
+      for (const branch of this.retiring) this.cutShort(branch, Math.max(at, handoverCtx), STOP_FADE_SEC);
+    }
     this.stopPatternAutomation();
     this.stopDriftCheck();
   }
@@ -432,6 +569,7 @@ export class Scheduler {
   private fadeOutAndStop(branch: Branch, at: number, fadeSec: number): void {
     if (branch.stopped) return;
     branch.stopped = true;
+    branch.endsAtCtx = at + fadeSec;
     branch.fadeGain.gain.cancelScheduledValues(at);
     branch.fadeGain.gain.setValueAtTime(branch.fadeGain.gain.value, at);
     branch.fadeGain.gain.linearRampToValueAtTime(0, at + fadeSec);
@@ -440,6 +578,22 @@ export class Scheduler {
         source.stop(at + fadeSec);
       } catch {
         /* a source that never started throws on stop in some engines */
+      }
+    }
+  }
+
+  /** Brings an already-retiring branch's end forward to `at + fadeSec`, if it was going to outlast that. */
+  private cutShort(branch: Branch, at: number, fadeSec: number): void {
+    if (branch.endsAtCtx <= at + fadeSec) return;
+    branch.endsAtCtx = at + fadeSec;
+    branch.fadeGain.gain.cancelScheduledValues(at);
+    branch.fadeGain.gain.setValueAtTime(branch.fadeGain.gain.value, at);
+    branch.fadeGain.gain.linearRampToValueAtTime(0, at + fadeSec);
+    for (const source of branch.sources.values()) {
+      try {
+        source.stop(at + fadeSec);
+      } catch {
+        /* an engine that refuses a second stop() keeps the first one, 70 ms away at most */
       }
     }
   }
@@ -473,7 +627,10 @@ export class Scheduler {
   private accrueSlew(branch: Branch): void {
     const ctxNow = this.deps.ctx.currentTime;
     const dt = ctxNow - branch.slewAtCtx;
-    if (dt > 0) branch.slewSec += (branch.slewRate - 1) * dt;
+    // Before the branch's start instant nothing is being consumed, at any rate: `slewAtCtx` begins at
+    // the start time and must not be dragged back to "now", or the wait would be booked as playback.
+    if (dt <= 0) return;
+    branch.slewSec += (branch.slewRate - 1) * dt;
     branch.slewAtCtx = ctxNow;
   }
 
@@ -523,25 +680,62 @@ export class Scheduler {
     if (errorMs === null) return null;
     this.lastDriftErrorMs = errorMs;
     const live = this.branches.find((b) => !b.stopped);
+    /*
+     * A branch still waiting for its start instant (the 5 s lead of a playlist advance, mostly). Neither
+     * tool below works on it: a crossfade has nothing to fade from and was refused ("outside the track"),
+     * so an error that appeared during the wait — the clock stepped, the output route changed — was
+     * carried into the first second of the song; and a rate trim was applied to a source that was not
+     * playing, then booked as content consumed. Moving a start that has not happened is free and exact,
+     * so do that instead. (A start closer than the resync margin is left to the paths below: it is as
+     * good as playing, and too near to re-place reliably.)
+     */
+    if (live && live.startedAtCtx - this.deps.ctx.currentTime > RESYNC_START_MARGIN_SEC) {
+      if (Math.abs(errorMs) > PLAYBACK_RATE_DEADBAND_MS) this.rebuildBeforeStart(assignment, useOutputLatency);
+      return { errorMs, resynced: false };
+    }
     if (Math.abs(errorMs) <= RESYNC_THRESHOLD_MS) {
       // B9e: absorb it by rate instead of letting it grow into a crossfade.
       if (live) this.lastSlewPpm = this.applySlew(live, errorMs);
       return { errorMs, resynced: false };
     }
 
+    // The correction would land outside the track: nothing useful to fade to.
+    if (!this.crossfadeToTimeline(assignment, useOutputLatency)) return { errorMs, resynced: false };
+    this.lastCorrectionMs = errorMs;
+    this.resyncCount++;
+    return { errorMs, resynced: true };
+  }
+
+  /** Re-places a branch that has not sounded yet on the start time the timeline gives now. */
+  private rebuildBeforeStart(assignment: Assignment | null, useOutputLatency: boolean): void {
+    if (this.applied === null) return;
     const ctxNow = this.deps.ctx.currentTime;
-    const startCtxForZero = this.ctxTimeForTrackPosition(
-      this.applied!.serverTimeAtTrackZero,
-      0,
-      assignment,
-      useOutputLatency,
-    );
+    const startCtxForZero = this.ctxTimeForTrackPosition(this.applied.serverTimeAtTrackZero, 0, assignment, useOutputLatency);
+    const decision = decideStart({ ctxNow, startCtxForZero, durationSec: this.durationSec });
+    for (const branch of this.branches) this.fadeOutAndStop(branch, ctxNow, 0); // stops before it ever starts
+    this.branches = [];
+    if (!decision) return this.stopAll("past the end of the track");
+    // …and a tail that was waiting for the old start instant follows the new one if it is earlier.
+    for (const branch of this.retiring) this.cutShort(branch, decision.whenCtx, STOP_FADE_SEC);
+    this.applied = { ...this.applied, timingShiftMs: this.netTimingShiftMs(assignment, useOutputLatency) };
+    this.startBranch(decision, assignment);
+    this.lastDecision = decision;
+    this.lastSlewPpm = 0;
+  }
+
+  /**
+   * Replaces the live branch with a fresh one at the position the timeline says is playing right now,
+   * crossfading over RESYNC_CROSSFADE_MS. Shared by the hard resync (same audio, corrected position) and
+   * a buffer swap (same position, different audio). Returns null — and changes nothing — when "now" is
+   * outside the track.
+   */
+  private crossfadeToTimeline(assignment: Assignment | null, useOutputLatency: boolean): StartDecision | null {
+    if (this.applied === null) return null;
+    const ctxNow = this.deps.ctx.currentTime;
+    const startCtxForZero = this.ctxTimeForTrackPosition(this.applied.serverTimeAtTrackZero, 0, assignment, useOutputLatency);
     const whenCtx = ctxNow + RESYNC_START_MARGIN_SEC;
     const offsetSec = whenCtx - startCtxForZero;
-    if (offsetSec < 0 || offsetSec >= this.durationSec) {
-      // The correction would land outside the track: nothing useful to fade to.
-      return { errorMs, resynced: false };
-    }
+    if (offsetSec < 0 || offsetSec >= this.durationSec) return null;
     const decision: StartDecision = { whenCtx, offsetSec, startCtxForZero, mode: "immediate" };
     const fadeSec = RESYNC_CROSSFADE_MS / 1000;
     const old = this.branches.filter((b) => !b.stopped);
@@ -551,20 +745,42 @@ export class Scheduler {
     fresh.fadeGain.gain.linearRampToValueAtTime(1, whenCtx + fadeSec);
     for (const branch of old) this.fadeOutAndStop(branch, whenCtx, fadeSec);
     this.branches = this.branches.filter((b) => !b.stopped);
+    this.retiring = [...this.retiring.filter((b) => b.endsAtCtx > ctxNow), ...old];
 
     this.lastDecision = decision;
-    this.lastCorrectionMs = errorMs;
-    this.resyncCount++;
+    // The branch now embodies today's shift (a Bluetooth route that added 150 ms of output latency was
+    // just corrected for); without this the next snapshot would see a "change" and restart it again.
+    this.applied = { ...this.applied, timingShiftMs: this.netTimingShiftMs(assignment, useOutputLatency) };
     // The fresh branch starts at rate 1: the step it was just given is the correction, so any trim
     // carried over would be applied twice.
     this.lastSlewPpm = 0;
-    return { errorMs, resynced: true };
+    return decision;
   }
 
   private startDriftCheck(): void {
     if (this.driftTimer) return;
+    let lastCtx = this.deps.ctx.currentTime;
+    let lastLocalMs = this.deps.now();
     this.driftTimer = setInterval(() => {
       if (!this.playing) return this.stopDriftCheck();
+      const ctxNow = this.deps.ctx.currentTime;
+      const localMs = this.deps.now();
+      const advancedSec = ctxNow - lastCtx;
+      const elapsedSec = (localMs - lastLocalMs) / 1000;
+      lastCtx = ctxNow;
+      lastLocalMs = localMs;
+      /*
+       * Stand down while the audio clock is not running — a suspended or interrupted context, or the
+       * iOS zombie that says 'running' with a frozen clock. Nothing can be corrected by scheduling on a
+       * clock that is not moving, and trying is actively harmful: the measured error grows by a second
+       * every second, so each tick "hard-resynced", building a new branch at `currentTime + 50 ms` — the
+       * same frozen instant every time. A one-minute interruption left sixty branches queued on that
+       * instant, and when the context came back they all started at once, at sixty different positions.
+       * The engine re-checks the moment the context reports running; this loop picks up from there.
+       */
+      const state = this.deps.ctx.state;
+      if (state !== undefined && state !== "running") return;
+      if (elapsedSec > 0 && advancedSec < elapsedSec * AUDIO_CLOCK_STALLED_RATIO) return;
       this.checkDrift(this.assignment, this.useOutputLatency);
     }, DRIFT_CHECK_INTERVAL_MS);
   }
@@ -606,18 +822,29 @@ export class Scheduler {
     opts: { restart?: boolean; branch?: Branch } = {},
   ): void {
     const key = pattern ? JSON.stringify(pattern) : null;
-    if (key === this.patternKey && !opts.restart) return;
+    const changed = key !== this.patternKey;
+    if (!changed && !opts.restart) return;
     this.patternKey = key;
+    const ctxNow = this.deps.ctx.currentTime;
     if (!pattern) {
       this.stopPatternAutomation();
       for (const branch of this.branches) {
         if (branch.stopped) continue;
-        branch.patternGain.gain.cancelScheduledValues(this.deps.ctx.currentTime);
-        branch.patternGain.gain.setTargetAtTime(1, this.deps.ctx.currentTime, GAIN_RAMP_TC_SEC);
+        branch.patternGain.gain.cancelScheduledValues(ctxNow);
+        branch.patternGain.gain.setTargetAtTime(1, ctxNow, GAIN_RAMP_TC_SEC);
+        branch.patternEndCtx = -Infinity;
       }
       return;
     }
-    this.patternWrittenUntilMs = 0;
+    if (changed) {
+      // A different pattern: what the old one wrote ahead has to go first, or its curves are still
+      // sitting where the new ones belong and Web Audio refuses every one of them.
+      for (const branch of this.branches) {
+        if (branch.stopped || branch === opts.branch) continue;
+        branch.patternGain.gain.cancelScheduledValues(ctxNow);
+        branch.patternEndCtx = -Infinity;
+      }
+    }
     this.writePatternWindow(pattern, opts.branch);
     if (this.patternTimer) return;
     this.patternTimer = setInterval(() => {
@@ -630,42 +857,48 @@ export class Scheduler {
   private stopPatternAutomation(): void {
     if (this.patternTimer) clearInterval(this.patternTimer);
     this.patternTimer = null;
-    this.patternWrittenUntilMs = 0;
   }
 
   /**
-   * Writes PATTERN_LOOKAHEAD_MS of curve starting wherever we left off. Two cases have to be handled
-   * or the automation silently never runs:
-   *  - the start is still in the future, so the playhead position is *negative*; the window then begins
-   *    at track position 0 and the curve is scheduled at the branch's start time.
-   *  - the window we would write begins in the past (a tick was late, or the tab was throttled); the
-   *    window is shifted forward so `setValueCurveAtTime` gets a time it will accept, and the curve
-   *    stays aligned to the music rather than to the moment we happened to wake up.
+   * Tops the pattern curve up to PATTERN_LOOKAHEAD_MS ahead of the playhead — and no further.
+   *
+   * The horizon is the point. This used to write a fixed 200 ms on every 100 ms tick, each starting where
+   * the last ended, so the written curve ran ahead of the music at twice real time: a minute into a song,
+   * a minute of the *current* pattern was already scheduled. A change of pattern then had nowhere to go —
+   * every new curve overlapped an old one, Web Audio refused it (the throw was swallowed below), and the
+   * phone kept strobing to the old pattern for as long as the song had been playing.
+   *
+   * The window is laid out in ctx time, from where the previous curve ended:
+   *  - never in the past (a late tick, a throttled tab) and never before the branch's own start (a
+   *    scheduled start still ahead: the first window then begins at track position 0);
+   *  - PATTERN_CURVE_GAP_SEC clear of the previous curve, because two curves that merely touch are
+   *    "overlapping" whenever float rounding lands the wrong way, which in Chrome was one window in nine;
+   *  - evaluated at the track position that will actually be sounding at each instant, so the curve
+   *    stays aligned to the music rather than to the moment the tick happened to run.
    */
-  private writePatternWindow(pattern: Pattern, target?: Branch): void {
+  private writePatternWindow(pattern: Pattern, target?: Branch, untilCtx?: number): void {
     const branch = target ?? this.branches.find((b) => !b.stopped);
     if (!branch || branch.stopped) return;
-    const ctxNow = this.deps.ctx.currentTime;
-    const positionNowMs = (branch.startOffsetSec + (ctxNow - branch.startedAtCtx)) * 1000;
-    let fromMs = Math.max(0, positionNowMs, this.patternWrittenUntilMs);
-    let startCtx = branch.startedAtCtx + (fromMs / 1000 - branch.startOffsetSec);
-    if (startCtx < ctxNow) {
-      fromMs += (ctxNow - startCtx) * 1000;
-      startCtx = ctxNow;
-    }
-    const toMs = fromMs + PATTERN_LOOKAHEAD_MS;
+    const origin = Math.max(this.deps.ctx.currentTime, branch.startedAtCtx);
+    const startCtx = Math.max(origin, branch.patternEndCtx + PATTERN_CURVE_GAP_SEC);
+    // `untilCtx`: write out to a fixed instant instead of the usual horizon (a branch being handed over).
+    const durationSec = (untilCtx ?? origin + PATTERN_LOOKAHEAD_MS / 1000) - startCtx;
+    if (durationSec < PATTERN_MIN_WINDOW_SEC) return; // already written far enough ahead
 
-    const points = Math.max(2, Math.round(((toMs - fromMs) / 1000) * PATTERN_CURVE_HZ));
+    const fromMs = (branch.startOffsetSec + (startCtx - branch.startedAtCtx)) * 1000;
+    const points = Math.max(2, Math.round(durationSec * PATTERN_CURVE_HZ) + 1);
     const curve = new Float32Array(points);
     for (let i = 0; i < points; i++) {
-      curve[i] = evaluatePattern(pattern, fromMs + ((toMs - fromMs) * i) / (points - 1));
+      curve[i] = evaluatePattern(pattern, fromMs + (durationSec * 1000 * i) / (points - 1));
     }
     try {
-      branch.patternGain.gain.setValueCurveAtTime(curve, startCtx, (toMs - fromMs) / 1000);
+      branch.patternGain.gain.setValueCurveAtTime(curve, startCtx, durationSec);
+      branch.patternEndCtx = startCtx + durationSec;
     } catch {
-      /* Web Audio throws when curves overlap; the next tick starts after patternWrittenUntilMs. */
+      // Refused (an engine with its own idea of what overlaps). `patternEndCtx` is left alone, so the
+      // next tick tries again from "now" instead of skipping the window; the count makes it visible.
+      this.patternCurveRejections++;
     }
-    this.patternWrittenUntilMs = toMs;
   }
 
   dispose(): void {

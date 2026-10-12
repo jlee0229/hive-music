@@ -32,6 +32,11 @@ export const SLEW_RATE_MS_PER_SEC = 2;
 export const CTX_SAMPLE_WINDOW = 10;
 /** A half-arrived pair older than this is forgotten (its partner was lost). */
 const PAIR_TTL_MS = 5000;
+/**
+ * Allowance, ms, when testing two samples for contradiction (see `dropContradicted`): what an honest
+ * local clock can drift against the server across the 30 s window (100 ppm is 3 ms) plus stamp noise.
+ */
+export const CONSISTENCY_SLACK_MS = 5;
 
 export const localNow = (): number =>
   typeof performance !== "undefined" ? performance.timeOrigin + performance.now() : Date.now();
@@ -77,6 +82,10 @@ export class ClockModel {
   lastStepMs = 0;
   accepted = 0;
   rejected = 0;
+  /** Halves of failed pairs taken anyway because their RTT beat the window's best (diagnostics). */
+  rescued = 0;
+  /** Times a new sample proved older ones wrong and they were dropped — a clock step was seen (diagnostics). */
+  stepsDetected = 0;
   /**
    * True when pair validation had to be relaxed because nothing was accepted within the first burst
    * window. A phone with no clock cannot play at all, so a degraded clock beats no clock — surfaced
@@ -123,6 +132,27 @@ export class ClockModel {
     const seenGap = second.t1 - first.t1;
     if (Math.abs(seenGap - sentGap) > NTP_PROBE_PAIR_TOLERANCE_MS) {
       this.rejected += 2;
+      /*
+       * A failed pair is not always worthless. The error of any sample is bounded by its round trip
+       * (|error| ≤ rtt/2 less the path floor), so a half whose RTT beats the best sample in the window
+       * has a *tighter* bound than the one the clock is running on, whatever the pair test thought of
+       * its neighbour. On a jittery cellular link nine pairs in ten fail the 2 ms test; discarding them
+       * all starved min-RTT selection of exactly the samples it exists to find.
+       *
+       * The same arithmetic makes a failed half admissible as a *witness*: if its interval cannot overlap
+       * the one the clock is running on, the offset has moved (see `dropContradicted`), and waiting for a
+       * pair that passes — one in ten, here — means playing the whole step out of sync meanwhile.
+       */
+      if (this.samples.length > 0 && this.rttMs !== null && this.estimateOffsetMs !== null) {
+        const better = rttOf(first) <= rttOf(second) ? first : second;
+        const contradicts =
+          Math.abs(offsetOf(better) - this.estimateOffsetMs) > (rttOf(better) + this.rttMs) / 2 + CONSISTENCY_SLACK_MS;
+        if (rttOf(better) < this.rttMs || contradicts) {
+          this.rescued++;
+          this.accept(better);
+          return "accepted";
+        }
+      }
       // Fallback: if the path is so jittery that nothing has been accepted by the end of the burst
       // window, take the better half of the pair rather than leave the phone with no clock.
       if (this.samples.length === 0 && this.firstProbeLocal !== null && t3 - this.firstProbeLocal > NTP_BURST_WINDOW_MS) {
@@ -145,7 +175,9 @@ export class ClockModel {
 
   private accept(p: Probe): void {
     this.accepted++;
-    this.samples.push({ offset: (p.t1 - p.t0 + (p.t2 - p.t3)) / 2, rtt: rttOf(p), at: p.t3 });
+    const fresh: Sample = { offset: offsetOf(p), rtt: rttOf(p), at: p.t3 };
+    this.dropContradicted(fresh);
+    this.samples.push(fresh);
     if (this.samples.length > NTP_WINDOW) this.samples.shift();
     /*
      * Age matters as much as count, and min-RTT selection does not know that. One lucky low-RTT sample
@@ -164,6 +196,29 @@ export class ClockModel {
     this.estimateOffsetMs = best.offset;
     this.rttMs = best.rtt;
     this.applySlew(p.t3);
+  }
+
+  /**
+   * Drops every held sample the new one contradicts.
+   *
+   * A sample pins the true offset inside `offset ± rtt/2` — that is arithmetic, not statistics (both
+   * one-way delays are ≥ 0). So two samples whose intervals do not overlap cannot both describe the same
+   * clock: the offset *moved* between them, and the older one describes a clock that no longer exists.
+   * That is a phone whose `performance.now()` stood still while it slept, an NTP step on the server, a
+   * room that came back on another machine.
+   *
+   * Min-RTT selection cannot see this — it has no notion of time — and the age limit does not help when
+   * the local clock is the thing that stopped: a low-RTT sample from before the step kept winning until
+   * 30 newer ones had pushed it out, and for those 15–20 s the phone played the full step out of sync
+   * while reporting a 2 ms RTT.
+   */
+  private dropContradicted(fresh: Sample): void {
+    const before = this.samples.length;
+    if (before === 0) return;
+    this.samples = this.samples.filter(
+      (s) => Math.abs(s.offset - fresh.offset) <= (s.rtt + fresh.rtt) / 2 + CONSISTENCY_SLACK_MS,
+    );
+    if (this.samples.length < before) this.stepsDetected++;
   }
 
   private prunePending(now: number): void {
@@ -213,6 +268,7 @@ export class ClockModel {
 }
 
 const rttOf = (p: Probe): number => p.t3 - p.t0 - (p.t2 - p.t1);
+const offsetOf = (p: Probe): number => (p.t1 - p.t0 + (p.t2 - p.t3)) / 2;
 
 /**
  * serverTime ↔ AudioContext time. Sampled in the same synchronous tick as each probe so a server time
@@ -236,6 +292,16 @@ export class CtxMapper {
 
   get sampleCount(): number {
     return this.samples.length;
+  }
+
+  /**
+   * Forgets every sample. The relation between the local clock and `ctx.currentTime` is only constant
+   * while one context runs uninterrupted: a suspension stops ctx time while local time carries on, and a
+   * rebuilt context counts from zero. Samples from before either describe a mapping that no longer
+   * exists, and the median would keep answering with it until six newer ones had arrived.
+   */
+  reset(): void {
+    this.samples = [];
   }
 
   /** median(ctx − local/1000), seconds; null before the first sample. */

@@ -17,8 +17,19 @@ export class Emitter {
   off<K extends keyof HiveEvents>(event: K, handler: HiveEvents[K]): void {
     this.handlers.get(event)?.delete(handler as (...a: never[]) => void);
   }
+  /**
+   * One listener throwing must not stop the others — or the caller. `state` is emitted from inside the
+   * socket's message handler *before* the audio engine is handed the snapshot, so an exception in any
+   * UI listener used to mean the phone silently never applied that ROOM_STATE.
+   */
   emit<K extends keyof HiveEvents>(event: K, ...args: Parameters<HiveEvents[K]>): void {
-    for (const h of this.handlers.get(event) ?? []) (h as unknown as (...a: Parameters<HiveEvents[K]>) => void)(...args);
+    for (const h of [...(this.handlers.get(event) ?? [])]) {
+      try {
+        (h as unknown as (...a: Parameters<HiveEvents[K]>) => void)(...args);
+      } catch (err) {
+        console.error(`[hive] a "${event}" listener threw`, err);
+      }
+    }
   }
 }
 
@@ -187,6 +198,14 @@ export class RoomTransport {
       };
 
       sock.onclose = () => {
+        /*
+         * A socket that dies before WELCOME settles its connect() — as a rejection. It used to leave the
+         * promise pending forever: the player page awaits connect() inside its Join handler, so a server
+         * that was unreachable at the moment of the tap left that handler (and its "joining" state)
+         * hanging even after a later automatic reconnect had succeeded. Reconnecting carries on below
+         * regardless; this only tells the caller that *this* attempt is over.
+         */
+        if (!welcomed) reject(new Error("connection closed before WELCOME"));
         if (this.ws !== sock) return; // a newer socket already replaced this one
         if (this.closedByUser) return this.setConnection("closed");
         this.attempt++;

@@ -26,6 +26,16 @@ const READY_REANNOUNCE_MIN_MS = 1000 / ROOM_STATE_MAX_HZ;
 /** Web Audio's render quantum, frames. The granularity of every `start(when)` we make. */
 const RENDER_QUANTUM = 128;
 
+/**
+ * How long `AudioContext.resume()` may stay pending before unlock() gives up on that context. iOS can
+ * leave the promise unsettled (neither resolved nor rejected) while the audio session is interrupted.
+ */
+const RESUME_TIMEOUT_MS = 4000;
+
+/** Silence watchdog: how often it looks, and the least real time a "the audio clock stood still" verdict needs. */
+const WATCHDOG_INTERVAL_MS = 2000;
+const WATCHDOG_MIN_WALL_MS = 1000;
+
 /** Stem-load retry backoff: doubling from this, capped, so a 404 fixture cannot be re-fetched at 2 Hz. */
 const LOAD_RETRY_BASE_MS = 1000;
 const LOAD_RETRY_MAX_MS = 30_000;
@@ -78,6 +88,11 @@ export function createBrowserAudioEngine(
   let appliedPitchSemitones = 0;
   const pitchedCache = new Map<string, Map<string, BufferLike>>();
   let pitchJobKey: string | null = null;
+  /**
+   * Variants whose render threw (an allocation failure on a long track, mostly). Without this the next
+   * snapshot — and every one after it — started the same seconds-long render again.
+   */
+  const pitchFailed = new Set<string>();
   /*
    * Read live, never cached. `ctx.outputLatency` is not a constant of the device: on iOS it changes when
    * the audio session does — a calibration run switches to play-and-record, a Bluetooth speaker or a
@@ -117,8 +132,13 @@ export function createBrowserAudioEngine(
    */
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let watchdogLastCtxTime = -1;
+  /** `performance.now()` beside `watchdogLastCtxTime`: a stall is only a stall across real elapsed time. */
+  let watchdogLastWallMs = -1;
   let watchdogStalledTicks = 0;
   let zombieSuspected = false;
+  /** Set by dispose(): async work that finishes afterwards (a download, a wake-lock grant) must not revive the engine. */
+  let disposed = false;
+  let onVisibilityChange: (() => void) | null = null;
   /**
    * Per-track load failures, for backoff. A failed load is retried — a phone that gives up on the first
    * flaky download is a phone that is silent for the whole set — but not on every snapshot: `ROOM_STATE`
@@ -127,6 +147,12 @@ export function createBrowserAudioEngine(
    * That is a thundering herd on the one code path where the server is least able to take it.
    */
   const loadFailures = new Map<string, { attempts: number; atMs: number }>();
+  /**
+   * The retry for a failed load. It cannot be left to "the next snapshot": the server publishes
+   * ROOM_STATE only when something changes, so in a settled room the next snapshot may be a whole song
+   * away — and a phone whose download failed once would sit silent until then.
+   */
+  let loadRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /*
    * The clock arrives asynchronously, so the refused schedule has to be retried by an event rather than
@@ -159,9 +185,17 @@ export function createBrowserAudioEngine(
 
   async function requestWakeLock(): Promise<void> {
     const nav = navigator as unknown as AudioSessionNavigator;
-    if (!nav.wakeLock) return;
+    if (!nav.wakeLock || disposed) return;
+    // One sentinel at a time: every extra one is a lock dispose() cannot release, i.e. a screen that
+    // never sleeps again after the party.
+    if (wakeLock && !wakeLock.released) return;
     try {
-      wakeLock = await nav.wakeLock.request("screen");
+      const sentinel = await nav.wakeLock.request("screen");
+      if (disposed || (wakeLock && !wakeLock.released)) {
+        void sentinel.release().catch(() => {});
+        return;
+      }
+      wakeLock = sentinel;
     } catch {
       /* not fatal: HTTPS-only, and refused when the tab is hidden */
     }
@@ -181,7 +215,7 @@ export function createBrowserAudioEngine(
       }
     };
 
-    document.addEventListener("visibilitychange", () => {
+    onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       void requestWakeLock();
       if (ctx && ctx.state !== "running") {
@@ -190,19 +224,49 @@ export function createBrowserAudioEngine(
       } else {
         resync("visible");
       }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+
+  /**
+   * `context.resume()`, but bounded. A resume() that never settles left unlock() pending forever, and
+   * the player page ignores further taps while one is in flight — the phone sat on "Resuming…" for the
+   * rest of the party. On a timeout the context is marked as a zombie, so the *next* tap rebuilds it
+   * instead of asking the same dead context again.
+   */
+  async function resumeOrGiveUp(context: AudioContext): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const gaveUp = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), RESUME_TIMEOUT_MS);
     });
+    try {
+      const outcome = await Promise.race([context.resume().then(() => "resumed" as const), gaveUp]);
+      if (outcome === "timeout" && context.state !== "running") {
+        if (context === ctx) zombieSuspected = true;
+        throw new Error("AudioContext.resume() did not settle; tap again to rebuild the audio context");
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Creates the AudioContext and the scheduler on first use. Safe to call inside a gesture. */
   function ensureContext(): AudioContext {
     if (!ctx) {
       ctx = makeContext();
+      mapper.reset(); // samples from a previous context are in another time base altogether
       bindContextState(ctx);
       scheduler = new Scheduler({ ctx: ctx as unknown as CtxLike, clock, mapper, now: host.now });
       scheduler.setMuted(muted);
       startWatchdog();
     }
     return ctx;
+  }
+
+  function resetWatchdogBaseline(): void {
+    watchdogLastCtxTime = -1;
+    watchdogLastWallMs = -1;
+    watchdogStalledTicks = 0;
   }
 
   function startWatchdog(): void {
@@ -212,21 +276,27 @@ export function createBrowserAudioEngine(
       const s = ctx.state as AudioContextState | "interrupted";
       if (s === "suspended" || s === "interrupted") {
         // A missed statechange event: the UI must fall back to Tap to resume, not play-screen silence.
-        watchdogLastCtxTime = -1;
-        watchdogStalledTicks = 0;
+        resetWatchdogBaseline();
         if (state === "ready" || state === "unlocked") setState("locked");
         return;
       }
       if (s !== "running") {
-        watchdogLastCtxTime = -1;
-        watchdogStalledTicks = 0;
+        resetWatchdogBaseline();
         return;
       }
       // Zombie detection: 'running' but the audio clock is frozen (iOS after interruptions/route
       // changes). One free resume() attempt; still frozen a tick later → Tap to resume, and that
       // tap rebuilds the context because resume() provably does nothing here.
       const t = ctx.currentTime;
-      if (watchdogLastCtxTime >= 0 && t - watchdogLastCtxTime < 0.1) {
+      const wallMs = performance.now();
+      /*
+       * Judged only across real elapsed time. Timer callbacks bunch up — a main thread held by a decode
+       * or a CHOIR render delivers a late tick and the next one right behind it — and two ticks 50 ms
+       * apart see "no progress" on a perfectly healthy context. Two of those in a row put "Tap to
+       * resume" on a phone that was playing fine.
+       */
+      const judged = watchdogLastCtxTime >= 0 && wallMs - watchdogLastWallMs >= WATCHDOG_MIN_WALL_MS;
+      if (judged && t - watchdogLastCtxTime < 0.1) {
         watchdogStalledTicks++;
         if (watchdogStalledTicks === 1) void ctx.resume().catch(() => {});
         if (watchdogStalledTicks >= 2) {
@@ -234,17 +304,36 @@ export function createBrowserAudioEngine(
           watchdogStalledTicks = 0;
           setState("locked");
         }
-      } else {
+      } else if (judged) {
         watchdogStalledTicks = 0;
+        if (zombieSuspected) {
+          // The clock is moving again (the free resume() worked late, or iOS let go): this context is
+          // not a zombie after all. Leaving the flag set would tear a healthy context down on the next
+          // tap, and leaving the state "locked" would keep "Tap to resume" over audible music.
+          zombieSuspected = false;
+          if (state === "locked") {
+            setState(loadedTrackId ? "ready" : "unlocked");
+            reschedule(true, "watchdog: the audio clock is moving again");
+          }
+        }
       }
-      watchdogLastCtxTime = t;
+      if (judged || watchdogLastCtxTime < 0) {
+        watchdogLastCtxTime = t;
+        watchdogLastWallMs = wallMs;
+      }
       // Self-heal: the room is playing, this phone is ready, the context runs — but nothing is
       // scheduled. Whatever dropped the branches (a swallowed error, a missed snapshot), rebuild.
       const shouldPlay = lastRoom?.transport.state === "playing" && !!loadedTrackId && lastRoom.track?.id === loadedTrackId;
       if (shouldPlay && state === "ready" && !scheduler.playing && clock.offsetMs !== null) {
         reschedule(true, "watchdog: silent while the transport is playing");
       }
-    }, 2000);
+    }, WATCHDOG_INTERVAL_MS);
+  }
+
+  /** Starts the local↔ctx mapping afresh for a context that has just (re)started. */
+  function remap(current: AudioContext): void {
+    mapper.reset();
+    mapper.addSample(host.now(), current.currentTime);
   }
 
   function bindContextState(current: AudioContext): void {
@@ -252,6 +341,7 @@ export function createBrowserAudioEngine(
       // 'interrupted' is iOS-only and not in the TS union.
       const s = current.state as AudioContextState | "interrupted";
       if (s === "running") {
+        remap(current);
         if (loadedTrackId) setState("ready");
         reschedule(true, "context running");
       } else if (s === "suspended" || s === "interrupted") {
@@ -284,12 +374,27 @@ export function createBrowserAudioEngine(
     });
   }
 
+  const loadBackoffMs = (attempts: number): number =>
+    Math.min(LOAD_RETRY_MAX_MS, LOAD_RETRY_BASE_MS * 2 ** (attempts - 1));
+
   /** True while a previously failed track is still inside its backoff window. */
   function loadBackoffHolds(trackId: string): boolean {
     const failure = loadFailures.get(trackId);
     if (!failure) return false;
-    const waitMs = Math.min(LOAD_RETRY_MAX_MS, LOAD_RETRY_BASE_MS * 2 ** (failure.attempts - 1));
-    return performance.now() - failure.atMs < waitMs;
+    return performance.now() - failure.atMs < loadBackoffMs(failure.attempts);
+  }
+
+  /** Arms the one retry timer for the end of `trackId`'s backoff window. */
+  function scheduleLoadRetry(trackId: string): void {
+    if (loadRetryTimer) clearTimeout(loadRetryTimer);
+    const attempts = loadFailures.get(trackId)?.attempts ?? 1;
+    loadRetryTimer = setTimeout(() => {
+      loadRetryTimer = null;
+      // Only if the room still wants what failed; a newer track has its own load (and its own timer).
+      if (ctx && lastRoom?.track && loadedTrackId !== lastRoom.track.id && !loadBackoffHolds(lastRoom.track.id)) {
+        void loadTrack(lastRoom);
+      }
+    }, loadBackoffMs(attempts) + 1);
   }
 
   async function loadTrack(room: RoomState): Promise<void> {
@@ -310,6 +415,8 @@ export function createBrowserAudioEngine(
           const buffer = opts.loadStem
             ? await opts.loadStem(url, context)
             : await defaultLoadStem(url, context, (fraction) => {
+                // A superseded download stops here instead of competing with the track that replaced it.
+                if (loadingTrackId !== track.id) throw new Error("superseded by a newer track");
                 done[i] = fraction;
                 // Decode is the last 5 %: a stem that has arrived is not yet a stem you can play.
                 loadProgress = (done.reduce((a, b) => a + b, 0) / total) * 0.95;
@@ -319,16 +426,20 @@ export function createBrowserAudioEngine(
           return [stem, buffer] as const;
         }),
       );
-      if (loadingTrackId !== track.id) return; // SET_TRACK landed again while we were decoding
+      // The track changed again while this one was downloading: the newer load owns the engine now.
+      if (loadingTrackId !== track.id) return;
       const map = new Map<string, BufferLike>(buffers);
       originalBuffers = map;
       appliedPitchSemitones = 0;
       pitchedCache.clear(); // pitched copies are ~35MB each; only the current track earns them
+      pitchFailed.clear();
       scheduler?.setBuffers(map, track.id);
       loadedTrackId = track.id;
       loadFailures.delete(track.id);
       loadProgress = 1;
-      setState("ready");
+      // "ready" means it can sound. A context that was interrupted during the download cannot, and the
+      // UI has to be asking for the tap rather than showing the playing screen over silence.
+      setState(context.state === "running" ? "ready" : "locked");
       emit.emit("audio", state, loadProgress);
       // AUDIO_READY means *every* stem is decoded, never "the first one is playable".
       lastReadyAnnounceAt = performance.now();
@@ -336,10 +447,13 @@ export function createBrowserAudioEngine(
       reschedule(true, "track loaded");
       void ensurePitchedBuffers(); // a CHOIR assignment may already be waiting for this track
     } catch (err) {
+      // A superseded load failing is not news, and must not drag the state back from the live one.
+      if (loadingTrackId !== track.id) return;
       const previous = loadFailures.get(track.id);
       loadFailures.set(track.id, { attempts: (previous?.attempts ?? 0) + 1, atMs: performance.now() });
       emit.emit("error", "AUDIO_LOAD_FAILED", err instanceof Error ? err.message : String(err));
       setState("unlocked");
+      scheduleLoadRetry(track.id);
     } finally {
       if (loadingTrackId === track.id) loadingTrackId = null;
     }
@@ -367,26 +481,41 @@ export function createBrowserAudioEngine(
     const key = `${trackId}:${want}`;
     let pitched = pitchedCache.get(key);
     if (!pitched) {
-      if (pitchJobKey === key) return; // already rendering this exact variant
+      // One render at a time: it is seconds of main-thread work per stem, and a second one started
+      // beside it (the assignment moved again) only makes both late. The snapshot or the finishing
+      // render below comes back for whatever is wanted by then.
+      if (pitchJobKey !== null || pitchFailed.has(key)) return;
       pitchJobKey = key;
       try {
         const rendered = new Map<string, BufferLike>();
         for (const [stem, raw] of originalBuffers) {
           const src = raw as AudioBuffer;
           const shifted = await pitchShiftMono(src.getChannelData(0), want);
-          if (loadedTrackId !== trackId) return; // track changed mid-render; buffers are stale
+          // Track changed mid-render (stale), or the engine was disposed under us (no context).
+          if (loadedTrackId !== trackId || !ctx) return;
           const out = ctx.createBuffer(1, shifted.length, src.sampleRate);
           out.copyToChannel(shifted as Float32Array<ArrayBuffer>, 0);
           rendered.set(stem, out);
         }
         pitchedCache.set(key, rendered);
         pitched = rendered;
+      } catch (err) {
+        // The phone keeps playing the unshifted audio; note it once instead of retrying forever.
+        pitchFailed.add(key);
+        // (Not an `error` event: the host screen toasts those verbatim, and this one has no action.)
+        console.warn("[hive] CHOIR render failed; playing unshifted", err);
+        return;
       } finally {
         if (pitchJobKey === key) pitchJobKey = null;
+        // What is wanted may have changed while this one rendered (or was abandoned for a new track).
+        if ((lastAssignment?.pitchSemitones ?? 0) !== want || loadedTrackId !== trackId) {
+          queueMicrotask(() => void ensurePitchedBuffers());
+        }
       }
     }
-    // Only apply if this variant is still what the (possibly newer) assignment wants.
-    if (loadedTrackId === trackId && (lastAssignment?.pitchSemitones ?? 0) === want) {
+    // Only apply if this variant is still what the (possibly newer) assignment wants. `scheduler` is read
+    // again on purpose: a zombie rebuild during the render replaced it.
+    if (scheduler && loadedTrackId === trackId && (lastAssignment?.pitchSemitones ?? 0) === want) {
       scheduler.setBuffers(pitched, trackId);
       appliedPitchSemitones = want;
       reschedule(true, "pitch ready");
@@ -446,7 +575,7 @@ export function createBrowserAudioEngine(
       // The Calibrate tap doubles as unlock() for the host (docs/04): the worklet has to run in a
       // context that is already running, and this is the gesture we are inside.
       const context = ensureContext();
-      if (context.state !== "running") await context.resume();
+      if (context.state !== "running") await resumeOrGiveUp(context);
       const signal = { cancelled: false };
       cancelState = signal;
       try {
@@ -475,19 +604,32 @@ export function createBrowserAudioEngine(
      * Must be called from inside a tap. Everything WebKit cares about happens before the first await.
      */
     async unlock(): Promise<void> {
+      disposed = false; // a tap after dispose() starts a fresh engine life rather than a half-dead one
       if (zombieSuspected && ctx) {
         // The watchdog saw 'running' with a frozen clock and resume() changed nothing — this
         // context will never make sound again. Rebuild it inside the tap; the decoded AudioBuffers
         // are context-independent and are re-attached below.
         zombieSuspected = false;
+        /*
+         * The old scheduler has to be stopped, not just dropped. It still owns a 1 Hz drift timer and a
+         * 100 ms pattern timer, and against a context whose clock is frozen the drift check reads an
+         * error that grows by a second every second — so it "resynced" forever, building a new set of
+         * source and gain nodes on the dead context every tick for the rest of the session.
+         */
+        try {
+          scheduler?.dispose();
+        } catch {
+          /* a dead context may refuse automation calls; the timers are stopped before those run */
+        }
         try {
           ctx.onstatechange = null;
-          void ctx.close();
+          void ctx.close().catch(() => {});
         } catch {
           /* already closed */
         }
         ctx = null;
         scheduler = null;
+        resetWatchdogBaseline(); // the new context counts from zero; the old baseline means nothing
       }
       const context = ensureContext();
       if (loadedTrackId && originalBuffers && scheduler) {
@@ -513,7 +655,7 @@ export function createBrowserAudioEngine(
       } catch {
         /* older engines: resume() alone is enough */
       }
-      await context.resume();
+      await resumeOrGiveUp(context);
       bindLifecycle();
       void requestWakeLock();
 
@@ -543,7 +685,9 @@ export function createBrowserAudioEngine(
       return muted;
     },
 
-    ctxNow: () => (ctx && ctx.state !== "closed" ? ctx.currentTime : null),
+    // Only while running: a suspended context's clock stands still, so pairing it with a moving local
+    // clock would feed the mapping one wrong sample per probe for as long as the interruption lasts.
+    ctxNow: () => (ctx && ctx.state === "running" ? ctx.currentTime : null),
 
     applyRoom(room: RoomState, assignment: Assignment | null): void {
       lastRoom = room;
@@ -585,10 +729,36 @@ export function createBrowserAudioEngine(
         }
       }
       if (!ctx) return; // still locked: nothing to schedule, the snapshot is remembered
-      if (room.track && room.track.id !== loadedTrackId && state !== "loading" && !loadBackoffHolds(room.track.id)) {
+      /*
+       * `loadingTrackId`, not `state === "loading"`: a second track change that lands while the first is
+       * still downloading has to start *its* load now. Waiting for the stale one to finish meant decoding
+       * a song nobody will hear, announcing AUDIO_READY for it, and then relying on a further snapshot —
+       * which a quiet room does not send — to notice the room had moved on.
+       */
+      if (room.track && room.track.id !== loadedTrackId && room.track.id !== loadingTrackId && !loadBackoffHolds(room.track.id)) {
         if (loadedTrackId && room.track.id !== loadedTrackId) {
           loadedTrackId = null; // SET_TRACK to something else: drop the old buffers' claim
-          scheduler?.stopAll("track changed");
+          /*
+           * A playlist advance arrives LEAD_MS before the old song ends, with the new one already
+           * "playing" from a start a few seconds ahead. The old song's last moments are allowed to play
+           * out (the scheduler bounds how long); a manual SET_TRACK stops the transport, and is a cut.
+           */
+          const t = room.transport;
+          const handover =
+            t.state === "playing" && scheduler && clock.offsetMs !== null
+              ? scheduler.ctxTimeForServerTime(t.serverTimeAtTrackZero, assignment, useOutputLatency())
+              : undefined;
+          scheduler?.stopAll("track changed", handover);
+          /*
+           * Release the old song *now*, not when the new one has finished decoding. Decoded PCM is the
+           * biggest thing a phone holds for us (a 4-minute stereo stem is ~85 MB, a CHOIR copy ~40 MB
+           * more), and keeping it through the next download and decode meant two songs in memory at the
+           * moment the tab is already at its peak — which is when iOS kills it.
+           */
+          originalBuffers = null;
+          pitchedCache.clear();
+          appliedPitchSemitones = 0;
+          scheduler?.clearBuffers();
         }
         void loadTrack(room);
         return;
@@ -684,11 +854,37 @@ export function createBrowserAudioEngine(
         slewPpm: scheduler?.lastSlewPpm ?? 0,
         slewEnabled: scheduler?.slewEnabled ?? false,
         resyncCount: scheduler?.resyncCount ?? 0,
+        // Pattern curves Web Audio refused; anything but 0 is a stretch of STROBE/WAVE left un-automated.
+        patternCurveRejections: scheduler?.patternCurveRejections ?? 0,
+        // Decoded buffers this engine keeps reachable: originals, CHOIR copies, and the scheduler's set.
+        buffersHeld:
+          (originalBuffers?.size ?? 0) +
+          [...pitchedCache.values()].reduce((n, m) => n + m.size, 0) +
+          (scheduler?.bufferCount ?? 0),
       };
     },
 
+    /**
+     * Ends this engine for good. Everything that could keep it alive is released here, because the
+     * closure holds the decoded stems (tens to hundreds of MB): one surviving timer or DOM listener and
+     * a phone that leaves a hive and joins another carries both songs until the tab dies.
+     */
     dispose(): void {
-      scheduler?.dispose();
+      disposed = true;
+      if (loadRetryTimer) clearTimeout(loadRetryTimer);
+      loadRetryTimer = null;
+      if (watchdogTimer) clearInterval(watchdogTimer);
+      watchdogTimer = null;
+      if (onVisibilityChange && typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+      onVisibilityChange = null;
+      listenersBound = false;
+      try {
+        scheduler?.dispose();
+      } catch {
+        /* a context that is already gone may refuse; nothing left to stop */
+      }
       scheduler = null;
       if (wakeLock && !wakeLock.released) void wakeLock.release().catch(() => {});
       wakeLock = null;
@@ -697,7 +893,14 @@ export function createBrowserAudioEngine(
         void ctx.close().catch(() => {});
       }
       ctx = null;
-      state = "locked";
+      loadedTrackId = null;
+      loadingTrackId = null; // an in-flight download now counts as superseded
+      originalBuffers = null;
+      pitchedCache.clear();
+      lastRoom = null;
+      lastAssignment = null;
+      // Through setState, so the UI hears it: after a KICK this is the only notice that the audio stopped.
+      setState("locked");
     },
   };
 
@@ -723,7 +926,12 @@ async function defaultLoadStem(
       if (done) break;
       chunks.push(value);
       received += value.byteLength;
-      onProgress(Math.min(1, received / totalBytes));
+      try {
+        onProgress(Math.min(1, received / totalBytes));
+      } catch (err) {
+        void reader.cancel().catch(() => {});
+        throw err;
+      }
     }
     bytes = new Uint8Array(received);
     let at = 0;
