@@ -1,26 +1,45 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ROOM_CODE_LENGTH } from "@hive/protocol";
 import { apiUrl } from "@/lib/hive/client";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { Creators } from "@/components/Creators";
+
+/** The server accepts 3–8 character codes (random ones are 4); see ClientMessageSchema JOIN. */
+const CODE_MIN = 3;
+const CODE_MAX = 8;
+/** A cold server can take a few seconds to answer; past this the guest needs their button back. */
+const HOST_TIMEOUT_MS = 10_000;
+
+/**
+ * Whatever was typed or pasted, as a hive code: a whole join link gives up its code, and spaces,
+ * dashes and lower case (how codes get read out and texted) are forgiven.
+ */
+function codeFromInput(value: string): string {
+  const fromLink = value.match(/\/j\/([^/?#\s]+)/i);
+  return (fromLink ? fromLink[1]! : value).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, CODE_MAX);
+}
 
 export default function LandingPage() {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [hosting, setHosting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const codeInput = useRef<HTMLInputElement>(null);
 
   async function hostAHive() {
     setHosting(true);
     setError(null);
+    const abort = new AbortController();
+    // Without a deadline a request that never answers left "Creating your hive…" up for good.
+    const deadline = setTimeout(() => abort.abort(), HOST_TIMEOUT_MS);
     try {
       const res = await fetch(`${apiUrl()}/rooms`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
+        signal: abort.signal,
       });
       if (!res.ok) throw new Error(`POST /rooms failed: ${res.status}`);
       const data = (await res.json()) as { code: string; hostKey: string };
@@ -31,16 +50,22 @@ export default function LandingPage() {
       }
       router.push(`/h/${data.code}`);
     } catch {
-      setError("Could not reach the hive server. Is it running?");
+      setError("Couldn't start a hive. Check your connection and try again.");
       setHosting(false);
+    } finally {
+      clearTimeout(deadline);
     }
   }
 
   function join(e: React.FormEvent) {
     e.preventDefault();
-    const c = code.trim().toUpperCase();
-    if (c.length < 3) return;
-    router.push(`/j/${c}`);
+    if (code.length < CODE_MIN) {
+      // Used to do nothing at all, which reads as a dead button.
+      setError("Enter the code from the host's screen.");
+      codeInput.current?.focus();
+      return;
+    }
+    router.push(`/j/${code}`);
   }
 
   return (
@@ -75,11 +100,21 @@ export default function LandingPage() {
           <label className="flex grow flex-col gap-1.5 text-xs" style={{ color: "var(--muted)" }}>
             Hive code
             <input
+              ref={codeInput}
               value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, ROOM_CODE_LENGTH + 2))}
+              onChange={(e) => {
+                setCode(codeFromInput(e.target.value));
+                setError(null);
+              }}
               aria-label="Hive code"
-              placeholder="BZQ7"
-              className="font-mono h-13 w-full rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none"
+              // Not a real code: the old demo code here read as "this is the code to type".
+              placeholder="CODE"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              enterKeyHint="go"
+              className="font-mono h-13 w-full rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none focus-visible:border-[color:var(--text)]"
               style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
             />
           </label>
@@ -91,7 +126,11 @@ export default function LandingPage() {
             Join
           </button>
         </form>
-        {error ? <p className="text-center text-sm" style={{ color: "var(--health-bad)" }}>{error}</p> : null}
+        {error ? (
+          <p role="alert" className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
+            {error}
+          </p>
+        ) : null}
         <Creators big />
         <a
           href="https://github.com/piar1243/hive-music-official"

@@ -46,7 +46,7 @@ function resampleLinear(input: Float32Array, srcRate: number, dstRate: number): 
 
 /** Parses, downmixes and resamples a stem to TARGET_SAMPLE_RATE; throws if it exceeds MAX_STEM_SEC. */
 export function normalizeStem(buf: Uint8Array): NormalizedStem {
-  const parsed = parseWav(buf);
+  const parsed = parseWav(buf, { maxDurationSec: MAX_STEM_SEC }); // refused from the header, before any allocation
   if (parsed.durationSec > MAX_STEM_SEC) {
     throw new Error(`stem is ${parsed.durationSec.toFixed(1)}s, over the ${MAX_STEM_SEC}s limit`);
   }
