@@ -43,6 +43,14 @@ const WATCHDOG_MIN_WALL_MS = 1000;
  */
 const PITCH_KEEP_IDLE_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Pre-download of the next song: the most bytes it may hold (all stems together), and how long a failed
+ * attempt waits before the next one. One 4-minute song is ~19 MB of 16-bit WAV; anything that would not
+ * fit is left to the ordinary load at the advance.
+ */
+const PREFETCH_MAX_BYTES = 80 * 1024 * 1024;
+const PREFETCH_RETRY_MS = 30_000;
+
 /** Stem-load retry backoff: doubling from this, capped, so a 404 fixture cannot be re-fetched at 2 Hz. */
 const LOAD_RETRY_BASE_MS = 1000;
 const LOAD_RETRY_MAX_MS = 30_000;
@@ -65,11 +73,29 @@ type AudioSessionNavigator = Omit<Navigator, "wakeLock"> & {
   wakeLock?: { request(type: "screen"): Promise<WakeLockSentinelLike> };
 };
 
+export interface FetchStemOptions {
+  signal?: AbortSignal;
+  /** 0..1 of the bytes, when the server sent a Content-Length. */
+  onProgress?: (fraction: number) => void;
+  /** "low" for the pre-download of the next song: it must never compete with anything else. */
+  priority?: "low" | "auto";
+  /** Give up (reject) if the file turns out larger than this. */
+  maxBytes?: number;
+}
+
 export interface BrowserAudioEngineOptions {
   /** Injected in tests; defaults to the real AudioContext. */
   createContext?: () => AudioContext;
-  /** Injected in tests; defaults to fetch + decodeAudioData. */
+  /**
+   * Injected in tests; defaults to fetch + decodeAudioData. A test that supplies only this gets the
+   * one-step load and no pre-download (there are no bytes to hold); `fetchStem` + `decodeStem` are the
+   * two halves the engine really uses.
+   */
   loadStem?: (url: string, ctx: AudioContext) => Promise<AudioBuffer>;
+  /** The download half: the stem file's bytes. Defaults to a streaming `fetch`. */
+  fetchStem?: (url: string, o: FetchStemOptions) => Promise<ArrayBuffer>;
+  /** The decode half. Defaults to `ctx.decodeAudioData` (which detaches the bytes it is given). */
+  decodeStem?: (bytes: ArrayBuffer, ctx: AudioContext) => Promise<AudioBuffer>;
   /**
    * How the CHOIR render gives the event loop back between slices. Defaults to pitch.ts's own
    * (a MessageChannel hop, with a timer every 16th); tests pass a timer-only yield so the render runs
@@ -133,6 +159,26 @@ export function createBrowserAudioEngine(
     const ol = ctx?.outputLatency;
     return typeof ol === "number" && ol > 0 ? ol * 1000 : null;
   };
+  /**
+   * The next song's stem files, downloaded ahead of the advance (RoomState.nextTrack).
+   *
+   * What is kept is the *bytes*, not decoded audio. The network is the slow part — an 18.9 MB WAV is
+   * 15 s on a 10 Mbit/s link against a 5.6 s advance lead — and the bytes are the cheap part: 18 MB
+   * against 39 MB decoded at 48 kHz, held for minutes. Decoding is ~0.2 s on a desktop (measured in
+   * Chromium, off the main thread; call it 1–2 s on a phone), which the lead covers several times over,
+   * so it is done when the song actually becomes current. Holding two decoded songs is exactly what
+   * ENGINE-SYNC-14 removed.
+   */
+  let prefetch: {
+    trackId: string;
+    /** One entry per stem that has been started; resolves with the bytes, or null if it failed. */
+    stems: Map<string, Promise<ArrayBuffer | null>>;
+    abort: AbortController;
+    bytes: number;
+    /** Set when a load takes the entries over: the runner must not start further stems. */
+    adopted: boolean;
+  } | null = null;
+  let prefetchFailedAt = new Map<string, number>();
   let lastRoom: RoomState | null = null;
   let lastAssignment: Assignment | null = null;
   let listenersBound = false;
@@ -424,9 +470,112 @@ export function createBrowserAudioEngine(
     }, loadBackoffMs(attempts) + 1);
   }
 
+  const stemUrl = (trackId: string, stem: string): string => `${clientOpts.apiUrl}/audio/${trackId}/${stem}.wav`;
+  /** Two-phase loading (and with it the pre-download) is available unless a test injected only `loadStem`. */
+  const twoPhase = !opts.loadStem || !!opts.fetchStem;
+  const fetchStem = opts.fetchStem ?? defaultFetchStem;
+  const decodeStem = opts.decodeStem ?? ((bytes: ArrayBuffer, c: AudioContext) => c.decodeAudioData(bytes));
+
+  function dropPrefetch(): void {
+    if (!prefetch) return;
+    prefetch.abort.abort();
+    prefetch = null;
+  }
+
+  /**
+   * Starts, keeps or drops the pre-download according to the latest snapshot. Called on every snapshot
+   * and when a load finishes; cheap when there is nothing to do.
+   *
+   * It only *starts* while the current song is loaded and the room is playing — never while this phone
+   * is still downloading what it should be playing now — and what it has fetched is kept through a
+   * pause. It is dropped as soon as the hint changes or goes away.
+   */
+  function maybePrefetch(): void {
+    const room = lastRoom;
+    const next = room?.nextTrack ?? null;
+    if (prefetch && (!next || next.id !== prefetch.trackId || next.id === loadedTrackId)) dropPrefetch();
+    if (!twoPhase || disposed || !ctx || !room || !next || prefetch) return;
+    if (next.id === room.track?.id || next.id === loadedTrackId) return; // the single-song loop
+    if (room.transport.state !== "playing") return;
+    if (!loadedTrackId || loadedTrackId !== room.track?.id || loadingTrackId !== null) return;
+    const failedAt = prefetchFailedAt.get(next.id);
+    if (failedAt !== undefined && performance.now() - failedAt < PREFETCH_RETRY_MS) return;
+
+    const job = { trackId: next.id, stems: new Map<string, Promise<ArrayBuffer | null>>(), abort: new AbortController(), bytes: 0, adopted: false };
+    prefetch = job;
+    void (async () => {
+      // One stem at a time: this is background work on the same link the clock probes use.
+      for (const stem of next.stems) {
+        if (job.adopted || job.abort.signal.aborted) return;
+        const one = fetchStem(stemUrl(next.id, stem), {
+          signal: job.abort.signal,
+          priority: "low",
+          maxBytes: PREFETCH_MAX_BYTES - job.bytes,
+        }).then(
+          (bytes) => {
+            job.bytes += bytes.byteLength;
+            return bytes;
+          },
+          () => null,
+        );
+        job.stems.set(stem, one);
+        if ((await one) === null) {
+          // Not an error anyone needs to hear about: the ordinary load at the advance still works.
+          if (!job.abort.signal.aborted && !job.adopted) {
+            prefetchFailedAt.set(next.id, performance.now());
+            if (prefetch === job) dropPrefetch();
+          }
+          return;
+        }
+      }
+    })();
+  }
+
+  /**
+   * One stem, decoded: from the pre-download if this track has one (finished or still arriving — never
+   * a second download of the same file), otherwise fetched now.
+   */
+  async function loadStemTwoPhase(
+    track: NonNullable<RoomState["track"]>,
+    stem: string,
+    context: AudioContext,
+    adopted: { stems: Map<string, Promise<ArrayBuffer | null>> } | null,
+    onProgress: (fraction: number) => void,
+  ): Promise<AudioBuffer> {
+    const superseded = (): boolean => loadingTrackId !== track.id;
+    let bytes = (await adopted?.stems.get(stem)) ?? null;
+    if (bytes !== null) onProgress(1);
+    else {
+      bytes = await fetchStem(stemUrl(track.id, stem), {
+        onProgress: (fraction) => {
+          // A superseded download stops here instead of competing with the track that replaced it.
+          if (superseded()) throw new Error("superseded by a newer track");
+          onProgress(fraction);
+        },
+      });
+    }
+    if (superseded()) throw new Error("superseded by a newer track");
+    /*
+     * Decode once the song that just ended has finished sounding. Its last 600 ms are still playing
+     * from buffers that cannot be freed until they stop, and decoding beside them means two decoded
+     * songs plus the file in memory at once — for the sake of starting a decode a moment sooner that
+     * is not needed for another five seconds.
+     */
+    const tailSec = (scheduler?.tailEndsAtCtx ?? 0) - context.currentTime;
+    if (tailSec > 0 && tailSec <= 2) await new Promise<void>((resolve) => setTimeout(resolve, tailSec * 1000 + 20));
+    if (superseded()) throw new Error("superseded by a newer track");
+    return decodeStem(bytes, context);
+  }
+
   async function loadTrack(room: RoomState): Promise<void> {
     const track = room.track;
     if (!ctx || !track || loadingTrackId === track.id || loadedTrackId === track.id) return;
+    // Whatever was pre-downloaded is either this track (taken over below) or no longer wanted.
+    const adopted = prefetch?.trackId === track.id ? prefetch : null;
+    if (adopted) {
+      adopted.adopted = true;
+      prefetch = null;
+    } else dropPrefetch();
     loadingTrackId = track.id;
     loadProgress = 0;
     setState("loading");
@@ -438,12 +587,9 @@ export function createBrowserAudioEngine(
     try {
       const buffers = await Promise.all(
         track.stems.map(async (stem, i) => {
-          const url = `${clientOpts.apiUrl}/audio/${track.id}/${stem}.wav`;
-          const buffer = opts.loadStem
-            ? await opts.loadStem(url, context)
-            : await defaultLoadStem(url, context, (fraction) => {
-                // A superseded download stops here instead of competing with the track that replaced it.
-                if (loadingTrackId !== track.id) throw new Error("superseded by a newer track");
+          const buffer = !twoPhase
+            ? await opts.loadStem!(stemUrl(track.id, stem), context)
+            : await loadStemTwoPhase(track, stem, context, adopted, (fraction) => {
                 done[i] = fraction;
                 // Decode is the last 5 %: a stem that has arrived is not yet a stem you can play.
                 loadProgress = (done.reduce((a, b) => a + b, 0) / total) * 0.95;
@@ -473,6 +619,7 @@ export function createBrowserAudioEngine(
       send({ type: "AUDIO_READY", trackId: track.id });
       reschedule(true, "track loaded");
       void ensurePitchedBuffers(); // a CHOIR assignment may already be waiting for this track
+      queueMicrotask(maybePrefetch); // a phone that joined mid-song starts on the next one from here
     } catch (err) {
       // A superseded load failing is not news, and must not drag the state back from the live one.
       if (loadingTrackId !== track.id) return;
@@ -483,6 +630,8 @@ export function createBrowserAudioEngine(
       scheduleLoadRetry(track.id);
     } finally {
       if (loadingTrackId === track.id) loadingTrackId = null;
+      // A pre-download this load took over and then did not use (the room moved on again) is stopped.
+      if (adopted && loadedTrackId !== track.id) adopted.abort.abort();
     }
   }
 
@@ -818,6 +967,7 @@ export function createBrowserAudioEngine(
       }
       void ensurePitchedBuffers(); // CHOIR: assignment pitch may have changed with this snapshot
       reschedule(false, "room state");
+      maybePrefetch();
     },
 
     get lastCorrectionMs() {
@@ -909,6 +1059,9 @@ export function createBrowserAudioEngine(
         resyncCount: scheduler?.resyncCount ?? 0,
         // Pattern curves Web Audio refused; anything but 0 is a stretch of STROBE/WAVE left un-automated.
         patternCurveRejections: scheduler?.patternCurveRejections ?? 0,
+        // The pre-download of the next song: which track, and how many bytes have arrived.
+        prefetchTrackId: prefetch?.trackId ?? null,
+        prefetchBytes: prefetch?.bytes ?? 0,
         // True while a CHOIR render is in flight (the phone is still on the previous buffers).
         pitchRendering: pitchJob !== null,
         // Decoded buffers this engine keeps reachable: originals, CHOIR copies, and the scheduler's set.
@@ -951,6 +1104,8 @@ export function createBrowserAudioEngine(
       loadedTrackId = null;
       loadingTrackId = null; // an in-flight download now counts as superseded
       abortPitchJob();
+      dropPrefetch();
+      prefetchFailedAt = new Map();
       originalBuffers = null;
       pitchedVariant = null;
       lastRoom = null;
@@ -963,42 +1118,50 @@ export function createBrowserAudioEngine(
   return engine;
 }
 
-/** fetch + decodeAudioData with byte progress from Content-Length when the server sends it. */
-async function defaultLoadStem(
-  url: string,
-  ctx: AudioContext,
-  onProgress: (fraction: number) => void,
-): Promise<AudioBuffer> {
-  const res = await fetch(url);
+/**
+ * The stem file's bytes, with progress from Content-Length when the server sends it. With a known
+ * length the bytes are written straight into their final buffer — collecting chunks and then joining
+ * them holds the file twice, which for an 18.9 MB song is 19 MB for nothing.
+ */
+async function defaultFetchStem(url: string, o: FetchStemOptions = {}): Promise<ArrayBuffer> {
+  const init: RequestInit & { priority?: "low" | "auto" } = { signal: o.signal };
+  if (o.priority === "low") init.priority = "low"; // Fetch Priority; ignored where it is not supported
+  const res = await fetch(url, init);
   if (!res.ok) throw new Error(`stem ${url} failed: ${res.status}`);
   const totalBytes = Number(res.headers.get("content-length") ?? 0);
-  let bytes = new Uint8Array(0);
-  if (res.body && totalBytes > 0) {
-    const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let received = 0;
+  const tooBig = (n: number): boolean => o.maxBytes !== undefined && n > o.maxBytes;
+  if (tooBig(totalBytes)) {
+    void res.body?.cancel().catch(() => {});
+    throw new Error(`stem ${url} is ${totalBytes} bytes: over the limit for this request`);
+  }
+  if (!res.body || totalBytes <= 0) {
+    const all = await res.arrayBuffer();
+    if (tooBig(all.byteLength)) throw new Error(`stem ${url} is over the limit for this request`);
+    o.onProgress?.(1);
+    return all;
+  }
+  const reader = res.body.getReader();
+  let bytes = new Uint8Array(totalBytes);
+  let received = 0;
+  try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
-      received += value.byteLength;
-      try {
-        onProgress(Math.min(1, received / totalBytes));
-      } catch (err) {
-        void reader.cancel().catch(() => {});
-        throw err;
+      if (received + value.byteLength > bytes.byteLength) {
+        // The server sent more than it announced (it should not): grow rather than truncate.
+        const grown = new Uint8Array(Math.max(bytes.byteLength * 2, received + value.byteLength));
+        grown.set(bytes.subarray(0, received));
+        bytes = grown;
       }
+      bytes.set(value, received);
+      received += value.byteLength;
+      if (tooBig(received)) throw new Error(`stem ${url} is over the limit for this request`);
+      o.onProgress?.(Math.min(1, received / totalBytes));
     }
-    bytes = new Uint8Array(received);
-    let at = 0;
-    for (const c of chunks) {
-      bytes.set(c, at);
-      at += c.byteLength;
-    }
-  } else {
-    bytes = new Uint8Array(await res.arrayBuffer());
-    onProgress(1);
+  } catch (err) {
+    void reader.cancel().catch(() => {});
+    throw err;
   }
-  // decodeAudioData detaches the buffer, so hand it a copy we no longer need.
-  return ctx.decodeAudioData(bytes.buffer as ArrayBuffer);
+  // decodeAudioData detaches what it is given, so this exact-length buffer is handed over whole.
+  return (received === bytes.byteLength ? bytes.buffer : bytes.buffer.slice(0, received)) as ArrayBuffer;
 }
