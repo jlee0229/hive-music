@@ -29,6 +29,20 @@ describe("uploadErrorMessage", () => {
     expect(uploadErrorMessage(0, null)).toBe(UPLOAD_ERRORS.network);
     expect(uploadErrorMessage(502, null)).toBe(UPLOAD_ERRORS.network);
   });
+  test("rate limits, a busy server and a full library each get their own sentence, not 'check the connection'", () => {
+    expect(uploadErrorMessage(429, { error: "rate_limited" })).toBe(UPLOAD_ERRORS.busy);
+    expect(uploadErrorMessage(503, { error: "busy" })).toBe(UPLOAD_ERRORS.busy);
+    expect(uploadErrorMessage(507, { error: "library full" })).toBe(UPLOAD_ERRORS.full);
+    expect(uploadErrorMessage(507, null)).toBe(UPLOAD_ERRORS.full);
+  });
+  test("owned uploads: no_library asks for a reload; a full library and a quota refusal are one plain sentence each", () => {
+    expect(uploadErrorMessage(400, { error: "no_library" })).toBe("Reload this page, then try again.");
+    expect(uploadErrorMessage(507, { error: "library_full" })).toBe("The song library is full.");
+    expect(uploadErrorMessage(413, { error: "library_full" })).toBe("The song library is full.");
+    expect(uploadErrorMessage(413, { error: "quota", message: "You have 40 songs here already. Remove one first." })).toBe("You have 40 songs here already. Remove one first.");
+    expect(uploadErrorMessage(413, { error: "body too large" })).toBe("body too large"); // a sentence from the server is shown as it is
+    expect(uploadErrorMessage(413, { error: "TOO_BIG" })).toBe(UPLOAD_ERRORS.tooBig);
+  });
   test("a refused host key is explained, never printed as NOT_HOST", () => {
     const msg = uploadErrorMessage(403, { error: "NOT_HOST", message: "a valid hostKey is required to upload a track" } as { error: string });
     expect(msg).toBe(UPLOAD_ERRORS.notHost);

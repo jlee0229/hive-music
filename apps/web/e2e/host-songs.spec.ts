@@ -100,12 +100,14 @@ test.describe("upload", () => {
   test("host upload: a refused host key is explained in words, and a good upload shows progress then returns to idle", async ({ page }) => {
     let status = 403;
     let posted = 0;
+    const authHeaders: string[] = [];
     await page.route(`${MOCK_URL}/tracks`, async (route) => {
       if (route.request().method() === "OPTIONS") {
-        return route.fulfill({ status: 204, headers: { ...CORS, "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type" } });
+        return route.fulfill({ status: 204, headers: { ...CORS, "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type, authorization" } });
       }
       if (route.request().method() !== "POST") return route.continue();
       posted++;
+      authHeaders.push(route.request().headers()["authorization"] ?? "");
       if (status === 403) {
         return route.fulfill({ status: 403, contentType: "application/json", headers: CORS, body: JSON.stringify({ error: "NOT_HOST", message: "a valid hostKey is required to upload a track" }) });
       }
@@ -132,5 +134,7 @@ test.describe("upload", () => {
     await expect(page.getByRole("button", { name: "+ Upload a song" })).toBeEnabled({ timeout: 15_000 });
     await expect(alert).toHaveCount(0);
     expect(posted).toBe(2);
+    // The key travels as a Bearer header, which the server checks before reading the (large) body.
+    expect(authHeaders).toEqual(["Bearer mock-host-key", "Bearer mock-host-key"]);
   });
 });

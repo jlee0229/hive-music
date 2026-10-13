@@ -3,14 +3,14 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { TrackLibraryEntry } from "@hive/protocol";
 import { reconnectDelayMs, type CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
-import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
+import { clearHostKey, getHostKey, getLibraryKey, setHostKey } from "@/lib/hive/storage";
+import { fetchLibrary, removeErrorText, removeTrack, type LibraryTrack } from "@/lib/hive/library";
 import { classifyHostClaim } from "@/lib/hive/host-claim";
-import { planStart, showTuningScreen, tuningNote } from "@/lib/hive/start-flow";
+import { planStart, showTuningScreen, tuningCancelLabel, tuningNote } from "@/lib/hive/start-flow";
 import { HOST_TOAST_MS, hostErrorText } from "@/lib/hive/host-errors";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
@@ -32,10 +32,19 @@ import { Creators } from "@/components/Creators";
 type HostProblem = "ended" | "elsewhere" | "unreachable";
 
 /**
- * Bootstraps (or recovers) the hostKey, then mounts HostRoom keyed on that hostKey. A room can be
- * re-created server-side with a fresh key (a Fly restart, or the idle-room timeout) out from under
- * an already-open host tab; HostRoom calls onDemoted the moment it notices, and remounting by key
- * gives it a genuinely fresh HiveClient rather than trying to mutate an already-connected one.
+ * Decides whether this browser is the host of `code`, then mounts HostRoom.
+ *
+ * The host key is the only thing that makes a browser the host (server audit SG-01/SG-02): it is
+ * handed out once, by "Host a hive", and after that the server only ever echoes it to a caller who
+ * already presents it. So:
+ *  - a key is stored: mount and let the socket JOIN with it. No request first — the JOIN itself
+ *    re-creates a room that was lost to a server restart, under the same code and key.
+ *  - no key is stored: `POST /rooms {code}` is only a question. 403 = a live hive that this browser
+ *    does not host; 400 = no such hive. (A 2xx carrying a key only happens in fixed-code demo mode.)
+ *  - the server says "not host" to a page that holds a key (NOT_HOST on a command): ask once more
+ *    with `{code, hostKey}`. 2xx = the key is good, re-join under a fresh client id; anything else
+ *    is one of the screens above. The key is never thrown away to "re-claim" one: that request is
+ *    exactly what the server now refuses.
  */
 export default function HostPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = use(params);
@@ -52,90 +61,100 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
     setStorageRead(true);
   }, [roomCode]);
   const [problem, setProblem] = useState<HostProblem | null>(null);
+  /** True while a demoted page is asking the server about its key; HostRoom is unmounted meanwhile. */
+  const [checking, setChecking] = useState(false);
   const [recoveryClientId, setRecoveryClientId] = useState<string | null>(null);
   const recoveryAttemptedRef = useRef(false);
 
-  const claimHostKey = useCallback(async () => {
-    let status: number | null = null;
-    let body: unknown = null;
-    try {
-      const res = await fetch(`${apiUrl()}/rooms`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code: roomCode }),
-      });
-      status = res.status;
-      body = await res.json().catch(() => null);
-    } catch {
-      /* network error: status stays null */
-    }
-    const claim = classifyHostClaim(status, body);
-    if (claim.kind === "ok") {
-      setHostKey(claim.code, claim.hostKey);
-      setHostKeyState(claim.hostKey);
-    } else {
-      setProblem(claim.kind);
-    }
-  }, [roomCode]);
+  /** POST /rooms {code, hostKey?} and what the answer means (lib/hive/host-claim.ts). */
+  const askServer = useCallback(
+    async (hostKey: string | null) => {
+      let status: number | null = null;
+      let body: unknown = null;
+      try {
+        const res = await fetch(`${apiUrl()}/rooms`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(hostKey ? { code: roomCode, hostKey } : { code: roomCode }),
+        });
+        status = res.status;
+        body = await res.json().catch(() => null);
+      } catch {
+        /* network error: status stays null */
+      }
+      return classifyHostClaim(status, body);
+    },
+    [roomCode],
+  );
 
+  // No key stored: ask whether this hive can be hosted from here at all.
   useEffect(() => {
     if (!storageRead || hostKeyState || problem) return;
     let cancelled = false;
-    (async () => {
-      if (!cancelled) await claimHostKey();
-    })();
+    void askServer(null).then((claim) => {
+      if (cancelled) return;
+      if (claim.kind === "ok") {
+        setHostKey(claim.code, claim.hostKey);
+        setHostKeyState(claim.hostKey);
+      } else {
+        setProblem(claim.kind);
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [storageRead, hostKeyState, problem, claimHostKey]);
+  }, [storageRead, hostKeyState, problem, askServer]);
 
+  // A command was answered NOT_HOST although this page holds a key. Ask the server about that key —
+  // keeping it — and re-join under a fresh client id if it is good. Once per page load: a second
+  // refusal right after a confirmed key means asking again is not the fix.
   const handleDemoted = useCallback(() => {
-    // At most one automatic recovery per page load: a second demotion right after a re-claimed
-    // key means re-asking isn't the fix (someone else holds this hive), so loop no further.
-    if (recoveryAttemptedRef.current) {
+    const key = getHostKey(roomCode);
+    if (recoveryAttemptedRef.current || !key) {
       setProblem("elsewhere");
       return;
     }
     recoveryAttemptedRef.current = true;
-    // A fresh clientId for the retry: the room already has a record under the old one, now
-    // demoted to kind: player, and both the mock and the real server carry an existing record's
-    // kind/plays forward untouched on reconnect (they only decide kind for a brand-new id) -- so
-    // reusing it would keep landing as a player even once this hostKey is the correct one.
-    setRecoveryClientId(crypto.randomUUID());
-    // Clearing this alone is enough: the bootstrap effect below re-fetches whenever hostKeyState
-    // is falsy, so calling claimHostKey() here too would just race a duplicate POST.
-    setHostKeyState(null);
-  }, []);
+    setChecking(true);
+    void askServer(key).then((claim) => {
+      if (claim.kind === "ok") {
+        // A fresh client id: whatever the room holds under the old one is not a host seat.
+        setRecoveryClientId(crypto.randomUUID());
+        setHostKeyState(claim.hostKey);
+      } else {
+        setProblem(claim.kind);
+      }
+      setChecking(false);
+    });
+  }, [roomCode, askServer]);
 
-  // The server answered NO_ROOM to our JOIN: it restarted (rooms live in memory) or the hive idled
-  // out. Nothing on this page can work any more, and the stored key is for a room that is gone.
+  // The room's list of hosts does not include this page: its key is not this room's key (someone
+  // else's hive under the same code, or a key from an earlier life of it).
+  const handleNotHost = useCallback(() => setProblem("elsewhere"), []);
+
+  // The server answered NO_ROOM to a JOIN that carried the key: the hive is gone and the key could
+  // not bring it back (it is older than the server will honour, or from before a secret change).
   const handleGone = useCallback(() => {
     clearHostKey(roomCode);
     setProblem("ended");
   }, [roomCode]);
 
   if (problem) {
+    const primary = "flex h-13 items-center justify-center rounded-2xl px-6 font-semibold";
+    const primaryStyle = { height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" };
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
         <h1 className="font-display text-2xl font-bold">
-          {problem === "ended" ? "This hive has ended" : problem === "elsewhere" ? "This hive is hosted on another phone" : "Can’t reach the hive"}
+          {problem === "ended" ? "This hive has ended" : problem === "elsewhere" ? "This hive is hosted on another device" : "Can’t reach the hive"}
         </h1>
         {problem === "unreachable" ? (
-          <button
-            onClick={() => setProblem(null)}
-            className="flex h-13 items-center justify-center rounded-2xl px-6 font-semibold"
-            style={{ height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" }}
-          >
+          <button onClick={() => setProblem(null)} className={primary} style={primaryStyle}>
             Try again
           </button>
         ) : null}
         {problem === "elsewhere" ? (
-          <Link
-            href={`/j/${roomCode}`}
-            className="flex h-13 items-center justify-center rounded-2xl px-6 font-semibold"
-            style={{ height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" }}
-          >
-            Join it instead
+          <Link href={`/j/${roomCode}`} className={primary} style={primaryStyle}>
+            Join as a guest
           </Link>
         ) : null}
         <Link
@@ -143,13 +162,13 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
           className="flex h-13 items-center justify-center rounded-2xl border px-6 font-semibold"
           style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
         >
-          {problem === "ended" ? "Host a new hive" : "Back home"}
+          {problem === "unreachable" ? "Back home" : "Start a new hive"}
         </Link>
       </main>
     );
   }
 
-  if (!hostKeyState) {
+  if (!hostKeyState || checking) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
         <span className="font-display text-2xl font-bold">Starting the hive…</span>
@@ -159,11 +178,13 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
   return (
     <HostRoom
-      key={hostKeyState}
+      // Remounted — a genuinely fresh HiveClient — when the key or the client id changes.
+      key={`${hostKeyState}:${recoveryClientId ?? ""}`}
       roomCode={roomCode}
       hostKey={hostKeyState}
       clientId={recoveryClientId ?? undefined}
       onDemoted={handleDemoted}
+      onNotHost={handleNotHost}
       onGone={handleGone}
     />
   );
@@ -174,17 +195,25 @@ function HostRoom({
   hostKey,
   clientId,
   onDemoted,
+  onNotHost,
   onGone,
 }: {
   roomCode: string;
   hostKey: string;
   clientId?: string;
+  /** A host command was refused (ERROR NOT_HOST). */
   onDemoted: () => void;
+  /** The room says this client is not one of its hosts. */
+  onNotHost: () => void;
+  /** The room does not exist (ERROR NO_ROOM). */
   onGone: () => void;
 }) {
   const [speakerOn, setSpeakerOn] = useState(false);
   const speakerOnInitialised = useRef(false);
-  const [tracks, setTracks] = useState<TrackLibraryEntry[]>([]);
+  const [tracks, setTracks] = useState<LibraryTrack[]>([]);
+  // This browser's library key: whose uploads are whose. Read once per mount, client-side only
+  // (HostRoom never renders on the server), and handed to the engine for the host's JOIN.
+  const [libraryKey] = useState(() => getLibraryKey());
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [startAnywayReady, setStartAnywayReady] = useState(false);
   const [sheetClientId, setSheetClientId] = useState<string | null>(null);
@@ -208,6 +237,8 @@ function HostRoom({
    * the transitions are observed from room snapshots and must not re-render or re-arm on their own.
    */
   const autoStartRef = useRef(false);
+  /** The same fact as autoStartRef, as state: only for what the tuning screen's button says. */
+  const [autoStarting, setAutoStarting] = useState(false);
   const autoStartSawTuningRef = useRef(false);
   const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -217,6 +248,7 @@ function HostRoom({
     plays: speakerOn,
     hostKey,
     clientId,
+    libraryKey,
     name: "Host",
     autoConnect: true,
   });
@@ -238,6 +270,16 @@ function HostRoom({
     return () => clearTimeout(t);
   }, [hostToast]);
 
+  // The drawers and the phone sheet are made of controls too. When the socket drops they fold
+  // away, so the host is looking at the banner and the greyed stage rather than tapping a list that
+  // cannot answer.
+  useEffect(() => {
+    if (connection !== "reconnecting" && connection !== "closed") return;
+    setShowSongs(false);
+    setShowPlayers(false);
+    setSheetClientId(null);
+  }, [connection]);
+
   // A demotion remounts HostRoom under a fresh key (see HostPage); this client's socket is
   // otherwise never closed, so the old, now-demoted connection would sit in the room as a zombie
   // player forever without this.
@@ -245,12 +287,17 @@ function HostRoom({
     return () => client.disconnect();
   }, [client]);
 
-  // A stale-keyed reconnect can also land as a plain player instead of an explicit NOT_HOST error
-  // (a brand new room has no host yet, so nothing rejects the JOIN -- it's just accepted as kind: player).
+  // "Am I the host?" is answered by the server's own list of hosts, never by this record's `kind`:
+  // a JOIN whose key is not the room's is admitted as a plain guest (a speaker!), and a keyless JOIN
+  // under a host's client id is a read-only observer whose `me` is the real host's record. The
+  // moment the room says this client is not a host, say so and leave — HostPage unmounts this
+  // component, which closes the socket (below), so the tab does not linger as a phantom speaker.
+  // (The engine does not surface WELCOME.isHost; when it does, this is the one place to read it.)
+  const amHost = room ? room.hostClientIds.includes(client.clientId) : null;
   useEffect(() => {
-    if (me && me.kind !== "host") onDemoted();
+    if (amHost === false && connection === "open") onNotHost();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me?.kind]);
+  }, [amHost, connection]);
 
   // The retained record's plays survives a reload/reconnect; the toggle should reflect it, not
   // silently reset to off and desync from what the server already has.
@@ -280,13 +327,11 @@ function HostRoom({
     let retry: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     const load = () => {
-      fetch(`${apiUrl()}/tracks`)
-        .then((r) => {
-          if (!r.ok) throw new Error(String(r.status));
-          return r.json();
-        })
-        .then((d: { tracks: TrackLibraryEntry[] }) => {
-          if (!cancelled) setTracks(d.tracks);
+      // As this hive's host (the key travels as a Bearer header): the shared songs plus this
+      // browser's own uploads, the latter marked `mine`.
+      fetchLibrary(apiUrl(), hostKey)
+        .then((list) => {
+          if (!cancelled) setTracks(list);
         })
         .catch(() => {
           if (!cancelled) retry = setTimeout(load, reconnectDelayMs(attempt++));
@@ -297,7 +342,7 @@ function HostRoom({
       cancelled = true;
       if (retry) clearTimeout(retry);
     };
-  }, [tracksVersion]);
+  }, [tracksVersion, hostKey]);
 
   // Auto-pick the first library track once the room exists and has none — and actually push it
   // to the server (host.setTrack), not just the local radio state: the mock scenarios always
@@ -385,9 +430,18 @@ function HostRoom({
     return () => clearTimeout(t);
   }, [starting, transportState]);
 
+  /** Remove one of this browser's own uploads (the drawer has already asked "Remove?"). */
+  async function removeSong(id: string) {
+    setUploadError(null);
+    const result = await removeTrack(apiUrl(), hostKey, id);
+    setUploadError(removeErrorText(result));
+    setTracksVersion((v) => v + 1); // whatever happened, show the list as the server has it now
+  }
+
   const finishAutoStart = useCallback(() => {
     if (!autoStartRef.current) return;
     autoStartRef.current = false;
+    setAutoStarting(false);
     autoStartSawTuningRef.current = false;
     if (autoStartTimerRef.current) {
       clearTimeout(autoStartTimerRef.current);
@@ -467,6 +521,7 @@ function HostRoom({
       return;
     }
     autoStartRef.current = true;
+    setAutoStarting(true);
     autoStartSawTuningRef.current = false;
     // Failsafe: a tuning that never starts or never ends (socket hiccup mid-run) must not strand
     // the party on the countdown screen; worst case the show starts on table compensation.
@@ -502,13 +557,22 @@ function HostRoom({
   // the Songs drawer, joining in the Join QR code page, and Start appears whenever the transport
   // is stopped. `room.track` is auto-picked seconds after the room exists (effect above).
   const showStage = !!room?.track;
+  // Not connected right now (a drop the engine is retrying, or a socket closed for good).
+  const offline = connection !== "open";
   const showCalibrate = showTuningScreen({ calibrationState, startedHere: tuningStartedHere, dismissed: calibrateDismissed });
   const tuneNote = tuningNote({ calibrationState, micBlocked });
 
   if (showCalibrate && room) {
     return (
       <main className="mx-auto min-h-dvh max-w-md">
-        <HostCalibrate room={room} clock={client.clock} host={client.host} onClose={() => setCalibrateDismissed(true)} micError={micError} />
+        <HostCalibrate
+          room={room}
+          clock={client.clock}
+          host={client.host}
+          onClose={() => setCalibrateDismissed(true)}
+          micError={micError}
+          cancelLabel={tuningCancelLabel({ autoStart: autoStarting })}
+        />
       </main>
     );
   }
@@ -560,6 +624,16 @@ function HostRoom({
           </button>
         </div>
 
+        {/* Everything below sends a command over the socket, and a command sent while the socket is
+            down is dropped, not queued — a tap during a Wi-Fi blip used to do nothing, silently. So
+            while it is down the controls are visibly off (the banner above says why); nothing stale
+            is replayed when it comes back. */}
+        <fieldset
+          disabled={offline}
+          data-testid="host-controls"
+          className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0"
+          style={offline ? { opacity: 0.45, pointerEvents: "none" } : undefined}
+        >
         {room.transport.state === "stopped" ? (
           <div className="flex flex-col gap-2.5">
             <span className="line-clamp-2 text-center text-[15px] [overflow-wrap:anywhere]" style={{ color: "var(--muted)" }}>
@@ -592,7 +666,7 @@ function HostRoom({
         )}
 
         <ModeChips current={room.mode.kind} host={client.host} />
-        {room.mode.kind === "STROBE" ? <StrobeControls mode={room.mode} bpm={room.track?.bpm ?? null} host={client.host} /> : null}
+        {room.mode.kind === "STROBE" ? <StrobeControls room={room} host={client.host} /> : null}
 
         <VibeBox host={client.host} />
         <SceneStrip room={room} clock={client.clock} />
@@ -648,6 +722,7 @@ function HostRoom({
             Players
           </button>
         </div>
+        </fieldset>
 
         {sheetClientId && room.clients[sheetClientId] ? (
           <PlayerSheet client={room.clients[sheetClientId]!} host={client.host} showParts={partsApply(room)} onClose={() => setSheetClientId(null)} />
@@ -680,6 +755,7 @@ function HostRoom({
               if (id !== room.track?.id) selectTrack(id);
             }}
             onUpload={(f) => void onUploadFile(f)}
+            onRemove={(id) => void removeSong(id)}
             onClose={() => setShowSongs(false)}
           />
         ) : null}

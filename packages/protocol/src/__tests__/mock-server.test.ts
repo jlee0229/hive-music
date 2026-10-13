@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { CALIBRATION_COUNTDOWN_MS, PROTOCOL_VERSION } from "../constants";
 import { parseServerMessage, type ClientMessage, type ServerMessage } from "../messages";
 import { startMockServer } from "../mock-server";
+import { CreateRoomRequestSchema, CreateRoomResponseSchema } from "../rest";
 
 const PORT = 18080 + Math.floor(Math.random() * 1000);
 const device = { userAgent: "test", platform: "test", browserFamily: "desktop-chrome" as const };
@@ -65,6 +66,7 @@ describe("mock server", () => {
     const r = await fetch(`http://localhost:${PORT}/rooms`, { method: "POST" }).then((r) => r.json());
     expect(r.code).toBe("BZQ7");
     expect(typeof r.hostKey).toBe("string");
+    expect(CreateRoomResponseSchema.safeParse(r).success).toBe(true);
     const t = await fetch(`http://localhost:${PORT}/tracks?q=syn`).then((r) => r.json());
     expect(t.tracks.length).toBeGreaterThan(0);
     expect(t.tracks[0].stems).toContain("drums");
@@ -513,6 +515,98 @@ describe("a viewer joins read-only (protocol v4, answers frontend R-13)", () => 
 });
 
 
+describe("owned uploads on the mock: everything is shared (contracts/library-scope.md)", () => {
+  test("no track is `mine`, nothing can be removed, and a host JOIN carrying a libraryKey is accepted and ignored", async () => {
+    const auth = { Authorization: `Bearer ${mock.hostKey}` };
+    const list = await fetch(`http://localhost:${PORT}/tracks`, { headers: auth }).then((r) => r.json());
+    expect(list.tracks.length).toBeGreaterThan(0);
+    expect(list.tracks.some((t: { mine?: boolean }) => t.mine)).toBe(false);
+
+    const shared = await fetch(`http://localhost:${PORT}/tracks/${list.tracks[0].id}`, { method: "DELETE", headers: auth });
+    expect(shared.status).toBe(403);
+    expect(await shared.json()).toEqual({ error: "not_owner" });
+    expect((await fetch(`http://localhost:${PORT}/tracks/no-such-track`, { method: "DELETE", headers: auth })).status).toBe(404);
+    const after = await fetch(`http://localhost:${PORT}/tracks`).then((r) => r.json());
+    expect(after.tracks.length).toBe(list.tracks.length);
+
+    // the browser may send DELETE and the Authorization header cross-origin
+    const preflight = await fetch(`http://localhost:${PORT}/tracks/x`, { method: "OPTIONS" });
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("DELETE");
+    expect(preflight.headers.get("access-control-allow-headers")).toContain("Authorization");
+
+    const libraryKey = "k".repeat(43);
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "lib-host-0001", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, libraryKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect((await host.next("WELCOME")).isHost).toBe(true);
+    const state = await host.next("ROOM_STATE", (m) => !!m.room.clients["lib-host-0001"]);
+    expect(JSON.stringify(state)).not.toContain(libraryKey); // never broadcast
+    host.ws.close();
+  }, 15_000);
+});
+
+describe("the host key is the only way to be host (mirrors apps/server, audit SG-01 / SG-02)", () => {
+  const post = (body: unknown) =>
+    fetch(`http://localhost:${PORT}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  test("POST /rooms {code}: the key is echoed only to a caller that already presents it", async () => {
+    const stranger = await post({ code: "BZQ7" });
+    expect(stranger.status).toBe(403);
+    const refused = await stranger.json();
+    expect(refused).toEqual({ error: "NOT_HOST" });
+    expect(JSON.stringify(refused)).not.toContain(mock.hostKey);
+
+    const wrong = await post({ code: "bzq7", hostKey: "not-the-key" });
+    expect(wrong.status).toBe(403);
+    expect(JSON.stringify(await wrong.json())).not.toContain(mock.hostKey);
+
+    const host = await post({ code: "BZQ7", hostKey: mock.hostKey });
+    expect(host.status).toBe(200);
+    expect((await host.json()).hostKey).toBe(mock.hostKey);
+
+    const gone = await post({ code: "NOPE" });
+    expect(gone.status).toBe(400);
+    expect(await gone.json()).toEqual({ error: "unknown room code" });
+
+    // The request schema carries the key; the response schema allows the server's `restored` flag.
+    expect(CreateRoomRequestSchema.safeParse({ code: "BZQ7", hostKey: mock.hostKey }).success).toBe(true);
+    expect(CreateRoomResponseSchema.safeParse({ code: "BZQ7", hostKey: "k", joinUrl: "u", restored: true }).success).toBe(true);
+  });
+
+  test("a keyless JOIN that names the host's clientId is a read-only observer: it cannot act, displace or demote", async () => {
+    // The host's id is public (ROOM_STATE.hostClientIds). Re-using it used to be a way in.
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "observed-host-1", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect((await host.next("WELCOME")).isHost).toBe(true);
+    const before = JSON.stringify(mock.room.clients["observed-host-1"]);
+
+    for (const kind of ["host", "player", "viewer"] as const) {
+      const copycat = new Fake();
+      await copycat.open();
+      copycat.send({ type: "JOIN", clientId: "observed-host-1", roomCode: "BZQ7", kind, plays: true, device, protocolVersion: PROTOCOL_VERSION });
+      expect((await copycat.next("WELCOME")).isHost).toBe(false);
+      await copycat.next("ROOM_STATE"); // it may watch
+      copycat.forget();
+      copycat.send({ type: "SET_MODE", mode: "STROBE", params: {} });
+      expect((await copycat.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+      copycat.forget();
+      copycat.send({ type: "KICK", clientId: "observed-host-1" });
+      expect((await copycat.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");
+      copycat.ws.close();
+    }
+    await new Promise((r) => setTimeout(r, 100)); // the copycats' closes are nobody's disconnect
+    expect(JSON.stringify(mock.room.clients["observed-host-1"])).toBe(before);
+    expect(mock.room.hostClientIds).toContain("observed-host-1");
+    expect(mock.room.mode.kind).not.toBe("STROBE");
+    // and the real host still has the room
+    host.forget();
+    host.send({ type: "SET_MODE", mode: "CHOIR", params: {} });
+    await host.next("ROOM_STATE", (m) => m.room.mode.kind === "CHOIR");
+    host.ws.close();
+  }, 15_000);
+});
+
 describe("JOIN re-derives kind and plays on every join (R-16, mirrors apps/server's P0-2 tests)", () => {
   /*
    * The old code spread `...existing` and never consulted `wantsHost`, so a client demoted once could
@@ -573,9 +667,12 @@ describe("JOIN re-derives kind and plays on every join (R-16, mirrors apps/serve
     impostor.ws.close();
   }, 15_000);
 
-  test("with nobody holding a freshly re-spawned room, a stale key still gets the host in", async () => {
-    // Ported from apps/server: a fixed-code room re-spawned after a restart mints a new hostKey that the
-    // host's stored key can never match. Needs its own server, because the shared one already has hosts.
+  test("with nobody holding the room yet, a wrong key still does not get anyone in as host", async () => {
+    // This test used to pin the opposite ("a stale key still gets the host in"): the vacant-host clause,
+    // ported from apps/server for fixed-code demo rooms. The server dropped it (audit SG-02) because "no
+    // host yet" is also true for every room before its host's first JOIN - any guest could take it - and
+    // a host whose room was lost now gets it back with its own signed key instead. Expectation changed
+    // deliberately. Needs its own server, because the shared one already has hosts.
     const port = 19_700 + Math.floor(Math.random() * 200);
     const fresh = startMockServer({ port, quiet: true, scenario: { players: [] } });
     await fresh.ready;
@@ -585,21 +682,22 @@ describe("JOIN re-derives kind and plays on every join (R-16, mirrors apps/serve
       await host.open();
       host.send({ type: "JOIN", clientId: "respawn-host-1", roomCode: "BZQ7", kind: "host", plays: false, hostKey: "a-key-from-the-previous-life", device, protocolVersion: PROTOCOL_VERSION });
       const welcome = await host.next("WELCOME");
-      expect(welcome.isHost).toBe(true);
-      expect(fresh.room.clients["respawn-host-1"]!.kind).toBe("host");
-      expect(fresh.room.hostClientIds).toContain("respawn-host-1");
+      expect(welcome.isHost).toBe(false);
+      expect(fresh.room.clients["respawn-host-1"]!.kind).toBe("player");
+      expect(fresh.room.hostClientIds).toHaveLength(0);
       host.ws.close();
     } finally {
       fresh.stop();
     }
   }, 15_000);
 
-  test("a JOIN may drop privilege: a host id that asks to be a viewer loses host authority with it", async () => {
+  test("a keyless JOIN cannot take host authority away either: a host id that asks to be a viewer only observes", async () => {
     /*
-     * The engine's addition, which `apps/server` does not need yet (there a host record can only stay a
-     * host). Authority lives in `hostClientIds` — `isHost` is derived from it — so a record that just
-     * asked to become a read-only display must lose it in the same breath. Dropping privilege on request
-     * can never be an attack; keeping it silently after the client asked not to have it can.
+     * This test used to pin "a JOIN may drop privilege: the host record becomes a viewer and leaves
+     * hostClientIds", on the reasoning that dropping privilege can never be an attack. It can: the host's
+     * id is public, so anyone could demote the host by naming it. Like apps/server (SG-02), a keyless JOIN
+     * that names a host record is now a read-only observer and the record is untouched. Expectation
+     * changed deliberately.
      */
     const host = new Fake();
     await host.open();
@@ -611,9 +709,8 @@ describe("JOIN re-derives kind and plays on every join (R-16, mirrors apps/serve
     await asViewer.open();
     asViewer.send({ type: "JOIN", clientId: "demote-me-0001", roomCode: "BZQ7", kind: "viewer", plays: true, device, protocolVersion: PROTOCOL_VERSION });
     expect((await asViewer.next("WELCOME")).isHost).toBe(false);
-    expect(mock.room.clients["demote-me-0001"]!.kind).toBe("viewer");
-    expect(mock.room.clients["demote-me-0001"]!.plays).toBe(false);
-    expect(mock.room.hostClientIds).not.toContain("demote-me-0001");
+    expect(mock.room.clients["demote-me-0001"]!.kind).toBe("host");
+    expect(mock.room.hostClientIds).toContain("demote-me-0001");
     asViewer.forget();
     asViewer.send({ type: "TRANSPORT", action: "PAUSE" });
     expect((await asViewer.next("ERROR", (m) => m.code === "NOT_HOST")).code).toBe("NOT_HOST");

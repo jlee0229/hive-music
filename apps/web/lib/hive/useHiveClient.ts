@@ -16,6 +16,8 @@ export interface UseHiveClientOptions {
   autoConnect?: boolean;
   /** Overrides the per-room persisted clientId. See app/h/[code]/page.tsx's demotion recovery for why. */
   clientId?: string;
+  /** Hosts only: this browser's library key (lib/hive/storage.ts getLibraryKey), sent inside the host's JOIN. */
+  libraryKey?: string;
 }
 
 export interface UseHiveClientResult {
@@ -35,7 +37,10 @@ export interface UseHiveClientResult {
 
 /** The one hook every page uses: one HiveClient per page, subscribed to every event, re-rendered from the latest snapshot. */
 export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
-  const clientOpts: HiveClientOptions = useMemo(
+  // `libraryKey` is an engine option that arrives with the owned-uploads work (HiveClientOptions
+  // gains it and the transport puts it in a host's JOIN). The intersection type keeps this file
+  // compiling on either side of that merge; an engine without the option ignores the extra field.
+  const clientOpts: HiveClientOptions & { libraryKey?: string } = useMemo(
     () => ({
       wsUrl: wsUrl(),
       apiUrl: apiUrl(),
@@ -45,8 +50,9 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
       hostKey: opts.hostKey,
       name: opts.name,
       clientId: opts.clientId,
+      libraryKey: opts.kind === "host" ? opts.libraryKey : undefined,
     }),
-    [opts.roomCode, opts.kind, opts.plays, opts.hostKey, opts.name, opts.clientId],
+    [opts.roomCode, opts.kind, opts.plays, opts.hostKey, opts.name, opts.clientId, opts.libraryKey],
   );
 
   const clientRef = useRef<HiveClient | null>(null);

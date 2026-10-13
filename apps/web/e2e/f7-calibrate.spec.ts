@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import { seedHostKey } from "./helpers/host-key";
 
 test.use({ mockScenario: "calibrating.json" });
 
@@ -33,6 +34,7 @@ test.describe("F7: Player Calibrating flashes on a real calibration run", () => 
 
   test("host startCalibration -> player flashes", async ({ browser }) => {
     const hostCtx = await browser.newContext();
+    await seedHostKey(hostCtx); // this context is the phone that created the hive
     const playerCtx = await browser.newContext();
     const hostPage = await hostCtx.newPage();
     const playerPage = await playerCtx.newPage();

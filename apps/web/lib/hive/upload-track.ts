@@ -24,6 +24,9 @@ export const UPLOAD_ERRORS = {
   tooLong: (sec: number) => `that song is ${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")} long — the limit is ${MAX_UPLOAD_SEC / 60} minutes`,
   network: "the upload didn't get through — check the connection and try again",
   notHost: "this phone can't add songs right now — reload the page and try again",
+  busy: "the server is busy — try again in a minute",
+  full: "The song library is full.",
+  noLibrary: "Reload this page, then try again.",
 } as const;
 
 /**
@@ -114,13 +117,20 @@ export function encodeWav16(samples: Float32Array, sampleRate: number): ArrayBuf
 }
 
 /** A sentence for a failed POST /tracks. `status` 0 = the request never got an answer. */
-export function uploadErrorMessage(status: number, body: { error?: unknown } | null): string {
+export function uploadErrorMessage(status: number, body: { error?: unknown; message?: unknown } | null): string {
+  const code = typeof body?.error === "string" ? body.error : "";
+  // Owned uploads: the room has no library owner (this page joined before it knew to send its key).
+  if (code === "no_library") return UPLOAD_ERRORS.noLibrary;
+  if (code === "library_full" || status === 507) return UPLOAD_ERRORS.full;
+  if (status === 429 || status === 503) return UPLOAD_ERRORS.busy;
   if (status === 0 || status >= 500) return UPLOAD_ERRORS.network;
   if (status === 401 || status === 403) return UPLOAD_ERRORS.notHost;
+  // A sentence from the server is shown as it is (validation: "stem 'mix': not a RIFF/WAVE file";
+  // a quota refusal). Bare identifiers are not for the host.
+  const sentence = [body?.message, body?.error].find((t): t is string => typeof t === "string" && /[a-z] [a-z]/.test(t));
+  if (sentence) return sentence;
   if (status === 413) return UPLOAD_ERRORS.tooBig;
-  const detail = typeof body?.error === "string" ? body.error : "";
-  // Server validation messages are sentences ("stem 'mix': not a RIFF/WAVE file"); bare identifiers are not for the host.
-  return detail && /[a-z] [a-z]/.test(detail) ? detail : `the upload was refused (${status})`;
+  return `the upload was refused (${status})`;
 }
 
 /**
@@ -135,6 +145,9 @@ export function postTrack(apiUrl: string, hostKey: string, title: string, wav: B
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${apiUrl}/tracks`);
+    // The key goes in a header as well as in the form: the server checks the header before it reads
+    // the body, so a request without the right to upload is refused before ~50 MB are received.
+    xhr.setRequestHeader("Authorization", `Bearer ${hostKey}`);
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total);
