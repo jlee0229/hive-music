@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LEAD_MS, PROTOCOL_VERSION } from "@hive/protocol";
+import { LEAD_MS, PROTOCOL_VERSION, TRACK_ADVANCE_LEAD_MS } from "@hive/protocol";
 import { Room, type Conn } from "../rooms";
 
 type WS = Bun.ServerWebSocket<Conn>;
@@ -88,8 +88,9 @@ describe("playlist auto-advance at the end of a song", () => {
     const t1 = room.room.transport;
     expect(t1.state).toBe("playing");
     if (t1.state === "playing") {
-      // the next song starts after a download breather, never before the old one ended
-      expect(t1.serverTimeAtTrackZero).toBeGreaterThanOrEqual(end0 + 4000);
+      // the next song starts a short breather after the old one ended, never before
+      expect(t1.serverTimeAtTrackZero).toBeGreaterThanOrEqual(end0 + TRACK_ADVANCE_LEAD_MS - 1000);
+      expect(t1.serverTimeAtTrackZero).toBeLessThanOrEqual(end0 + TRACK_ADVANCE_LEAD_MS + 1000);
     }
     room.destroy();
   });
