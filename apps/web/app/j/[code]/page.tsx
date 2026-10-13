@@ -9,6 +9,7 @@ import { apiUrl } from "@/lib/hive/client";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { getHostKey, getPlayerName, setPlayerName } from "@/lib/hive/storage";
 import { selfHealthLevel, stems as stemsOf } from "@/lib/hive/derive";
+import { rejoinDelayMs, stillWaitingForRoom } from "@/lib/hive/room-lost";
 import { RingerBanner } from "@/components/RingerBanner";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
 import { ProtocolMismatchBanner } from "@/components/ProtocolMismatchBanner";
@@ -103,7 +104,17 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   const roomCode = normalizeCode(code);
   const possibleCode = isPossibleCode(roomCode);
 
-  const [name, setName] = useState(() => getPlayerName());
+  // The remembered name and the kind of phone are read after mount, not during render: the server
+  // has neither, so reading them in the first client render made it differ from the server's HTML
+  // (a prefilled name box, the ringer banner on an iPhone) and React threw the page away and
+  // rebuilt it — hydration error #418 on every iPhone guest's join (PARTY-04).
+  const [name, setName] = useState("");
+  const [iosSafari, setIosSafari] = useState(false);
+  useEffect(() => {
+    const remembered = getPlayerName();
+    if (remembered) setName((typed) => typed || remembered);
+    setIosSafari(detectDevice().browserFamily === "ios-safari");
+  }, []);
   const [joinRequested, setJoinRequested] = useState(false);
   const [joining, setJoining] = useState(false);
   // A code of the wrong shape is refused by the server's schema, not answered with NO_ROOM — the
@@ -116,7 +127,9 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   // Has this page ever seen a connected host? A room is only "waiting for the host to come back"
   // if there was one to begin with.
   const [hostSeen, setHostSeen] = useState(false);
-  const device = detectDevice();
+  // This phone was in the hive, and the server now says there is no such hive: after a restart, until
+  // the host's phone brings the room back. The guest waits; the page keeps asking (see the effect below).
+  const [roomLost, setRoomLost] = useState(false);
   const [guestId] = useState(() => guestIdInHostBrowser(roomCode));
 
   const { client, room, me, connection, status, audio, connect, protocolMismatch } = useHiveClient({
@@ -138,15 +151,65 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
       setRemoved({ heading, detail });
       client.disconnect();
     };
-    return client.on("error", (code) => {
-      if (code === "KICKED") leave("Removed from hive", "The host removed this phone.");
+    /*
+     * NO_ROOM on a phone that was already in this hive is not a wrong code: the server restarted (a
+     * deploy, a crash) or the room idled out, and it is the host's phone that brings a room back. That
+     * used to end the party for the guest — "Hive not found", engine torn down — even when the host
+     * was back half a minute later (PARTY-01). Now the phone goes quiet, keeps its engine and its
+     * place, and asks again every so often; it gives up only after about five minutes of being told no.
+     *
+     * Quiet = muted, not disposed: the engine goes on "playing" a timeline nobody is on any more, and
+     * an AudioContext closed here could not be reopened without another tap. The guest's own mute
+     * choice is put back when the room returns.
+     */
+    let lostAt: number | null = null;
+    let attempt = 0;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let mutedBefore = false;
+    const offState = client.on("state", () => {
+      if (lostAt === null) return;
+      // A snapshot: the room is back and this phone is in it.
+      lostAt = null;
+      attempt = 0;
+      if (retry) clearTimeout(retry);
+      retry = null;
+      client.audio.setMuted(mutedBefore);
+      setRoomLost(false);
+    });
+    const offError = client.on("error", (code) => {
+      if (code === "KICKED") {
+        if (retry) clearTimeout(retry);
+        retry = null;
+        leave("Removed from hive", "The host removed this phone.");
+      }
       if (code === "NO_ROOM") {
+        // client.room is only ever set by a snapshot of this hive: null means this page never got in.
+        if (client.room && (lostAt === null || stillWaitingForRoom(lostAt, performance.now()))) {
+          if (lostAt === null) {
+            lostAt = performance.now();
+            mutedBefore = client.audio.muted;
+            client.audio.setMuted(true);
+            setRoomLost(true);
+          }
+          if (retry) clearTimeout(retry);
+          retry = setTimeout(() => {
+            retry = null;
+            // Refused again → another NO_ROOM lands here and arms the next try.
+            client.connect().catch(() => {});
+          }, rejoinDelayMs(attempt++));
+          return;
+        }
         const gone = hiveNotFound(roomCode);
         leave(gone.heading, gone.detail);
       }
       // The server refused the JOIN itself (before any room state): nothing will ever arrive.
       if (code === "BAD_MESSAGE" && !client.room) leave("Couldn't join", "Something went wrong joining this hive. Go back and try again.");
     });
+    return () => {
+      offState();
+      offError();
+      if (retry) clearTimeout(retry);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
 
@@ -272,7 +335,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
       }),
     [client],
   );
-  const hostAway = hostSeen && !hostHere;
+  const hostAway = roomLost || (hostSeen && !hostHere);
   const waitLine = hostAway ? "Waiting for the host to come back" : room?.transport.state === "paused" ? "Paused — waiting for the host" : "Waiting for the host to start";
 
   let view: View = "join";
@@ -286,7 +349,10 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   // screen in silence with no prompt.
   else if (joinRequested && (audio.state === "locked" || contextStalled)) view = joining ? "join" : "resume";
   else if (joinRequested) {
-    if (room?.calibration.state === "countdown" || room?.calibration.state === "running") view = "calibrating";
+    // The snapshot this page holds is of a room that is not there any more: whatever it says about
+    // playing or tuning, the guest is waiting.
+    if (roomLost) view = "ready";
+    else if (room?.calibration.state === "countdown" || room?.calibration.state === "running") view = "calibrating";
     else if (room?.transport.state === "playing") view = "playing";
     else view = "ready";
   }
@@ -517,7 +583,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
           style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
         />
 
-        {device.browserFamily === "ios-safari" ? <RingerBanner /> : null}
+        {iosSafari ? <RingerBanner /> : null}
 
         <div className="min-h-0 grow" />
 

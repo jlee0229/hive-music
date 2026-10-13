@@ -135,6 +135,12 @@ export class RoomTransport {
   /** The in-flight connect, so a second call joins it instead of opening a second socket. */
   private connecting: Promise<void> | null = null;
   /**
+   * The server answered this socket's JOIN with an ERROR (NO_ROOM, …) and left the socket open: it is
+   * connected to nothing. Nothing closes it, so the reconnect loop never runs again — connect() is
+   * what a caller that wants another try has to be able to use (PARTY-01).
+   */
+  private refused = false;
+  /**
    * What a host's JOIN says about "this phone plays too": the *current* choice, not the option the
    * client was created with. The server takes a host's `plays` from every JOIN, so re-JOINing with the
    * creation-time value (false) switched the host's own speaker off on every reconnect while the page's
@@ -183,7 +189,8 @@ export class RoomTransport {
       this.reconnectTimer = null;
     }
     const state = this.ws?.readyState;
-    if (state === WebSocket.OPEN) return Promise.resolve();
+    // An open socket whose JOIN was refused is not a connection: open() replaces it and JOINs again.
+    if (state === WebSocket.OPEN && !this.refused) return Promise.resolve();
     if (state === WebSocket.CONNECTING && this.connecting) return this.connecting;
     const pending = this.open();
     this.connecting = pending;
@@ -235,6 +242,7 @@ export class RoomTransport {
       }
       const sock = new WebSocket(this.opts.wsUrl);
       this.ws = sock;
+      this.refused = false;
       let welcomed = false;
 
       sock.onopen = () => {
@@ -269,6 +277,8 @@ export class RoomTransport {
           return;
         }
         if (msg.type === "ERROR" && !welcomed) {
+          // Before the hook: a listener may call connect() from inside it.
+          if (this.ws === sock) this.refused = true;
           this.hooks.onMessage?.(msg, at);
           reject(new Error(`${msg.code}: ${msg.message}`));
           return;
