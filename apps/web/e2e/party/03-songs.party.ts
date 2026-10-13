@@ -43,7 +43,7 @@ test("03-songs: upload, ownership, play, remove", async ({ party, server, browse
   const uploadLabels: string[] = [];
   const poll = setInterval(() => {
     host
-      .locator("button.border-dashed")
+      .getByRole("button", { name: /Upload a song|Uploading|Analyzing/ })
       .innerText({ timeout: 500 })
       .then((t) => {
         if (uploadLabels.at(-1) !== t) uploadLabels.push(t);

@@ -553,7 +553,8 @@ export class Party {
   /** Waits until the host's Start button says every phone has the song. */
   async waitAllReady(timeoutMs = 60_000): Promise<number> {
     const t0 = performance.now();
-    const btn = this.host.page.locator("button.h-14");
+    // By its labels, not its classes: a design pass gave other buttons the same height class.
+    const btn = this.host.page.getByRole("button", { name: /^(Starting…|Pick a song|Start the hive|Start anyway|Waiting for phones to load…)$/ });
     while (performance.now() - t0 < timeoutMs) {
       const label = await btn.innerText().catch(() => "");
       const players = Object.values(this.host.room?.clients ?? {}).filter((c) => c.kind === "player" && c.connected).length;
