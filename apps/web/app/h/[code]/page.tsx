@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import type { RoomState } from "@hive/protocol";
 import { reconnectDelayMs, type CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
@@ -11,6 +12,7 @@ import { clearHostKey, getHostKey, getLibraryKey, setHostKey } from "@/lib/hive/
 import { fetchLibrary, removeErrorText, removeTrack, type LibraryTrack } from "@/lib/hive/library";
 import { classifyHostClaim } from "@/lib/hive/host-claim";
 import { planStart, showTuningScreen, tuningCancelLabel, tuningNote } from "@/lib/hive/start-flow";
+import { planResume, recordShow, showAfterResume, type LastShow } from "@/lib/hive/resume-show";
 import { HOST_TOAST_MS, hostErrorText } from "@/lib/hive/host-errors";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 import { ReconnectBanner } from "@/components/ReconnectBanner";
@@ -240,6 +242,8 @@ function HostRoom({
   /** The same fact as autoStartRef, as state: only for what the tuning screen's button says. */
   const [autoStarting, setAutoStarting] = useState(false);
   const autoStartSawTuningRef = useRef(false);
+  /** PLAY has been sent and the snapshot that says "playing" has not arrived yet (see sendPlay). */
+  const [starting, setStarting] = useState(false);
   const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { client, room, me, connection, audio, health, healthServerTime, protocolMismatch, isHost } = useHiveClient({
@@ -353,12 +357,62 @@ function HostRoom({
   // Sent only while the socket is open (a message sent while it is down is dropped, not queued),
   // and sent again if the room still has no track after a reconnect.
   const autoPickSentAt = useRef<number | null>(null);
+
+  // A server restart (a deploy, a crash) brings the room back under the same code but empty: no
+  // song, stopped, UNISON — and the music used to stay off until the host noticed and pressed Start
+  // (PARTY-02). This page saw the show, so it keeps the last snapshot and, on the first snapshot
+  // after its socket reopens, puts the show back with the ordinary host commands: the song, the
+  // mode, and — only if it was playing when the socket dropped — PLAY at where the song would be by
+  // now, with no tuning moment. Once per reconnect, and only into a room the server re-created and
+  // nobody has started: an ordinary network blip does nothing. The decision is planResume
+  // (lib/hive/resume-show.ts, unit-tested).
+  const lastShowRef = useRef<LastShow | null>(null);
+  /** Set when the socket drops with a show on record: the next fresh snapshot gets the decision. */
+  const resumeRef = useRef<{ staleRoom: RoomState | null; droppedAtServerTime: number } | null>(null);
+  useEffect(() => {
+    if (connection !== "open") {
+      if (!resumeRef.current && lastShowRef.current) resumeRef.current = { staleRoom: room, droppedAtServerTime: client.clock.serverNow() };
+      return;
+    }
+    if (!room) return;
+    const pending = resumeRef.current;
+    if (pending) {
+      if (room === pending.staleRoom) return; // "open" arrives before the first snapshot: this is still the old one
+      const serverNow = client.clock.serverNow();
+      const plan = planResume({
+        last: lastShowRef.current,
+        room,
+        isHost: amHost === true,
+        libraryTrackIds: tracks.map((t) => t.id),
+        droppedAtServerTime: pending.droppedAtServerTime,
+        serverNow,
+      });
+      if (plan.kind === "wait") return;
+      resumeRef.current = null;
+      if (plan.kind === "restore") {
+        autoPickSentAt.current = performance.now(); // the auto-pick below must not answer the same empty room
+        setSelectedTrackId(plan.trackId);
+        client.host.setTrack(plan.trackId);
+        client.host.setMode(plan.mode.kind, plan.mode.params);
+        if (plan.playFromSec !== null) {
+          setStarting(true);
+          client.host.play(plan.playFromSec);
+        }
+        // What was just asked for is the show now, should the socket drop again before a snapshot confirms it.
+        lastShowRef.current = showAfterResume(lastShowRef.current!, room, plan.playFromSec, serverNow);
+        return;
+      }
+    }
+    if (amHost !== false) lastShowRef.current = recordShow(room);
+  }, [connection, room, tracks, amHost, client]);
+
   useEffect(() => {
     if (!room) return;
     if (room.track) {
       setSelectedTrackId(room.track.id);
       return;
     }
+    if (resumeRef.current) return; // a show to put back takes precedence over picking the first song
     const first = tracks[0];
     if (!first || connection !== "open") return;
     const now = performance.now();
@@ -415,7 +469,6 @@ function HostRoom({
   // the tuning moment it flashed back as if nothing had happened, and a second tap restarted the
   // song. `starting` covers that gap: set when PLAY is sent, cleared when the transport moves (or
   // after 3 s, in case the message was lost).
-  const [starting, setStarting] = useState(false);
   const sendPlay = useCallback(() => {
     setStarting(true);
     client.host.play(0);
