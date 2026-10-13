@@ -13,6 +13,7 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "e2e": "cd apps/web && node ../../node_modules/@playwright/test/cli.js test",
+    "e2e:party": "cd apps/web && node ../../node_modules/@playwright/test/cli.js test -c playwright.party.config.ts",
     "check": "bun scripts/check-versions.ts && bun run typecheck && bun run lint && bun run test && bun run e2e",
     "mock": "bun run --cwd packages/protocol mock",
     "fixtures": "bun run fixtures/gen-synthetic.ts"
