@@ -5,12 +5,21 @@ import { CALIBRATION_COUNTDOWN_MS, CALIBRATION_CLICK_INTERVAL_MS, type ClientRec
 import type { HiveClient } from "@hive/sync-client";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 
-/** "Hold still, quiet please": countdown ring, N-of-M progress dots, a white flash on calibrationClick. */
+/**
+ * "Hold still. Quiet, please.": a countdown ring, then one progress bar and "Phone N of M".
+ *
+ * One screen, no scrolling. Progress used to be a dot per phone in a single row, which is 18 px a
+ * phone: 22 phones filled a 393 px screen and 40 gave the whole page 169 px of sideways scroll. A
+ * bar is the same width at 4 phones and at 64.
+ *
+ * Reads only `room.calibration` (the order, and which ids have a result) and this phone's own
+ * record — never another client's.
+ */
 export function PlayerCalibratingScreen({ client, room, me }: { client: HiveClient; room: RoomState; me: ClientRecord | null; name: string }) {
   const { order, results, state, startServerTime } = room.calibration;
   const total = order.length;
   const doneCount = order.filter((id) => results[id]).length;
-  const myIndex = me ? order.indexOf(me.id) : -1;
+  const mine = me ? !!results[me.id] : false;
 
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(CALIBRATION_COUNTDOWN_MS / 1000));
 
@@ -25,33 +34,28 @@ export function PlayerCalibratingScreen({ client, room, me }: { client: HiveClie
   }, [client, state, startServerTime]);
 
   const secondsRemainingEstimate = Math.max(0, Math.round(((total - doneCount) * CALIBRATION_CLICK_INTERVAL_MS) / 1000));
+  const countdown = state === "countdown";
 
   return (
     <main
-      className="relative mx-auto flex min-h-dvh max-w-md flex-col justify-between p-6"
-      style={{ padding: safeAreaPadding(56, 24, 32), overscrollBehavior: "none", touchAction: "manipulation" }}
+      className="relative mx-auto flex h-dvh max-w-md flex-col gap-4 overflow-hidden"
+      style={{ padding: safeAreaPadding(16, 20, 16), overscrollBehavior: "none", touchAction: "manipulation" }}
     >
-      <div className="flex items-center justify-between">
-        <span className="flex items-center gap-2 text-[15px] font-semibold">{me?.name ?? "You"}</span>
-        <span
-          className="font-mono rounded-full border px-3 py-1.5 text-[13px] tracking-widest"
-          style={{ borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
-        >
-          TUNING
+      <div className="flex shrink-0 items-center justify-between gap-3">
+        <span className="min-w-0 truncate text-base font-semibold">{me?.name ?? "You"}</span>
+        <span className="eyebrow shrink-0 rounded-full border px-3 py-1.5" style={{ borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}>
+          Tuning
         </span>
       </div>
 
-      <div className="flex flex-col items-center gap-4.5 text-center">
-        <span className="font-display text-4xl leading-tight font-extrabold">
-          Hold still.
-          <br />
+      {/* The ring is sized from the height that is left, so a sideways phone keeps all of it. */}
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center text-center" style={{ gap: "min(20px, 3dvh)" }}>
+        <span className="font-display shrink-0 text-[2rem] leading-tight font-extrabold">
+          Hold still. <br className="[@media(max-height:480px)]:hidden" />
           Quiet, please.
         </span>
-        <p style={{ color: "var(--muted)" }}>
-          The host&apos;s phone is listening. Each phone plays one short click so the hive can line everyone up.
-        </p>
-        <div className="relative flex h-40 w-40 items-center justify-center">
-          <svg width="160" height="160" viewBox="0 0 160 160" fill="none" className="absolute left-0 top-0" aria-hidden="true">
+        <div className="relative flex aspect-square shrink-0 items-center justify-center" style={{ height: "clamp(96px, 26dvh, 168px)" }}>
+          <svg viewBox="0 0 160 160" fill="none" className="absolute inset-0 h-full w-full" aria-hidden="true">
             <circle cx="80" cy="80" r="72" stroke="var(--raised)" strokeWidth="8" />
             <circle
               cx="80"
@@ -60,33 +64,37 @@ export function PlayerCalibratingScreen({ client, room, me }: { client: HiveClie
               stroke="var(--ringer-fg)"
               strokeWidth="8"
               strokeLinecap="round"
-              strokeDasharray={`${state === "countdown" ? (secondsLeft / (CALIBRATION_COUNTDOWN_MS / 1000)) * 452 : 452} 452`}
+              strokeDasharray={`${countdown ? (secondsLeft / (CALIBRATION_COUNTDOWN_MS / 1000)) * 452 : 452} 452`}
               transform="rotate(-90 80 80)"
             />
           </svg>
-          <div className="flex flex-col items-center gap-0.5">
-            <span className="font-display text-5xl font-extrabold">{state === "countdown" ? secondsLeft : myIndex >= 0 && results[order[myIndex]!] ? "✓" : "…"}</span>
-            <span className="text-xs tracking-widest" style={{ color: "var(--muted)" }}>
-              {state === "countdown" ? "GET READY" : "YOUR CLICK"}
+          <div className="flex flex-col items-center">
+            <span className="font-display leading-none font-extrabold" style={{ fontSize: "clamp(28px, 8dvh, 48px)" }}>
+              {countdown ? secondsLeft : mine ? "✓" : "…"}
+            </span>
+            <span className="eyebrow [@media(max-height:480px)]:hidden" style={{ color: "var(--muted)" }}>
+              {countdown ? "Get ready" : "Your click"}
             </span>
           </div>
         </div>
-        <p className="text-sm" style={{ color: "var(--muted)" }}>
+        <p className="shrink-0 text-sm [@media(max-height:480px)]:hidden" style={{ color: "var(--muted)" }}>
           Your screen flashes white for a moment. That&apos;s your click.
         </p>
       </div>
 
-      <div className="flex flex-col items-center gap-2.5">
-        <div className="flex gap-2">
-          {order.map((id, i) => (
-            <span
-              key={id}
-              className="h-2.5 w-2.5 rounded-full"
-              style={{ background: results[id] ? "var(--health-good)" : i === doneCount ? "var(--ringer-fg)" : "var(--border)" }}
-            />
-          ))}
+      <div className="flex shrink-0 flex-col items-center gap-2">
+        <div
+          role="progressbar"
+          aria-label="Phones tuned"
+          aria-valuemin={0}
+          aria-valuemax={total}
+          aria-valuenow={doneCount}
+          className="h-2 w-full overflow-hidden rounded-full"
+          style={{ background: "var(--border)" }}
+        >
+          <div className="h-2 rounded-full" style={{ width: `${total > 0 ? (doneCount / total) * 100 : 0}%`, background: "var(--ringer-fg)" }} />
         </div>
-        <span className="text-[13px]" style={{ color: "var(--faint)" }}>
+        <span className="text-sm" style={{ color: "var(--faint)" }}>
           {total > 0 ? `Phone ${Math.min(doneCount + 1, total)} of ${total}` : "Waiting for the hive"}
           {state === "running" && total > 0 ? ` · about ${secondsRemainingEstimate}s left` : ""}
         </span>

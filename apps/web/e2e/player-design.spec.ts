@@ -203,3 +203,46 @@ test.describe("join screen", () => {
     await expect(page.getByText("Synced", { exact: true })).toBeVisible({ timeout: 10_000 });
   });
 });
+
+test.describe("tuning screen", () => {
+  test.use({ mockScenario: "join.json" });
+
+  /** Puts this phone last in a tuning run of `phones`, five of them already measured. */
+  async function tuneWith(page: Page, phones: number) {
+    let me = "";
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        const msg = JSON.parse(String(message));
+        if (msg.type === "WELCOME") me = msg.clientId;
+        if (msg.type === "ROOM_STATE") {
+          const order = [...Array.from({ length: phones - 1 }, (_, i) => `other-${i}`), me];
+          const results = Object.fromEntries(order.slice(0, 5).map((id) => [id, { residualMs: 3, confidence: 0.9 }]));
+          msg.room.calibration = { state: "running", referenceClientId: null, startServerTime: msg.room.createdAtServerTime, order, results };
+        }
+        ws.send(JSON.stringify(msg));
+      });
+    });
+    await join(page, "Tuned");
+    await expect(page.getByRole("progressbar")).toBeVisible({ timeout: 10_000 });
+  }
+
+  for (const viewport of [SMALLEST, SAFARI, { width: 852, height: 393 }]) {
+    test(`${viewport.width}x${viewport.height}: a 64-phone tuning run fits the screen — nothing sideways, nothing below the fold`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await tuneWith(page, 64);
+      const fit = await page.evaluate(() => ({ page: document.documentElement.scrollHeight, sideways: document.documentElement.scrollWidth, w: innerWidth, h: innerHeight }));
+      expect(fit.sideways, "the page scrolls sideways").toBeLessThanOrEqual(fit.w);
+      expect(fit.page, "the page scrolls").toBeLessThanOrEqual(fit.h);
+      await expect(page.getByText(/Hold still/)).toBeInViewport({ ratio: 1 });
+      await expect(page.getByText(/Phone 6 of 64/)).toBeInViewport({ ratio: 1 });
+      // Progress is one bar, however many phones: its width never depends on the head-count.
+      const bar = page.getByRole("progressbar");
+      await expect(bar).toHaveAttribute("aria-valuenow", "5");
+      await expect(bar).toHaveAttribute("aria-valuemax", "64");
+      const box = (await bar.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    });
+  }
+});
