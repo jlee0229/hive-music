@@ -27,7 +27,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: [["list"]],
+  // On GitHub the "github" reporter turns each failure into an annotation on the run, readable
+  // without downloading the log.
+  reporter: process.env.GITHUB_ACTIONS ? [["list"], ["github"]] : [["list"]],
   use: {
     baseURL: process.env.PW_BASE_URL ?? `http://localhost:${WEB_PORT}`,
     trace: "retain-on-failure",
