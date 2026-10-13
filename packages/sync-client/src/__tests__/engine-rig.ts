@@ -98,6 +98,7 @@ export interface EngineRigOptions {
   durationSec?: number;
   outputLatency?: number;
   tableLatencyMs?: number | null;
+  pitchKeepIdleBytes?: number;
 }
 
 export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
@@ -192,6 +193,7 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
       return new FakeBuffer(durationSec, 44100);
     }) as unknown as (url: string, c: AudioContext) => Promise<AudioBuffer>,
     // The CHOIR render yields through a timer, so it advances exactly as far as the test moves time.
+    pitchKeepIdleBytes: opts.pitchKeepIdleBytes,
     pitchYield: () => {
       counters.pitchYields++;
       return new Promise<void>((resolve) => setTimeout(resolve, 0));
