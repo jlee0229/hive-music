@@ -29,6 +29,11 @@ describe("uploadErrorMessage", () => {
     expect(uploadErrorMessage(0, null)).toBe(UPLOAD_ERRORS.network);
     expect(uploadErrorMessage(502, null)).toBe(UPLOAD_ERRORS.network);
   });
+  test("rate limits, a busy server and a full library each get their own sentence, not 'check the connection'", () => {
+    expect(uploadErrorMessage(429, { error: "rate_limited" })).toBe(UPLOAD_ERRORS.busy);
+    expect(uploadErrorMessage(503, { error: "busy" })).toBe(UPLOAD_ERRORS.busy);
+    expect(uploadErrorMessage(507, { error: "library full" })).toBe(UPLOAD_ERRORS.full);
+  });
   test("a refused host key is explained, never printed as NOT_HOST", () => {
     const msg = uploadErrorMessage(403, { error: "NOT_HOST", message: "a valid hostKey is required to upload a track" } as { error: string });
     expect(msg).toBe(UPLOAD_ERRORS.notHost);

@@ -219,7 +219,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
     port,
     async fetch(req, srv) {
       const url = new URL(req.url);
-      const cors = { "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*", "Access-Control-Allow-Headers": "content-type", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" };
+      const cors = { "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" }; // as apps/server: the host key travels as a Bearer header
       const json = (body: unknown, status = 200) => Response.json(body, { status, headers: cors });
       if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
       if (url.pathname === "/ws") {

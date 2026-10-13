@@ -15,6 +15,10 @@ const TEXT: Record<string, string> = {
   NO_CLIENT: "That phone has left the hive.",
   KICKED: "This phone was removed from the hive.",
   BAD_MESSAGE: "That didn’t go through — try again.",
+  ALREADY_JOINED: "That didn’t go through — try again.",
+  ROOM_FULL: "This hive is full.",
+  // The server closes the socket after this one; the reconnect banner takes over.
+  RATE_LIMITED: "Too many tries — wait a minute.",
   // From the engine, about this phone's own audio (it retries the download by itself).
   AUDIO_LOAD_FAILED: "This phone is having trouble loading the song.",
 };

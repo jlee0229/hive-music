@@ -24,6 +24,8 @@ export const UPLOAD_ERRORS = {
   tooLong: (sec: number) => `that song is ${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")} long — the limit is ${MAX_UPLOAD_SEC / 60} minutes`,
   network: "the upload didn't get through — check the connection and try again",
   notHost: "this phone can't add songs right now — reload the page and try again",
+  busy: "the server is busy — try again in a minute",
+  full: "the song library is full",
 } as const;
 
 /**
@@ -115,6 +117,8 @@ export function encodeWav16(samples: Float32Array, sampleRate: number): ArrayBuf
 
 /** A sentence for a failed POST /tracks. `status` 0 = the request never got an answer. */
 export function uploadErrorMessage(status: number, body: { error?: unknown } | null): string {
+  if (status === 429 || status === 503) return UPLOAD_ERRORS.busy;
+  if (status === 507) return UPLOAD_ERRORS.full;
   if (status === 0 || status >= 500) return UPLOAD_ERRORS.network;
   if (status === 401 || status === 403) return UPLOAD_ERRORS.notHost;
   if (status === 413) return UPLOAD_ERRORS.tooBig;
@@ -135,6 +139,9 @@ export function postTrack(apiUrl: string, hostKey: string, title: string, wav: B
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${apiUrl}/tracks`);
+    // The key goes in a header as well as in the form: the server checks the header before it reads
+    // the body, so a request without the right to upload is refused before ~50 MB are received.
+    xhr.setRequestHeader("Authorization", `Bearer ${hostKey}`);
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total);

@@ -10,6 +10,13 @@ describe("hostErrorText", () => {
     expect(hostErrorText("CALIBRATION_BUSY", "cannot reset while calibration is running: cancel first")).toBe("Tuning is still running.");
   });
 
+  test("the server's newer codes each have a sentence", () => {
+    expect(hostErrorText("ROOM_FULL", "this hive is full (256 devices)")).toBe("This hive is full.");
+    expect(hostErrorText("RATE_LIMITED", "too many attempts — wait a minute")).toBe("Too many tries — wait a minute.");
+    expect(hostErrorText("ALREADY_JOINED", "this connection has already joined a room")).not.toMatch(/connection|joined/);
+    expect(hostErrorText("NO_CLIENT", "no connected client 3f2a")).toBe("That phone has left the hive.");
+  });
+
   test("the engine's AUDIO_LOAD_FAILED never shows a stem URL or a status code", () => {
     const text = hostErrorText("AUDIO_LOAD_FAILED", "stem http://localhost:8080/audio/baby-1a2b3c4d/mix.wav failed: 404");
     expect(text).toBe("This phone is having trouble loading the song.");
