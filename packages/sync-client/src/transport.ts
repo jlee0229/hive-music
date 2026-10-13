@@ -72,13 +72,27 @@ export class RoomTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** The in-flight connect, so a second call joins it instead of opening a second socket. */
   private connecting: Promise<void> | null = null;
+  /**
+   * What a host's JOIN says about "this phone plays too": the *current* choice, not the option the
+   * client was created with. The server takes a host's `plays` from every JOIN, so re-JOINing with the
+   * creation-time value (false) switched the host's own speaker off on every reconnect while the page's
+   * toggle stayed ticked (HOST-06).
+   */
+  private plays: boolean;
 
   constructor(
     private readonly opts: HiveClientOptions,
     readonly clientId: string,
     private readonly hooks: TransportHooks,
     private readonly localNow: () => number,
-  ) {}
+  ) {
+    this.plays = opts.plays;
+  }
+
+  /** Records a SET_PLAYS so the next re-JOIN repeats it. */
+  setPlays(plays: boolean): void {
+    this.plays = plays;
+  }
 
   get isOpen(): boolean {
     return this.ws?.readyState === 1;
@@ -168,7 +182,7 @@ export class RoomTransport {
           roomCode: this.opts.roomCode,
           kind: this.opts.kind,
           // A player is always a speaker; only a host chooses.
-          plays: this.opts.kind === "player" ? true : this.opts.plays,
+          plays: this.opts.kind === "player" ? true : this.plays,
           hostKey: this.opts.hostKey,
           name: this.opts.name,
           device: detectDevice(),

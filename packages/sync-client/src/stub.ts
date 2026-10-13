@@ -200,7 +200,10 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
         transport.send({ type: "SET_POSITION", clientId: id, x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) });
       },
       nudge: (id, nudgeMs) => transport.send({ type: "NUDGE", clientId: id, nudgeMs }),
-      setPlays: (plays) => transport.send({ type: "SET_PLAYS", plays }),
+      setPlays: (plays) => {
+        transport.setPlays(plays);
+        transport.send({ type: "SET_PLAYS", plays });
+      },
       kick: (id) => transport.send({ type: "KICK", clientId: id }),
       async startCalibration() {
         transport.send({ type: "CALIBRATION_START", referenceClientId: clientId });

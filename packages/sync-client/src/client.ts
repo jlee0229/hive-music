@@ -354,7 +354,10 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
         }, gap - (now - lastPositionSent));
       },
       nudge: (id, nudgeMs) => transport.send({ type: "NUDGE", clientId: id, nudgeMs: Math.round(nudgeMs) }),
-      setPlays: (plays) => transport.send({ type: "SET_PLAYS", plays }),
+      setPlays: (plays) => {
+        transport.setPlays(plays); // remembered for every later re-JOIN (HOST-06)
+        transport.send({ type: "SET_PLAYS", plays });
+      },
       kick: (id) => transport.send({ type: "KICK", clientId: id }),
       async startCalibration() {
         transport.send({ type: "CALIBRATION_START", referenceClientId: clientId });
