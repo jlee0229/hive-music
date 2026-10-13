@@ -96,8 +96,35 @@ export function wireSafe(value: unknown, key = ""): boolean {
   return true;
 }
 
-/** A measured output latency or calibration residual beyond this is not a measurement, it is a bug or an attack. */
+/** A reported output latency beyond this is not a measurement, it is a bug or an attack. */
 const LATENCY_SANITY_MAX_MS = 2000;
+
+/**
+ * What a tuning moment may do to a phone (ENGINE-DSP-45). Each phone clicks in its own slot of
+ * CALIBRATION_CLICK_INTERVAL_MS, and the reference attributes whatever it hears in a slot to that
+ * slot's phone. So:
+ *  - a residual of more than half a slot is not this phone's click by construction — it is a
+ *    neighbour's (phone 1 late by 300 ms is heard in phone 2's slot as "phone 2, 100 ms early,
+ *    confidence 0.89");
+ *  - a phone cannot sound earlier than its compensation allows: the offset a measurement would
+ *    leave it with cannot be meaningfully negative (the slack covers the reference removing the
+ *    median). That is what catches the example above — nothing about "−100 ms" is odd except that
+ *    phone 2 would need less than no latency;
+ *  - and no chain of reports may walk an offset out of the range real output paths have (a
+ *    Bluetooth speaker is ~300 ms).
+ * A measurement that breaks one of these is not applied; a report where that is most of what it
+ * says measured something other than this room's clicks and is thrown away whole.
+ */
+export const CALIBRATION_MAX_STEP_MS = CALIBRATION_CLICK_INTERVAL_MS / 2;
+export const CALIBRATED_OFFSET_MIN_MS = -40;
+export const CALIBRATED_OFFSET_MAX_MS = 400;
+/**
+ * How long after the last click a report may take, per phone on top of a fixed 5 s. The reference
+ * cross-correlates every slot on a phone: measured on a desktop 0.48 s at 50 phones, 1.24 s at 100,
+ * 3.8 s at 200 (SCALE-NET-09) — call a phone four times slower. The fixed 5 s alone failed every big room.
+ */
+export const CALIBRATION_REPORT_GRACE_MS = 5000;
+export const CALIBRATION_REPORT_GRACE_PER_PHONE_MS = 100;
 
 /**
  * Per-socket message budget. A healthy client peaks around 15 messages a second (the NTP burst, a
@@ -603,7 +630,7 @@ export class Room {
             this.flush();
           }
         },
-        CALIBRATION_COUNTDOWN_MS + order.length * CALIBRATION_CLICK_INTERVAL_MS + 5000,
+        CALIBRATION_COUNTDOWN_MS + order.length * CALIBRATION_CLICK_INTERVAL_MS + CALIBRATION_REPORT_GRACE_MS + order.length * CALIBRATION_REPORT_GRACE_PER_PHONE_MS,
       ),
     );
   }
@@ -613,10 +640,17 @@ export class Room {
     // Only while a run is in flight. `done` used to be accepted too, so a second report for the same
     // run was added on top of the first: calibratedOffsetMs = base + residual + residual.
     if (this.room.calibration.state !== "countdown" && this.room.calibration.state !== "running") return;
+    // First decide what the report is worth as a whole, then apply — never half of a report that
+    // turns out to be nonsense.
+    const seen = new Set<string>();
+    let repeated = false;
+    const plausible: Array<{ c: ClientRecord; residualMs: number; confidence: number; offset: number }> = [];
+    let implausible = 0;
     for (const m of msg.measurements) {
       const c = this.room.clients[m.clientId];
       if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored
-      if (Math.abs(m.residualMs) > LATENCY_SANITY_MAX_MS) continue; // not a click heard in a room
+      if (seen.has(m.clientId)) repeated = true; // one slot, one click, one measurement
+      seen.add(m.clientId);
       // Before any calibration, a client with no table entry (STARTER_LATENCY_TABLE_MS.other is null)
       // silently subtracts its own ctx.outputLatency locally (docs/02-protocol.md §1: "no table AND no
       // calibration"). Once calibratedOffsetMs is non-null the client stops doing that — so basing the
@@ -624,8 +658,20 @@ export class Room {
       // phone late by exactly its outputLatency. Falling back to the client's own reported
       // outputLatencyMs (CLIENT_STATUS) instead of 0 preserves it across the transition.
       const base = c.calibratedOffsetMs ?? c.tableLatencyMs ?? this.health.get(m.clientId)?.outputLatencyMs ?? 0;
-      c.calibratedOffsetMs = base + m.residualMs;
-      this.room.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
+      const offset = base + m.residualMs;
+      if (Math.abs(m.residualMs) > CALIBRATION_MAX_STEP_MS || offset < CALIBRATED_OFFSET_MIN_MS || offset > CALIBRATED_OFFSET_MAX_MS) implausible++;
+      else plausible.push({ c, residualMs: m.residualMs, confidence: m.confidence, offset });
+    }
+    if (repeated || (implausible > 0 && (plausible.length === 0 || implausible > plausible.length))) {
+      console.warn(`[hive-server] room ${this.code}: calibration report rejected (${implausible} implausible of ${implausible + plausible.length} measurements${repeated ? ", repeated client" : ""})`);
+      this.clearCalibrationTimers();
+      this.room.calibration = { ...this.room.calibration, state: "failed" };
+      this.dirty = true;
+      return this.flush();
+    }
+    for (const m of plausible) {
+      m.c.calibratedOffsetMs = m.offset;
+      this.room.calibration.results[m.c.id] = { residualMs: m.residualMs, confidence: m.confidence };
     }
     this.room.calibration = { ...this.room.calibration, state: "done" };
     this.replan();
