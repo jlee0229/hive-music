@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AudioState, ClientRecord, Pattern, RoomState } from "@hive/protocol";
+import type { AudioState, ClientRecord, Pattern, Role, RoomState } from "@hive/protocol";
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
 import { beatPhase, formatTrackTime, inkForRole, patternGain } from "@/lib/hive/derive";
@@ -11,6 +11,13 @@ import { Creators } from "@/components/Creators";
 
 const DARK = "#0B0F14";
 const LIGHT_INK = "#F8FAFC";
+/**
+ * Bass is the one role dark enough to need light ink, and on its map colour (#8B5CF6) that ink is
+ * only 4.05:1 — under AA for the code, the song line and "YOU ARE". A whole screen of bass is
+ * filled with a deeper violet instead (5.45:1). The map dot keeps the lighter one, which reads
+ * better on a dark surface. Mirrors --role-bass-screen in globals.css.
+ */
+const SCREEN_FILL: Partial<Record<Role, string>> = { bass: "#7C3AED" };
 /** How far a STROBE/WAVE "off" phase dims the role colour (opacity of the dark overlay). */
 const FULL_DIM_DEPTH = 0.85;
 /**
@@ -103,7 +110,7 @@ export function PlayerPlayingScreen({
   loadProgress?: number;
 }) {
   const assignment = me?.assignment ?? null;
-  const roleColor = assignment ? ROLE_COLORS[assignment.role] : ROLE_COLORS.unison;
+  const roleColor = assignment ? (SCREEN_FILL[assignment.role] ?? ROLE_COLORS[assignment.role]) : ROLE_COLORS.unison;
   const ink = assignment ? inkForRole(assignment.role) : DARK;
   const pattern = assignment?.pattern ?? null;
   const reducedMotion = usePrefersReducedMotion();
@@ -244,13 +251,14 @@ export function PlayerPlayingScreen({
       {/* No nudge slider here anymore: timing is automatic (live latency + the tuning moment), and
           a visible correction control read as "this app needs fixing". The host still has a
           per-player nudge in the player sheet for emergencies. */}
-      <div className="relative flex shrink-0 flex-col gap-3 rounded-[20px] p-4" style={{ background: "rgba(11,15,20,0.6)", color: "#F1F5F9" }}>
+      <div className="relative flex shrink-0 flex-col gap-3 rounded-[20px] p-4" style={{ background: "var(--scrim)", color: "var(--text)" }}>
         <ReconnectBanner connection={connection} />
         <button
           onClick={() => client.audio.setMuted(!muted)}
           aria-pressed={muted}
           className="flex h-12 shrink-0 items-center justify-center rounded-xl border font-semibold"
-          style={{ borderColor: "var(--border)", background: muted ? "#F1F5F9" : "transparent", color: muted ? "#0B0F14" : "#F1F5F9" }}
+          // The edge was --border: 1.1–2.4:1 against the panel, so the control read as a caption.
+          style={{ borderColor: "rgba(241,245,249,0.5)", background: muted ? "#F1F5F9" : "transparent", color: muted ? "#0B0F14" : "#F1F5F9" }}
         >
           {muted ? "Unmute my phone" : "Mute my phone"}
         </button>

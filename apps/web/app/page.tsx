@@ -115,19 +115,19 @@ export default function LandingPage() {
               spellCheck={false}
               enterKeyHint="go"
               className="font-mono h-13 w-full rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none focus-visible:border-[color:var(--text)]"
-              style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
+              style={{ height: 52, background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
             />
           </label>
           <button
             type="submit"
             className="flex h-13 items-center justify-center rounded-2xl border px-5 font-semibold"
-            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
+            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
           >
             Join
           </button>
         </form>
         {error ? (
-          <p role="alert" className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
+          <p role="alert" className="text-center text-sm" style={{ color: "var(--danger)" }}>
             {error}
           </p>
         ) : null}
@@ -138,7 +138,7 @@ export default function LandingPage() {
           rel="noreferrer"
           aria-label="HiveMusic on GitHub"
           className="flex items-center justify-center gap-2.5 rounded-2xl border px-4 py-3 text-[14px] font-semibold"
-          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--muted)" }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path

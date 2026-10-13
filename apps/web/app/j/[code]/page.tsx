@@ -344,6 +344,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const level = selfHealthLevel(status, audio.state, client.clock.serverNow());
     const ringColor = HEALTH_COLORS[level];
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
+    // Bass as text on a dark card: the swatch colour is 4.1:1 there, the lighter violet 6.4:1.
+    const roleText = me?.assignment?.role === "bass" ? "var(--role-bass-text)" : roleColor;
 
     body = (
       // h-dvh + overflow-hidden silently clips anything that doesn't fit. So: the footer (what the
@@ -425,7 +427,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
                   <span className="text-xs tracking-widest" style={{ color: "var(--muted)" }}>
                     YOU&apos;LL PLAY
                   </span>
-                  <span className="font-display text-[22px] font-bold" style={{ color: roleColor }}>
+                  <span className="font-display text-[22px] font-bold" style={{ color: roleText }}>
                     {me.assignment.label}
                   </span>
                   <span className="text-[13px] [@media(max-height:700px)]:hidden" style={{ color: "var(--muted)" }}>
@@ -499,7 +501,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
           spellCheck={false}
           enterKeyHint="go"
           className="h-14 rounded-2xl border px-4 text-lg outline-none focus-visible:border-[color:var(--text)]"
-          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
         />
       </label>
 

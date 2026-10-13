@@ -13,7 +13,7 @@ export function RingerBanner() {
         <span className="text-sm font-semibold" style={{ color: "var(--ringer-fg)" }}>
           Ringer on, please
         </span>
-        <span className="text-[13px] leading-snug" style={{ color: "#cbb27a" }}>
+        <span className="text-[13px] leading-snug" style={{ color: "var(--ringer-body)" }}>
           Silent mode mutes web audio. Flip the side switch.
         </span>
       </div>

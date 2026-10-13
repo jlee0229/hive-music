@@ -130,7 +130,7 @@ function DiagSession({ roomCode, joined, onJoined }: { roomCode: string; joined:
           {connecting ? "Connecting…" : "Tap to connect"}
         </button>
         {error ? (
-          <p role="alert" className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
+          <p role="alert" className="text-center text-sm" style={{ color: "var(--danger)" }}>
             {error}
           </p>
         ) : null}
