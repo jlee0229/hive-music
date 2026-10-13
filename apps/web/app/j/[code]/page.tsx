@@ -286,12 +286,12 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   let body: React.ReactNode;
   if (view === "removed") {
     body = (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-5 text-center">
         <div role="alert" className="flex flex-col items-center gap-4">
-          <h1 className="font-display text-3xl font-bold">{gone!.heading}</h1>
+          <h1 className="font-display text-[2rem] leading-tight font-bold">{gone!.heading}</h1>
           <p style={{ color: "var(--muted)" }}>{gone!.detail}</p>
         </div>
-        <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
+        <Link href="/" className="mt-4 flex h-14 items-center justify-center rounded-2xl px-8 text-base font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>
       </main>
@@ -301,15 +301,18 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   if (view === "resume") {
     body = (
       <main
-        className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center"
+        className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-5 text-center"
         style={{ overscrollBehavior: "none", touchAction: "manipulation" }}
         onClick={handleResume}
       >
         {/* The whole screen is the tap target, but a keyboard or a screen reader needs a control
             to land on; the tap bubbles to <main>, and handleResume ignores the second call. */}
         <div role="alert" className="flex flex-col items-center gap-4">
-          <h1 className="font-display text-3xl font-bold">
-            <button onClick={handleResume}>{resuming ? "Resuming…" : "Tap to resume"}</button>
+          <h1 className="font-display text-[2rem] leading-tight font-bold">
+            {/* 56 px tall: the words alone were a 36 px target for the one thing this screen is for. */}
+            <button onClick={handleResume} className="min-h-14 px-4">
+              {resuming ? "Resuming…" : "Tap to resume"}
+            </button>
           </h1>
           <p style={{ color: "var(--muted)" }}>A call or the lock screen paused the sound.</p>
         </div>
@@ -357,16 +360,16 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         style={{
           gap: "min(12px, 1.6dvh)",
           padding: [
-            "calc(min(40px, 5dvh) + env(safe-area-inset-top, 0px))",
+            "calc(16px + env(safe-area-inset-top, 0px))",
             "calc(20px + env(safe-area-inset-right, 0px))",
-            "calc(14px + env(safe-area-inset-bottom, 0px))",
+            "calc(16px + env(safe-area-inset-bottom, 0px))",
             "calc(20px + env(safe-area-inset-left, 0px))",
           ].join(" "),
         }}
       >
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ gap: "min(12px, 1.6dvh)" }}>
           <div className="flex shrink-0 items-center justify-between gap-3">
-            <span className="flex min-w-0 items-center gap-2 text-[15px] font-semibold">
+            <span className="flex min-w-0 items-center gap-2 text-base font-semibold">
               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: roleColor }} />
               <span className="truncate">{name.trim() || "You"}</span>
             </span>
@@ -378,7 +381,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
           <ReconnectBanner connection={connection} />
           <ProtocolMismatchBanner show={protocolMismatch} />
 
-          <div className="flex shrink-0 flex-col items-center gap-2.5 pt-1 [@media(max-height:480px)]:pt-0">
+          <div className="flex shrink-0 flex-col items-center gap-2 pt-1 [@media(max-height:480px)]:pt-0">
             <svg
               className="[@media(max-height:480px)]:hidden"
               style={{ width: "clamp(56px, 12dvh, 96px)", height: "clamp(56px, 12dvh, 96px)" }}
@@ -401,13 +404,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
                 <path d="M40 62l13 13 27-30" stroke={ringColor} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
               ) : null}
             </svg>
-            <span className="font-display text-[34px] leading-tight font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
+            <span className="font-display text-[2rem] leading-tight font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
           </div>
 
           <div className="flex shrink-0 flex-col [@media(max-height:480px)]:flex-row" style={{ gap: "min(12px, 1.6dvh)" }}>
             {/* Nothing to download until the host has picked a song. */}
             {trackStems.length ? (
-              <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+              <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
                 <div className="flex flex-wrap justify-between gap-x-2 text-sm">
                   {/* The same words as the playing screen's "Loading the song…"; and once it is loaded, say so. */}
                   <span className="font-semibold">{audio.loadProgress >= 1 ? "Song ready" : "Loading the song"}</span>
@@ -422,13 +425,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             ) : null}
 
             {me?.assignment ? (
-              <div className="flex min-w-0 flex-1 items-center gap-3.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+              <div className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
                 <span className="h-11 w-11 shrink-0 rounded-xl" style={{ background: roleColor }} />
                 <div className="flex min-w-0 flex-col gap-1">
-                  <span className="text-xs tracking-widest" style={{ color: "var(--muted)" }}>
+                  <span className="eyebrow" style={{ color: "var(--muted)" }}>
                     YOU&apos;LL PLAY
                   </span>
-                  <span className="font-display text-[22px] font-bold" style={{ color: roleText }}>
+                  <span className="font-display text-xl font-bold" style={{ color: roleText }}>
                     {me.assignment.label}
                   </span>
                 </div>
@@ -438,13 +441,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </div>
 
         <div className="flex shrink-0 flex-col items-center gap-2">
-          <span className="flex items-center gap-2 text-[15px]" style={{ color: "var(--muted)" }}>
+          <span className="flex items-center gap-2 text-base" style={{ color: "var(--muted)" }}>
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--muted)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--faint)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--border)" }} />
             {waitLine}
           </span>
-          <span className="text-center text-[13px]" style={{ color: "var(--faint)" }}>
+          <span className="text-center text-sm" style={{ color: "var(--faint)" }}>
             Keep your screen on. Don&apos;t lock your phone.
           </span>
         </div>

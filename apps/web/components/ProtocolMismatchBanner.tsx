@@ -4,7 +4,7 @@ export function ProtocolMismatchBanner({ show }: { show: boolean }) {
   return (
     <div
       role="alert"
-      className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium"
+      className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold"
       style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
     >
       <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--ringer-fg)" }} />

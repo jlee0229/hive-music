@@ -264,7 +264,7 @@ export function PlayerPlayingScreen({
         <button
           onClick={() => client.audio.setMuted(!muted)}
           aria-pressed={muted}
-          className="flex h-14 shrink-0 items-center justify-center gap-2.5 rounded-xl border text-base font-semibold [@media(max-height:480px)]:h-11"
+          className="flex h-14 shrink-0 items-center justify-center gap-2 rounded-xl border text-base font-semibold [@media(max-height:480px)]:h-11"
           // A filled, outlined, full-width button with a speaker on it. It was a bare outline at
           // 1.1–2.4:1 against the panel, which read as a caption rather than a control.
           style={{
@@ -280,7 +280,7 @@ export function PlayerPlayingScreen({
           {muted ? "Unmute my phone" : "Mute my phone"}
         </button>
         {/* Landscape phones have no room for the footer; drop it whole rather than crop it. */}
-        <div className="flex flex-col gap-2.5 [@media(max-height:480px)]:hidden">
+        <div className="flex flex-col gap-2 [@media(max-height:480px)]:hidden">
           <AdSlot dark />
           <Creators dark />
         </div>

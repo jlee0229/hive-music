@@ -78,7 +78,7 @@ export default function LandingPage() {
       style={{ padding: safeAreaPadding(16, 20, 16) }}
     >
       <div className="flex flex-1 flex-col gap-6 sideways:self-stretch">
-        <div className="flex items-center gap-2.5 lg:justify-center">
+        <div className="flex items-center gap-2 lg:justify-center">
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="var(--text)" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
             <path d="M14 2l10.4 6v12L14 26 3.6 20V8z" />
             <circle cx="14" cy="14" r="4" />
@@ -107,7 +107,7 @@ export default function LandingPage() {
         >
           {hosting ? "Creating your hive…" : "Host a hive"}
         </button>
-        <form onSubmit={join} className="flex gap-2.5">
+        <form onSubmit={join} className="flex gap-2">
           <input
             ref={codeInput}
             value={code}
@@ -145,7 +145,7 @@ export default function LandingPage() {
           target="_blank"
           rel="noreferrer"
           aria-label="HiveMusic on GitHub"
-          className="flex h-11 shrink-0 items-center justify-center gap-2.5 rounded-2xl border px-4 text-sm font-semibold"
+          className="flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-semibold"
           style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--muted)" }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

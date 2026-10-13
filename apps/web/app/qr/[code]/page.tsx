@@ -46,10 +46,10 @@ export default function QrPage({ params }: { params: Promise<{ code: string }> }
 
   if (gone) {
     return (
-      <main className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6 text-center" style={{ background: "var(--stage)" }}>
-        <h1 className="font-display text-3xl font-bold">Hive not found</h1>
+      <main className="flex min-h-dvh flex-col items-center justify-center gap-4 p-5 text-center" style={{ background: "var(--stage)" }}>
+        <h1 className="font-display text-[2rem] leading-tight font-bold">Hive not found</h1>
         <p style={{ color: "var(--muted)" }}>No hive is running at code {roomCode}.</p>
-        <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
+        <Link href="/" className="mt-4 flex h-14 items-center justify-center rounded-2xl px-8 text-base font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>
       </main>

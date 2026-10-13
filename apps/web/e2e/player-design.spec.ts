@@ -398,3 +398,70 @@ test.describe("one voice", () => {
     expect(await page.locator("main").innerText()).not.toMatch(jargon);
   });
 });
+
+test.describe("the scale", () => {
+  test.use({ mockScenario: "join.json", userAgent: IPHONE_UA });
+
+  /** Font sizes, corner radii and control heights in use on the current screen, off-scale ones named. */
+  async function offScale(page: Page): Promise<string[]> {
+    return page.evaluate(() => {
+      const TYPE = [12, 14, 16, 20, 32];
+      const RADII = [12, 16, 24];
+      const CONTROLS = [44, 56, 64];
+      const out: string[] = [];
+      const main = document.querySelector("main")!;
+      const say = (el: Element) => (el.getAttribute("aria-label") || el.textContent || el.tagName).trim().replace(/\s+/g, " ").slice(0, 24);
+      for (const el of main.querySelectorAll<HTMLElement>("*")) {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0 || el.closest("svg")) continue;
+        const cs = getComputedStyle(el);
+        const ownText = [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent!.trim());
+        // Sizes set from the viewport on purpose (the role, the landing headline and byline, the
+        // tuning numeral) carry an inline font-size, on themselves or their heading; everything else
+        // must be on the scale.
+        if (ownText && !el.closest("[style*='font-size']") && !TYPE.includes(Math.round(parseFloat(cs.fontSize) * 10) / 10)) out.push(`type ${cs.fontSize} "${say(el)}"`);
+        const radius = parseFloat(cs.borderTopLeftRadius);
+        const pill = radius >= Math.min(r.width, r.height) / 2 - 0.5;
+        if (radius > 0 && !pill && !RADII.includes(radius)) out.push(`radius ${radius} "${say(el)}"`);
+        if ((el.tagName === "BUTTON" || el.tagName === "INPUT" || el.tagName === "A") && !CONTROLS.includes(Math.round(r.height)) && r.height < innerHeight - 4) out.push(`control ${Math.round(r.height)} "${say(el)}"`);
+      }
+      return [...new Set(out)];
+    });
+  }
+
+  test("landing, join, ready, playing, tuning and the dead-end screens use only the scale", async ({ page }) => {
+    await page.setViewportSize({ width: 393, height: 852 });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Join" }).click(); // brings up the error line too
+    await expect(page.locator("main").getByRole("alert")).toBeVisible();
+    expect(await offScale(page), "landing").toEqual([]);
+
+    await page.goto("/j/ZZZZ");
+    await expect(page.getByRole("heading", { name: "Hive not found" })).toBeVisible();
+    expect(await offScale(page), "hive not found").toEqual([]);
+
+    await page.goto("/j/BZQ7");
+    await expect(page.getByRole("button", { name: "Tap to join" })).toBeVisible();
+    expect(await offScale(page), "join").toEqual([]);
+
+    await page.getByPlaceholder("Your name").fill("Scale");
+    await page.getByRole("button", { name: "Tap to join" }).click();
+    await expect(page.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Song ready")).toBeVisible();
+    expect(await offScale(page), "ready").toEqual([]);
+
+    const host = await connectAsHost("BZQ7");
+    host.send({ type: "TRANSPORT", action: "PLAY", trackTimeSec: 0 });
+    await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
+    expect(await offScale(page), "playing").toEqual([]);
+
+    host.send({ type: "TRANSPORT", action: "PAUSE" });
+    await expect(page.getByText("Paused — waiting for the host")).toBeVisible({ timeout: 10_000 });
+    host.send({ type: "CALIBRATION_START", referenceClientId: "nobody" });
+    await expect(page.getByRole("progressbar")).toBeVisible({ timeout: 10_000 });
+    expect(await offScale(page), "tuning").toEqual([]);
+    host.send({ type: "CALIBRATION_CANCEL" });
+    host.close();
+  });
+});
