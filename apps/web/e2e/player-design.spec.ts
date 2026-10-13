@@ -165,3 +165,41 @@ test.describe("contrast", () => {
   });
 });
 
+
+test.describe("join screen", () => {
+  test.use({ mockScenario: "join.json", userAgent: IPHONE_UA });
+
+  // iPhone UA on purpose: it adds the ringer banner, the tallest the screen can be.
+  for (const viewport of [SMALLEST, { width: 375, height: 667 }, SAFARI, { width: 393, height: 852 }, { width: 852, height: 393 }]) {
+    test(`${viewport.width}x${viewport.height}: "Tap to join" is on screen without scrolling`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/j/BZQ7");
+      const button = page.getByRole("button", { name: "Tap to join" });
+      await expect(button).toBeVisible();
+      await expect(page.getByText("Ringer on, please")).toBeVisible();
+
+      await expect(button).toBeInViewport({ ratio: 1 });
+      await expect(page.getByPlaceholder("Your name")).toBeInViewport({ ratio: 1 });
+      const fit = await page.evaluate(() => ({ page: document.documentElement.scrollHeight, sideways: document.documentElement.scrollWidth, w: innerWidth, h: innerHeight }));
+      expect(fit.page, "the page scrolls").toBeLessThanOrEqual(fit.h);
+      expect(fit.sideways, "the page scrolls sideways").toBeLessThanOrEqual(fit.w);
+      expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(56);
+      expect((await page.getByPlaceholder("Your name").boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      // The three-step explainer and the line under the button are what pushed the button off the screen.
+      await expect(page.getByText("What happens next")).toHaveCount(0);
+    });
+  }
+
+  test("a tap in the name box does not join; a tap anywhere else does", async ({ page }) => {
+    await page.setViewportSize(SAFARI);
+    await page.goto("/j/BZQ7");
+    await page.getByPlaceholder("Your name").click();
+    await page.getByPlaceholder("Your name").fill("Careful");
+    await expect(page.getByRole("button", { name: "Tap to join" })).toBeVisible();
+    await expect(page.getByText("Synced", { exact: true })).toHaveCount(0);
+    // empty space between the name box and the button
+    const box = (await page.getByRole("button", { name: "Tap to join" }).boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y - 40);
+    await expect(page.getByText("Synced", { exact: true })).toBeVisible({ timeout: 10_000 });
+  });
+});

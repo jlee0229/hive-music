@@ -463,22 +463,19 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
 
   if (view === "join") {
     body = (
-    <main
-      className="mx-auto flex min-h-dvh max-w-md flex-col gap-6"
-      style={{ padding: safeAreaPadding(56, 24, 32) }}
-      onClick={handleJoin}
-    >
-      <div className="flex items-center justify-between">
-        <span className="font-display text-xl font-bold">Joining a hive</span>
-        <span className="font-mono rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-          {roomCode}
-        </span>
-      </div>
+      // One screen, no scrolling, on every phone: the code, a name box, and the button. The
+      // three-step explainer and the line under the button used to stand between a guest and
+      // "Tap to join" — on a 320x568 iPhone the button was 150 px below the fold.
+      <main className="mx-auto flex h-dvh max-w-md flex-col gap-4" style={{ padding: safeAreaPadding(16, 20, 16) }} onClick={handleJoin}>
+        <div className="flex shrink-0 items-center justify-between gap-3">
+          <span className="font-display text-xl font-bold">Joining a hive</span>
+          <span className="font-mono shrink-0 rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+            {roomCode}
+          </span>
+        </div>
 
-      <ProtocolMismatchBanner show={protocolMismatch} />
+        <ProtocolMismatchBanner show={protocolMismatch} />
 
-      <label className="flex flex-col gap-2 text-[13px]" style={{ color: "var(--muted)" }} onClick={(e) => e.stopPropagation()}>
-        Your name
         <input
           value={name}
           onChange={(e) => {
@@ -486,6 +483,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             setName(v);
             setPlayerName(v);
           }}
+          // The whole screen joins on a tap; the name box is the one place a tap means "type here".
+          onClick={(e) => e.stopPropagation()}
           // The keyboard's own "go" key joins: nobody should have to dismiss the keyboard to find
           // the button underneath it.
           onKeyDown={(e) => {
@@ -494,46 +493,30 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
               void handleJoin();
             }
           }}
+          aria-label="Your name"
           placeholder="Your name"
           autoComplete="nickname"
           autoCapitalize="words"
           autoCorrect="off"
           spellCheck={false}
           enterKeyHint="go"
-          className="h-14 rounded-2xl border px-4 text-lg outline-none focus-visible:border-[color:var(--text)]"
+          className="h-14 w-full shrink-0 rounded-2xl border px-4 text-xl outline-none focus-visible:border-[color:var(--text)]"
           style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
         />
-      </label>
 
-      {device.browserFamily === "ios-safari" ? <RingerBanner /> : null}
+        {device.browserFamily === "ios-safari" ? <RingerBanner /> : null}
 
-      <div className="flex flex-col gap-2 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-        <span className="text-[13px]" style={{ color: "var(--muted)" }}>
-          What happens next
-        </span>
-        <div className="flex flex-col gap-2 text-sm leading-snug">
-          <span>1. Your phone syncs its clock with the hive.</span>
-          <span>2. It downloads the song&apos;s parts (a few seconds).</span>
-          <span>3. The host presses play. You&apos;re part of the speaker.</span>
-        </div>
-      </div>
+        <div className="min-h-0 grow" />
 
-      <div className="grow" />
-
-      <div className="flex flex-col gap-2.5">
         <button
           onClick={handleJoin}
           disabled={joining}
-          className="flex h-16 items-center justify-center rounded-[18px] text-lg font-semibold disabled:opacity-60"
+          className="flex h-16 shrink-0 items-center justify-center rounded-2xl text-xl font-semibold disabled:opacity-60"
           style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
         >
           {joining ? "Joining…" : "Tap to join"}
         </button>
-        <p className="text-center text-[13px] leading-snug" style={{ color: "var(--faint)" }}>
-          The tap lets your phone play sound. Keep this page open afterwards.
-        </p>
-      </div>
-    </main>
+      </main>
     );
   }
 
