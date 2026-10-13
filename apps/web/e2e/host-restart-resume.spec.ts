@@ -103,7 +103,7 @@ test.describe("a restart that re-creates the room empty, while paused", () => {
   test("the song and the mode come back; the music never starts by itself", async ({ page }) => {
     const wire = tap(page);
     await page.goto("/h/BZQ7");
-    await expect(page.getByRole("button", { name: "Play" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible({ timeout: 10_000 });
 
     await rideOutTheDrop(page);
 
