@@ -721,11 +721,7 @@ function HostRoom({
           <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} host={client.host} onOpenSheet={setSheetClientId} />
         </div>
 
-        <Legend
-          mode={room.mode.kind}
-          partsApply={partsApply(room)}
-          ringHealth={Object.values(room.clients).some((c) => c.connected && c.assignment && c.assignment.role !== "unison")}
-        />
+        <Legend mode={room.mode.kind} />
 
         {/* Lives on the stage, not the lobby: a per-party choice, not a per-song one. */}
         <label className="flex h-14 cursor-pointer items-center gap-3 rounded-2xl border px-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>

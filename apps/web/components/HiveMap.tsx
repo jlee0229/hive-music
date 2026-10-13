@@ -245,7 +245,7 @@ export function HiveMap({
         <g>
           <circle cx={hostXY.x * SIZE} cy={hostXY.y * SIZE} r={14 * metrics.scale} fill="none" stroke={HOST_RING_COLOR} strokeWidth="2" strokeDasharray="4 3" />
           <text x={hostXY.x * SIZE} y={hostXY.y * SIZE - 14 * metrics.scale - 4} textAnchor="middle" fontSize="10" fill={HOST_RING_COLOR} fontFamily="IBM Plex Sans, sans-serif">
-            you
+            Host
           </text>
         </g>
       ) : null}

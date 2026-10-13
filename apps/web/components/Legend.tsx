@@ -26,24 +26,20 @@ const ENTRIES: Record<ModeKind, Array<{ label: string; role: Role }>> = {
 
 /**
  * Without `mode` the entries equal Object.keys(ROLE_COLORS) exactly — the map's ground truth for
- * colour meaning. The hint line follows what the map actually does: `partsApply` is false when a
- * tap opens a phone's sheet instead of changing its part, `ringHealth` is false when every ring is
- * the calm black of unison (no health colour to explain). Both default to true.
+ * colour meaning.
+ *
+ * A colour key and nothing else. The line that used to sit beside it ("ring = sync health · drag to
+ * place · tap to change part") was instructions for a map that explains itself: a host finds
+ * dragging and tapping by touching a dot, and the founder asked for the "drag" hint to go.
  */
 export function Legend({
   readOnly = false,
-  partsApply = true,
-  ringHealth = true,
   mode,
 }: {
+  /** The projector's map: no host marker to explain when the host is a speaker like everyone else. */
   readOnly?: boolean;
-  partsApply?: boolean;
-  ringHealth?: boolean;
   mode?: ModeKind;
 }) {
-  const hint = readOnly
-    ? "ring = sync health"
-    : [ringHealth ? "ring = sync health" : null, "drag to place", partsApply ? "tap to change part" : "tap a phone for more"].filter(Boolean).join(" · ");
   const entries = ENTRIES[mode ?? "ORCHESTRA"];
   return (
     <div data-testid="map-legend" className="flex flex-wrap gap-x-3 gap-y-1 text-xs" style={{ color: "var(--muted)" }}>
@@ -56,10 +52,9 @@ export function Legend({
       {readOnly ? null : (
         <span className="flex items-center gap-1.5">
           <span className="box-border h-2.5 w-2.5 rounded-full border-[1.5px]" style={{ borderColor: "var(--host-ring)" }} />
-          you
+          Host
         </span>
       )}
-      <span className="ml-auto">{hint}</span>
     </div>
   );
 }

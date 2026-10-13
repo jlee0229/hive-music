@@ -158,6 +158,13 @@ test.describe("playing stage (party-12)", () => {
     await page.getByRole("button", { name: "Unison", exact: true }).click();
     await expect(legend).not.toContainText("soprano", { timeout: 10_000 });
     await expect(legend).not.toContainText("drums");
+    // A colour key and nothing else: no instructions, and the host is "Host", not "you".
+    await expect(legend).toContainText("Host");
+    expect(await legend.innerText()).not.toMatch(/drag|tap|ring =|you/i);
+    // The host is not a speaker here, so the map marks where they stand — as "Host".
+    const map = page.getByRole("img", { name: /^Hive map/ });
+    await expect(map.locator("text").filter({ hasText: /^Host$/ })).toHaveCount(1);
+    await expect(map.locator("text").filter({ hasText: /^you$/ })).toHaveCount(0);
   });
 });
 
@@ -207,7 +214,7 @@ test.describe("the founder's fixed points", () => {
     for (let i = 0; i < dots.length; i++) for (let j = i + 1; j < dots.length; j++) {
       expect(Math.hypot(dots[i]!.x - dots[j]!.x, dots[i]!.y - dots[j]!.y), `${dots[i]!.label} and ${dots[j]!.label} overlap`).toBeGreaterThanOrEqual(dots[i]!.r + dots[j]!.r);
     }
-    expect(await page.locator("main").innerText()).not.toMatch(/drag me/i);
+    expect(await page.locator("main").innerText()).not.toMatch(/drag/i);
 
     // An obvious way out that ends the session.
     await page.getByRole("button", { name: "Exit the hive" }).click();
