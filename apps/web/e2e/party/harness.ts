@@ -210,6 +210,9 @@ export interface DeviceSample {
 }
 
 export const SOUND_RMS = 0.003;
+/** The same flags playwright.party.config.ts launches the first browser with. */
+export const LAUNCH_ARGS = ["--autoplay-policy=no-user-gesture-required", "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"];
+const DEVICES_PER_BROWSER = 40;
 
 export class Device {
   readonly issues: PageIssue[] = [];
@@ -471,8 +474,27 @@ export class Party {
     appendFileSync(join(OUT_DIR, "party.log"), `[${new Date().toISOString()}] ${this.scenario}: ${line}\n`);
   }
 
+  /**
+   * Chromium allows about 50 audio output streams per browser process: the 51st AudioContext fails
+   * with "The AudioContext encountered an error from the audio device or the WebAudio renderer" and
+   * never sounds. A real party is one process per phone, so past 40 devices the harness opens
+   * another browser rather than measure the browser's cap.
+   */
+  private readonly extraBrowsers: Browser[] = [];
+  private created = 0;
+  private async browserFor(index: number): Promise<Browser> {
+    const slot = Math.floor(index / DEVICES_PER_BROWSER);
+    if (slot === 0) return this.browser;
+    while (this.extraBrowsers.length < slot) {
+      const executablePath = process.env.PW_CHROMIUM_PATH;
+      this.extraBrowsers.push(await this.browser.browserType().launch({ args: LAUNCH_ARGS, ...(executablePath ? { executablePath } : {}) }));
+    }
+    return this.extraBrowsers[slot - 1]!;
+  }
+
   async newDevice(name: string, kind: "host" | "guest", opts: { ios?: boolean } = {}): Promise<Device> {
-    const context = await this.browser.newContext({
+    const browser = await this.browserFor(this.created++);
+    const context = await browser.newContext({
       ...PHONE,
       userAgent: opts.ios ? IPHONE_UA : ANDROID_UA,
       permissions: ["microphone"],
@@ -722,6 +744,7 @@ export class Party {
 
   async close() {
     await Promise.all([...this.devices].map((d) => d.close()));
+    await Promise.all(this.extraBrowsers.map((b) => b.close().catch(() => {})));
   }
 }
 
