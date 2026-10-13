@@ -96,6 +96,13 @@ export type HiveEvents = {
   /** Player screens flash on this; the click itself is scheduled by the engine. */
   calibrationClick: (clickAtServerTime: number) => void;
   error: (code: string, message: string) => void;
+  /**
+   * The server that just WELCOMEd this client speaks a different protocol version than this bundle
+   * (PROTO-13). Fired on every WELCOME that disagrees — the first join and each reconnect, which is
+   * the case that matters: a tab left open across a deploy. The engine carries on as best it can and
+   * never reloads anything itself; the page decides (its one-shot reload guard).
+   */
+  protocolMismatch: (serverVersion: number, clientVersion: number) => void;
 };
 
 export interface HiveClock {
@@ -187,6 +194,8 @@ export interface HiveClient {
   readonly me: ClientRecord | null;
   readonly assignment: Assignment | null;
   readonly connection: ConnectionState;
+  /** Set by the last WELCOME if its protocol version differs from this bundle's; null when they agree. */
+  readonly protocolMismatch: { server: number; client: number } | null;
   readonly status: SyncStatus;
   readonly clock: HiveClock;
   readonly audio: HiveAudio;

@@ -12,7 +12,8 @@
  * is exercised.
  */
 import {
-  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, ROOM_STATE_MAX_HZ, SET_POSITION_MAX_HZ,
+  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, PROTOCOL_VERSION, ROOM_STATE_MAX_HZ,
+  SET_POSITION_MAX_HZ,
   trackTimeSec as transportTrackTimeSec,
   type Assignment, type AudioState, type ClientRecord, type HealthSnapshot, type ModeKind, type ModeParams,
   type RoomState, type ScenePlan, type StemRole,
@@ -32,6 +33,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
   let timers: Array<ReturnType<typeof setInterval>> = [];
   let pairTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPositionSent = 0;
+  let protocolMismatch: { server: number; client: number } | null = null;
   let probeGroup = 0;
   let lastReadyAnnounceAt = -Infinity;
   let lastReadyAnnounced: string | null = null;
@@ -70,7 +72,11 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     opts,
     clientId,
     {
-      onWelcome: () => startTimers(),
+      onWelcome: (msg) => {
+        protocolMismatch = msg.protocolVersion === PROTOCOL_VERSION ? null : { server: msg.protocolVersion, client: PROTOCOL_VERSION };
+        if (protocolMismatch) ev.emit("protocolMismatch", msg.protocolVersion, PROTOCOL_VERSION);
+        startTimers();
+      },
       onConnection: (c) => ev.emit("connection", c),
       onReconnect: () => stopTimers(),
       onMessage: (m, at) => {
@@ -151,6 +157,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     get me() { return me(); },
     get assignment() { return me()?.assignment ?? null; },
     get connection(): ConnectionState { return transport.connection; },
+    get protocolMismatch() { return protocolMismatch; },
     get status() { return status(); },
     clock: {
       serverNow: () => clock.serverNow(),

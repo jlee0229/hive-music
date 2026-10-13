@@ -8,7 +8,7 @@
  * inside CtxMapper.
  */
 import {
-  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS,
+  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, PROTOCOL_VERSION,
   SET_POSITION_MAX_HZ, computeSyncErrMs, trackTimeSec as transportTrackTimeSec,
   type Assignment, type AudioState, type ClientMessage, type ClientRecord, type HealthSnapshot,
   type ModeKind, type ModeParams, type RoomState, type ScenePlan, type ServerMessage, type StemRole,
@@ -140,6 +140,13 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
   let lastPositionSent = 0;
   let positionFlush: ReturnType<typeof setTimeout> | null = null;
 
+  let protocolMismatch: { server: number; client: number } | null = null;
+  /** PROTO-13: nothing used to read WELCOME.protocolVersion, so a stale open tab never found out. */
+  const noteProtocolVersion = (server: number): void => {
+    protocolMismatch = server === PROTOCOL_VERSION ? null : { server, client: PROTOCOL_VERSION };
+    if (protocolMismatch) ev.emit("protocolMismatch", server, PROTOCOL_VERSION);
+  };
+
   const me = (): ClientRecord | null => (room && clientId in room.clients ? room.clients[clientId]! : null);
   const assignmentOf = (): Assignment | null => me()?.assignment ?? null;
 
@@ -147,7 +154,8 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     opts,
     clientId,
     {
-      onWelcome: () => {
+      onWelcome: (msg) => {
+        noteProtocolVersion(msg.protocolVersion);
         clock.onReconnect();
         startTimers();
       },
@@ -302,6 +310,9 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     },
     get connection(): ConnectionState {
       return transport.connection;
+    },
+    get protocolMismatch() {
+      return protocolMismatch;
     },
     get status() {
       return status();
