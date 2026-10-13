@@ -68,11 +68,16 @@ describe("PROTO-01 · a client id that names an Object.prototype key", () => {
     // client record with no id/kind/plays, which every phone's parseServerMessage rejected whole
     host.send({ type: "SET_MODE", mode: "WAVE", params: {} });
     const state = await victim.next("ROOM_STATE", (m) => m.room.mode.kind === "WAVE");
-    expect(Object.keys(state.room.clients)).not.toContain("toString");
+    const roster = await host.next("ROOM_STATE", (m) => m.room.mode.kind === "WAVE");
+    expect(Object.keys(roster.room.clients)).not.toContain("toString");
     await sleep(100);
     expect(victim.unparsable).toEqual([]);
     expect(host.unparsable).toEqual([]);
-    expect(Object.keys(mock.room.clients).sort()).toEqual(Object.keys(state.room.clients).sort());
+    // The roster is the host's to read; a player is sent its own record only (as apps/server). This
+    // used to compare the *victim's* snapshot with the whole room, which only the old mock sent it.
+    expect(Object.keys(mock.room.clients).sort()).toEqual(Object.keys(roster.room.clients).sort());
+    expect(Object.keys(state.room.clients)).toHaveLength(1);
+    expect(Object.keys(state.room.clients)[0]!.startsWith("victim-")).toBe(true);
     host.close(); victim.close(); attacker.close();
   });
 });
@@ -110,9 +115,16 @@ describe("PROTO-02 · 1e999 is valid JSON and parses to Infinity", () => {
     host.send({ type: "CALIBRATION_START", referenceClientId: "host-0000-aaaa" });
     await host.next("ROOM_STATE", (m) => m.room.calibration.state === "countdown");
     host.send({ type: "CALIBRATION_REPORT", measurements: [{ clientId: "attacker-inf-0001", residualMs: 3, confidence: 0.9 }] });
-    const done = await victim.next("ROOM_STATE", (m) => m.room.calibration.state === "done");
+    // The attacker's record reaches the host (the roster) and the attacker itself; the victim, a player,
+    // is sent only its own — what must hold for it is that its snapshots still parse.
+    const done = await host.next("ROOM_STATE", (m) => m.room.calibration.state === "done");
     expect(Number.isFinite(done.room.clients["attacker-inf-0001"]!.assignment!.compensationMs)).toBe(true);
+    const own = await attacker.next("ROOM_STATE", (m) => m.room.calibration.state === "done");
+    expect(Number.isFinite(own.room.clients["attacker-inf-0001"]!.assignment!.compensationMs)).toBe(true);
+    await victim.next("ROOM_STATE", (m) => m.room.calibration.state === "done");
     expect(victim.unparsable).toEqual([]);
+    expect(attacker.unparsable).toEqual([]);
+    expect(host.unparsable).toEqual([]);
     host.send({ type: "CALIBRATION_CANCEL" });
     await host.next("ROOM_STATE", (m) => m.room.calibration.state === "idle");
     host.close(); victim.close(); attacker.close();

@@ -12,26 +12,35 @@ import { safeAreaPadding } from "@/lib/hive/safe-area";
  * phone: 22 phones filled a 393 px screen and 40 gave the whole page 169 px of sideways scroll. A
  * bar is the same width at 4 phones and at 64.
  *
- * Reads only `room.calibration` (the order, and which ids have a result) and this phone's own
- * record — never another client's.
+ * Reads only what the server sends a player: how many clicks there are (`order.length`), which slot is
+ * its own (every other id in `order` is blanked), when the run starts, and its own result. Progress is
+ * therefore the *schedule* — one click every CALIBRATION_CLICK_INTERVAL_MS from `startServerTime` — and
+ * not a count of results: a player is never sent anyone else's result, and its own arrives with the
+ * report that ends the run, so counting results left the bar empty and "Phone 1 of N" on screen for the
+ * whole tuning moment.
  */
 export function PlayerCalibratingScreen({ client, room, me }: { client: HiveClient; room: RoomState; me: ClientRecord | null; name: string }) {
   const { order, results, state, startServerTime } = room.calibration;
   const total = order.length;
-  const doneCount = order.filter((id) => results[id]).length;
-  const mine = me ? !!results[me.id] : false;
 
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(CALIBRATION_COUNTDOWN_MS / 1000));
+  /** How many click slots have fully passed on the server's clock. */
+  const [slotsPassed, setSlotsPassed] = useState(0);
 
   useEffect(() => {
-    const t = setInterval(() => {
-      if (state === "countdown" && startServerTime != null) {
-        const remaining = Math.max(0, Math.ceil((startServerTime - client.clock.serverNow()) / 1000));
-        setSecondsLeft(remaining);
-      }
-    }, 200);
+    const tick = () => {
+      if (startServerTime == null) return;
+      const sinceStart = client.clock.serverNow() - startServerTime;
+      if (state === "countdown") setSecondsLeft(Math.max(0, Math.ceil(-sinceStart / 1000)));
+      setSlotsPassed(Math.max(0, Math.floor(sinceStart / CALIBRATION_CLICK_INTERVAL_MS)));
+    };
+    const t = setInterval(tick, 200);
     return () => clearInterval(t);
   }, [client, state, startServerTime]);
+
+  const doneCount = Math.min(total, slotsPassed);
+  const mySlot = me ? order.indexOf(me.id) : -1;
+  const mine = me ? !!results[me.id] || (mySlot >= 0 && slotsPassed > mySlot) : false;
 
   const secondsRemainingEstimate = Math.max(0, Math.round(((total - doneCount) * CALIBRATION_CLICK_INTERVAL_MS) / 1000));
   const countdown = state === "countdown";
