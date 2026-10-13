@@ -1,6 +1,7 @@
 // HiveMusic room server — see agents/SERVER-AGENT.md. Port of packages/protocol/src/mock-server.ts to real,
 // multi-room state: Bun.serve with WS + REST, the shared planner, and the vibe director.
-import { PROTOCOL_VERSION, VibeRequestSchema, type ScenePlan } from "@hive/protocol";
+import { CreateRoomRequestSchema, PROTOCOL_VERSION, VibeRequestSchema, type ScenePlan } from "@hive/protocol";
+import { z } from "zod";
 import { directScene } from "./vibe/director";
 import { withUrls } from "./library";
 import { RoomManager, type Conn } from "./rooms";
@@ -66,6 +67,9 @@ const vibeInFlight = new Set<string>();
  */
 const VIBE_REQUIRE_HOST_KEY = process.env.VIBE_REQUIRE_HOST_KEY === "1";
 
+/** POST /rooms: the protocol's request shape plus the key a host presents to re-claim or restore its room (SG-01). */
+const RoomRequestSchema = CreateRoomRequestSchema.extend({ hostKey: z.string().max(64).optional() });
+
 /** The JSON routes take a few hundred bytes; the server-wide body cap exists for uploads. */
 const SMALL_BODY_BYTES = 16 * 1024;
 const TOO_LARGE = Symbol("too large");
@@ -119,9 +123,11 @@ const server = Bun.serve<Conn>({
       // string is treated as absent rather than trusted.
       const raw = await readSmallJson(req);
       if (raw === TOO_LARGE) return json({ error: "body too large" }, 413);
-      const body = (raw && typeof raw === "object" ? raw : {}) as { code?: unknown; hostKey?: unknown };
-      const str = (v: unknown, max: number) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
-      const result = manager.createRoom(str(body.code, 8), str(body.hostKey, 64));
+      // No body, `null` and `{}` all mean "a new room". Anything else has to be the documented
+      // shape: `{"code":123}` used to be a 500, then was quietly treated as `{}` — it is a 400.
+      const body = RoomRequestSchema.safeParse(raw ?? {});
+      if (!body.success) return json({ error: "bad request" }, 400);
+      const result = manager.createRoom(body.data.code, body.data.hostKey || undefined);
       if ("error" in result) return json({ error: result.error }, result.status);
       return json({ code: result.code, hostKey: result.hostKey, joinUrl: `${WEB_URL}/j/${result.code}`, ...(result.restored ? { restored: true } : {}) });
     }

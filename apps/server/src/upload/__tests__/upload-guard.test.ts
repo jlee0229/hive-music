@@ -97,6 +97,19 @@ describe("SG-07: an upload cannot put an unusable track into the library", () =>
     expect((await upload(ctx, "one second", { mix: tone(1) })).status).toBe(201);
   });
 
+  test("the upload response is the library entry, tempo included (parity probe S5)", async () => {
+    const ctx = await setup();
+    // 20 s of clicks at 120 BPM: long and rhythmic enough for the detector to commit to a tempo
+    const rate = 44100;
+    const clicks = new Float32Array(rate * 20);
+    for (let i = 0; i < clicks.length; i++) clicks[i] = i % (rate / 2) < 300 ? 0.9 * Math.sin(i / 3) : 0;
+    const r = await upload(ctx, "Tempo", { mix: encodeMonoWav16(clicks, rate) });
+    expect(r.status).toBe(201);
+    const inLibrary = ctx.manager.getLibrary().find((t) => t.id === r.body.track!.id)!;
+    expect(typeof inLibrary.bpm).toBe("number");
+    expect(r.body.track).toMatchObject({ id: inLibrary.id, title: "Tempo", durationSec: inLibrary.durationSec, bpm: inLibrary.bpm, beatOffsetSec: inLibrary.beatOffsetSec });
+  });
+
   test("a float WAV full of NaN and Infinity becomes a track every client can still read", async () => {
     const ctx = await setup();
     const frames = 44100 * 20;

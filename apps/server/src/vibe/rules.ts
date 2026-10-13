@@ -15,6 +15,7 @@ const KEYWORD_TABLE: Array<{ words: string[]; mode: ModeKind }> = [
   { words: ["stereo", "wide", "left", "right", "image"], mode: "STEREO" },
   { words: ["wave", "ripple", "roll", "sweep", "ocean", "travel"], mode: "WAVE" },
   { words: ["strobe", "flash", "rave", "club", "party", "pulse", "hype"], mode: "STROBE" },
+  { words: ["choir", "harmony", "harmonies", "chord", "angelic", "church", "sing"], mode: "CHOIR" },
 ];
 
 function baseMode(prompt: string): ModeKind {

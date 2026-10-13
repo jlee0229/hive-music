@@ -643,7 +643,22 @@ export class Room {
     // every projector a phantom speaker that stole a stem in ORCHESTRA and padded the player count.
     const isViewer = !wantsHost && msg.kind === "viewer";
     const rec: ClientRecord = existing
-      ? { ...existing, connected: true, name: msg.name ?? existing.name, device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.kind === "viewer" ? false : existing.plays }
+      ? {
+          ...existing,
+          connected: true,
+          name: msg.name ?? existing.name,
+          device,
+          // A viewer record that re-JOINs as a player becomes one (parity probe S2). One browser
+          // shares its client id between /screen and /j, so "look at the display, then join as a
+          // phone" arrives exactly like that, and keeping `viewer, plays:false` left the phone
+          // silent for the rest of the night. The reverse is deliberately NOT followed (the mock
+          // does): a player record that re-JOINs as a viewer stays a player — the phone tab is
+          // still open and playing, and anyone who can read the roster could otherwise silence any
+          // phone by joining as a display under its id. (A host record never gets here without the
+          // key — see observe() — so a JOIN can never demote a host either.)
+          kind: wantsHost ? "host" : existing.kind === "viewer" && !isViewer ? "player" : existing.kind,
+          plays: wantsHost ? msg.plays : existing.kind === "viewer" ? !isViewer : existing.plays,
+        }
       : {
           id: msg.clientId,
           kind: wantsHost ? "host" : isViewer ? "viewer" : "player",
@@ -663,6 +678,9 @@ export class Room {
         };
     this.room.clients[rec.id] = rec;
     if (rec.kind === "host" && !this.room.hostClientIds.includes(rec.id)) this.room.hostClientIds.push(rec.id);
+    // Unreachable today (a host record is only re-joined with the key, as a host), kept so that
+    // "in hostClientIds" can never outlive "is a host record" whatever the rules above become.
+    if (rec.kind !== "host") this.room.hostClientIds = this.room.hostClientIds.filter((id) => id !== rec.id);
 
     ws.data.clientId = rec.id;
     ws.data.roomCode = this.code;

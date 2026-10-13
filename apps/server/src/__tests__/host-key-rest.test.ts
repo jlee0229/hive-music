@@ -55,7 +55,13 @@ describe("SG-01 over HTTP", () => {
     expect(guest.status).toBe(403);
     expect(guest.body).toEqual({ error: "NOT_HOST" });
     expect((await postRooms({ code, hostKey: "guess" })).status).toBe(403);
-    expect((await postRooms({ code, hostKey: 12345 })).status).toBe(403); // non-string key is no key
+    // Parity probe S4: a body that is not the documented shape is a 400 — it used to be a 500, and for
+    // one wave was quietly read as "no code, no key". Either way it never yields a key.
+    for (const bad of [{ code, hostKey: 12345 }, { code: 123 }, { code: ["A"] }, { code: "" }, { code: "X".repeat(9) }, { code, hostKey: "k".repeat(65) }, "a string", 42, [1]]) {
+      const res = await postRooms(bad);
+      expect(`${JSON.stringify(bad).slice(0, 40)} → ${res.status}`).toBe(`${JSON.stringify(bad).slice(0, 40)} → 400`);
+      expect(res.body).toEqual({ error: "bad request" });
+    }
 
     const reload = await postRooms({ code, hostKey });
     expect(reload.status).toBe(200);

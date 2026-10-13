@@ -163,3 +163,21 @@ describe("POST /rooms/:code/vibe (HTTP integration, key unset)", () => {
     ws.close();
   });
 });
+
+// Parity probe S6: the director could not ask for CHOIR or a beat division — its prompt still
+// described five modes and a free-running strobe.
+describe("the vibe director knows every mode the planner has", () => {
+  test("the system prompt names all of MODES and the beat-locked STROBE parameter", async () => {
+    const { MODES } = await import("@hive/protocol");
+    const { SYSTEM_PROMPT } = await import("../vibe/prompt");
+    for (const mode of MODES) expect(SYSTEM_PROMPT).toContain(`- ${mode}:`);
+    expect(SYSTEM_PROMPT).toContain("beatsPerSwitch");
+    expect(SYSTEM_PROMPT).not.toContain("Five modes");
+  });
+
+  test("the rules fallback can pick CHOIR from a prompt", async () => {
+    const { rulesFallback } = await import("../vibe/rules");
+    expect(rulesFallback("make it sound like a choir", { durationSec: 120 })[0]!.mode).toBe("CHOIR");
+    expect(rulesFallback("harmonies everywhere", { durationSec: 120 })[0]!.mode).toBe("CHOIR");
+  });
+});
