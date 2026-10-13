@@ -140,6 +140,12 @@ test("06-host: reload, speaker toggle, keyless /h, pause-seek-skip, exit", async
     m.exit = { hostUrl: host.page.url(), guestScreens: guests.map((s) => s.screen), guestSounding: guests.filter((s) => s.rms > SOUND_RMS).length, guestText: guests[0]!.text.slice(0, 240), transport: guests[0]!.transport };
     expect.soft(guests.filter((s) => s.rms > SOUND_RMS).map((s) => s.name), "after the host exits no guest keeps playing").toEqual([]);
     expect.soft(/host/i.test(guests[0]!.text), `guests are told the host left ("${guests[0]!.text.slice(0, 120)}")`).toBe(true);
+    // The player page has a line for exactly this ("Waiting for the host to come back"); the host's
+    // socket is gone by now, so it should be showing.
+    const hostIds = party.guests[0]!.room?.hostClientIds ?? [];
+    (m.exit as Record<string, unknown>).guestSnapshotHostClientIds = hostIds.length;
+    (m.exit as Record<string, unknown>).saysHostAway = guests.map((s) => /Waiting for the host to come back/.test(s.text));
+    expect.soft(guests.filter((s) => !/Waiting for the host to come back/.test(s.text)).map((s) => s.name), 'guests whose screen does not say "Waiting for the host to come back" 3 s after the host left').toEqual([]);
   }
 
   party.metrics.host = m;
