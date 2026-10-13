@@ -31,6 +31,13 @@ export interface HiveClientOptions {
   /** Hosts: "use this phone as a speaker too". Players: always true. Viewers: forced false by the server. */
   plays: boolean;
   hostKey?: string;
+  /**
+   * Hosts only: the secret this browser keeps to say whose uploads its hives may see (`hive:libraryKey`).
+   * Passed to the server in JOIN — on the first join and on every reconnect — and nowhere else: it is
+   * a bearer secret, so the engine never logs it and it appears in no status or diagnostic output.
+   * Ignored for players and viewers.
+   */
+  libraryKey?: string;
   name?: string;
   /** Override the auto-generated, localStorage-persisted client id (tests). */
   clientId?: string;

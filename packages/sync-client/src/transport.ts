@@ -96,6 +96,16 @@ export async function postVibe(opts: Pick<HiveClientOptions, "apiUrl" | "roomCod
   return body.scenePlan;
 }
 
+/**
+ * The library key as JOIN may carry it: hosts only, and only when it has the shape the wire schema
+ * accepts (16–64 chars) — a malformed key must cost the host their uploads, not the whole JOIN, which
+ * the server would otherwise reject as a bad message.
+ */
+function libraryKeyForJoin(opts: HiveClientOptions): string | undefined {
+  const key = opts.libraryKey;
+  return opts.kind === "host" && typeof key === "string" && key.length >= 16 && key.length <= 64 ? key : undefined;
+}
+
 export interface TransportHooks {
   /** Called with the arrival stamp of every server message, before it is dispatched. */
   onMessage?(msg: ServerMessage, receivedAtLocal: number): void;
@@ -229,6 +239,7 @@ export class RoomTransport {
           // A player is always a speaker; only a host chooses.
           plays: this.opts.kind === "player" ? true : this.plays,
           hostKey: this.opts.hostKey,
+          ...(libraryKeyForJoin(this.opts) ? { libraryKey: libraryKeyForJoin(this.opts) } : {}),
           name: this.opts.name,
           device: detectDevice(),
           protocolVersion: PROTOCOL_VERSION,
