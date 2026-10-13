@@ -95,9 +95,8 @@ describe("mock ↔ server parity: the socket", () => {
     host.close();
   });
 
-  // Flip to test() together with REQUIRE_AUDIO_READY_FOR_CALIBRATION in mock-server.ts (PROTO-15): the
-  // real server already behaves this way; the mock is held back by the stub engine never announcing.
-  test.failing("calibration: a speaker that has not announced AUDIO_READY gets no slot (server parity, blocked on the stub engine)", async () => {
+  // PROTO-15: the stub engine announces AUDIO_READY now, so the mock asks for it as the server does.
+  test("calibration: a speaker that has not announced AUDIO_READY gets no slot (server parity)", async () => {
     const host = await joined("par-host-0014", "host");
     const loading = await joined("par-loading-1", "player");
     try {

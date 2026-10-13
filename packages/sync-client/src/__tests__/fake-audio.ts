@@ -164,7 +164,7 @@ export class FakeBuffer implements BufferLike {
   copyToChannel(source: Float32Array, ch: number): void {
     this.getChannelData(ch).set(source.subarray(0, this.length));
   }
-  readonly numberOfChannels = 1;
+  numberOfChannels = 1;
 }
 
 export interface FakeCtxOptions {

@@ -16,8 +16,10 @@
  *    measured over that path can see it. That is pinned here as a known limit, not fixed.
  */
 import { describe, expect, test } from "bun:test";
-import { NTP_BURST_WINDOW_MS, RESYNC_THRESHOLD_MS } from "@hive/protocol";
-import { ClockModel, CONSISTENCY_SLACK_MS, SLEW_RATE_MS_PER_SEC } from "../clock";
+import { NTP_BURST_WINDOW_MS, NTP_SAMPLE_MAX_AGE_MS, RESYNC_THRESHOLD_MS } from "@hive/protocol";
+import {
+  ClockModel, CONSISTENCY_SLACK_MS, createEngineClock, FLOOR_FIRST_MIN_PROBES, FLOOR_HOLD_MS, SLEW_RATE_MS_PER_SEC,
+} from "../clock";
 import { asymmetricLink, burstyLink, iidLink, simulateClock, wanderingLink, type ClockSimOptions } from "./net-sim";
 import { rng } from "./sim";
 
@@ -222,6 +224,101 @@ describe("ENGINE-SYNC-05 · the consistency test itself", () => {
     for (let i = 0; i <= 30; i++) probe(c, i * 1000, i * 1000 * 100e-6, 0.5, 0.5);
     expect(3).toBeLessThan(CONSISTENCY_SLACK_MS);
     expect(c.stepsDetected).toBe(0);
+  });
+});
+
+describe("ENGINE-SYNC-22 · the floor estimator's own rules", () => {
+  const at = 1_700_000_000_000;
+  /** One probe at local time `t` with the given true offset and one-way delays. */
+  const probe = (c: ClockModel, t: number, offset: number, up: number, down: number) =>
+    c.addProbe(at + t, at + t + up + offset, at + t + up + offset, at + t + up + down);
+
+  test("first estimate: a probe that bounds the error is adopted at once; a slow one waits for ten", () => {
+    const quick = createEngineClock();
+    expect(probe(quick, 0, 100, 12, 12)).toBe("accepted"); // rtt 24 ms: error ≤ 12 ms whatever happened
+    expect(quick.offsetMs).toBeCloseTo(100, 6);
+    expect(quick.degraded).toBe(false);
+
+    const slow = createEngineClock();
+    for (let i = 0; i < FLOOR_FIRST_MIN_PROBES - 1; i++) {
+      expect(probe(slow, i * 100, 100, 150 + i, 20)).toBe("buffered"); // rtt ≥ 170 ms: could be 85 ms wrong
+      expect(slow.offsetMs).toBeNull();
+    }
+    expect(probe(slow, 1000, 100, 40, 38)).toBe("accepted"); // the tenth: best of what there is
+    expect(slow.offsetMs).toBeCloseTo(101, 6); // (40 − 38) / 2 of asymmetry, from the rtt-78 sample
+    expect(slow.degraded).toBe(true); // …and /diag can say the bound was not met
+    probe(slow, 1100, 100, 10, 10);
+    expect(slow.degraded).toBe(false); // until a sample that does meet it arrives
+  });
+
+  test("a phone whose every probe is slow still gets a clock when the burst window ends", () => {
+    const c = createEngineClock();
+    probe(c, 0, 50, 300, 300);
+    expect(c.offsetMs).toBeNull();
+    probe(c, NTP_BURST_WINDOW_MS + 100, 50, 300, 300);
+    expect(c.offsetMs).toBeCloseTo(50, 6);
+  });
+
+  test("hold-over: one-way congestion is not followed, and the hold ends when the floor comes back", () => {
+    const c = createEngineClock();
+    for (let i = 0; i < 40; i++) probe(c, i * 500, 0, 4, 4);
+    expect(c.offsetMs).toBeCloseTo(0, 3);
+    expect(c.floorRttMs).toBeCloseTo(8, 6);
+    // a big upload on the same Wi-Fi: 60 ms of extra uplink delay, for 40 s
+    for (let i = 0; i < 80; i++) probe(c, 20_000 + i * 500, 0, 64, 4);
+    expect(c.holding).toBe(true);
+    expect(Math.abs(c.offsetMs!)).toBeLessThan(0.01); // every one of those samples read +30 ms
+    for (let i = 0; i < 4; i++) probe(c, 60_000 + i * 500, 0, 4, 4);
+    expect(c.holding).toBe(false);
+    expect(Math.abs(c.offsetMs!)).toBeLessThan(0.01);
+  });
+
+  test("hold-over ends by itself: after FLOOR_HOLD_MS the longer path is the new floor", () => {
+    const c = createEngineClock();
+    for (let i = 0; i < 20; i++) probe(c, i * 500, 0, 10, 10);
+    // the path gets 90 ms longer, symmetrically, for good (a hotspot hand-over)
+    // For the first 30 s the old samples are still in the window and still the best there is (nothing
+    // about the clock changed); the hold-over proper starts when the last of them has aged out.
+    let t = 10_000;
+    const floorGoneAt = 9500 + NTP_SAMPLE_MAX_AGE_MS;
+    for (; t < floorGoneAt + FLOOR_HOLD_MS - 1000; t += 500) probe(c, t, 0, 55, 55);
+    expect(c.holding).toBe(true);
+    expect(c.floorRttMs).toBeCloseTo(20, 6);
+    for (; t < floorGoneAt + FLOOR_HOLD_MS + 2000; t += 500) probe(c, t, 0, 55, 55);
+    expect(c.holding).toBe(false);
+    expect(c.floorRttMs).toBeCloseTo(110, 6);
+    expect(Math.abs(c.offsetMs!)).toBeLessThan(0.01);
+  });
+
+  test("a real step overrides the hold-over at once", () => {
+    const c = createEngineClock();
+    for (let i = 0; i < 20; i++) probe(c, i * 500, 0, 4, 4);
+    for (let i = 0; i < 70; i++) probe(c, 10_000 + i * 500, 0, 64, 4); // 35 s of congestion: holding
+    expect(c.holding).toBe(true);
+    probe(c, 45_000, 400, 64, 4); // still congested, and the clock is now 400 ms away: both cannot be true
+    expect(c.stepsDetected).toBe(1);
+    expect(c.offsetMs!).toBeGreaterThan(400 - 1);
+    expect(c.offsetMs!).toBeLessThan(400 + 34 + 1); // within that sample's own bound (rtt 68)
+  });
+
+  test("an old sample loses to a newer one of nearly the same quality (age is part of the bound)", () => {
+    const c = createEngineClock();
+    probe(c, 0, 0, 5, 5); // rtt 10, read exactly
+    probe(c, 25_000, 2, 5.5, 5.5); // rtt 11, 25 s later — the crystal has moved 2 ms meanwhile
+    // 10/2 + 50 ppm × 25 s = 6.25 ms against 11/2 = 5.5 ms: the fresh one wins
+    expect(c.estimateOffsetMs).toBeCloseTo(2, 6);
+  });
+
+  test("the window is bounded by age and by count", () => {
+    const c = createEngineClock();
+    for (let i = 0; i < 5000; i++) probe(c, i * 10, 0, 3 + (i % 5), 3);
+    expect(c.accepted).toBe(5000);
+    expect(Math.abs(c.offsetMs!)).toBeLessThan(2.5);
+    // nothing to read the window size from outside; what matters is that 50 s of 100 Hz probing costs
+    // the same per probe at the end as at the start
+    const t0 = performance.now();
+    for (let i = 5000; i < 10_000; i++) probe(c, i * 10, 0, 3 + (i % 5), 3);
+    expect(performance.now() - t0).toBeLessThan(2000);
   });
 });
 

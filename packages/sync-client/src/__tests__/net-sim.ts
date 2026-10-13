@@ -11,7 +11,7 @@
 import {
   NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_PROBE_PAIR_GAP_MS, NTP_STEADY_INTERVAL_MS, RESYNC_THRESHOLD_MS,
 } from "@hive/protocol";
-import { ClockModel } from "../clock";
+import { createEngineClock, type ClockModel } from "../clock";
 
 export interface Link {
   /** One-way delays for a packet sent at local time `t` (ms since the start of the run). */
@@ -48,7 +48,7 @@ export interface ClockSimResult {
 const BASE = 1_700_000_000_000;
 
 export function simulateClock(o: ClockSimOptions): ClockSimResult {
-  const clock = o.clock ?? new ClockModel({ pairs: true });
+  const clock = o.clock ?? createEngineClock();
   const inGap = (t: number): boolean => (o.gaps ?? []).some(([a, b]) => t >= a && t < b);
 
   // ---- the send schedule, as client.ts builds it -------------------------------------------------

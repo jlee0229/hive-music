@@ -41,6 +41,19 @@ export interface PitchShiftOptions {
   signal?: { readonly aborted: boolean };
   /** Replaces the between-slice yield. Tests count it; a Worker would pass a no-op. */
   yieldToEventLoop?: () => Promise<void>;
+  /**
+   * Where to write the render (at least as long as the input). Pass an AudioBuffer's own channel and
+   * the pitched copy exists exactly once; without it the render allocates its output, and copying that
+   * into an AudioBuffer afterwards holds the whole song twice (44 MB each for four minutes at 48 kHz).
+   */
+  into?: Float32Array;
+}
+
+/** The mono value of sample `i`: the mean of the channels. */
+function sampleAt(channels: readonly Float32Array[], i: number): number {
+  let sum = 0;
+  for (const ch of channels) sum += ch[i] ?? 0;
+  return sum / channels.length;
 }
 
 /** Every this-many slices the yield is a real timer: 5.9 s of audio, the cadence it always had. */
@@ -76,15 +89,28 @@ function macrotaskYielder(): { hop: () => Promise<void>; close: () => void } {
   };
 }
 
-/** Pure mono in / mono out (soundtouchjs works in stereo frames internally; we mirror the channel). */
+/**
+ * Mono out (soundtouchjs works in stereo frames internally; we mirror the channel). The input is one
+ * channel, or several that are averaged sample by sample as they are read — a stereo original is
+ * downmixed without a third copy of the song, instead of losing its right channel.
+ */
 export async function pitchShiftMono(
-  input: Float32Array,
+  source: Float32Array | readonly Float32Array[],
   semitones: number,
   opts: PitchShiftOptions = {},
 ): Promise<Float32Array> {
+  const channels: readonly Float32Array[] = source instanceof Float32Array ? [source] : source;
+  const input = channels[0] ?? new Float32Array(0);
+  const mixed = channels.length > 1;
   // A non-finite shift is no shift: ±Infinity makes the stretcher's tempo 0 or Infinity and the
   // pull loop below then spins forever without yielding, freezing the tab.
-  if (semitones === 0 || !Number.isFinite(semitones)) return input;
+  if (semitones === 0 || !Number.isFinite(semitones)) {
+    if (!mixed && !opts.into) return input;
+    const same = opts.into ?? new Float32Array(input.length);
+    for (let i = 0; i < input.length; i++) same[i] = sampleAt(channels, i);
+    return same;
+  }
+  if (opts.into && opts.into.length < input.length) throw new RangeError("pitchShiftMono: `into` is shorter than the input");
   const st = new SoundTouch();
   st.tempo = 1.0;
   st.pitchSemitones = semitones;
@@ -93,21 +119,24 @@ export async function pitchShiftMono(
   // a window more, so without a tail the last 0.24-0.44 s of every render came back as zeros (and a
   // clip under one block as pure silence). Zeros appended to the source flush the real ending out.
   const sourceFrames = input.length === 0 ? 0 : input.length + TAIL_PAD_FRAMES;
-  const source = {
+  const frameSource = {
     extract(target: Float32Array, numFrames: number, position: number): number {
       const frames = Math.min(numFrames, Math.max(0, sourceFrames - position));
       for (let i = 0; i < frames; i++) {
-        const s = position + i < input.length ? input[position + i]! : 0;
+        const at = position + i;
+        const s = at < input.length ? (mixed ? sampleAt(channels, at) : input[at]!) : 0;
         target[i * 2] = s;
         target[i * 2 + 1] = s;
       }
       return frames;
     },
   };
-  const filter = new SimpleFilter(source, st);
+  const filter = new SimpleFilter(frameSource, st);
 
   // Output pinned to the input's length, so the timeline mapping never depends on the shifter.
-  const out = new Float32Array(input.length);
+  const out = opts.into ?? new Float32Array(input.length);
+  // A supplied array may hold anything; an early render leaves its first `-lag` samples untouched.
+  if (opts.into) out.fill(0, 0, input.length);
   const chunk = new Float32Array(CHUNK_FRAMES * 2);
   // Re-align onto the input's timeline: a late render loses its first `lag` raw samples, an early
   // one starts that far into the output (leaving the head silent).

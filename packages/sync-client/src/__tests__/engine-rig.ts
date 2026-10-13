@@ -5,7 +5,7 @@
  * retry) can then be driven for simulated hours and inspected.
  */
 import type { Assignment, RoomState, Transport } from "@hive/protocol";
-import { createBrowserAudioEngine } from "../audio";
+import { createBrowserAudioEngine, type BrowserAudioEngineOptions, type FetchStemOptions } from "../audio";
 import type { AudioEngine, AudioEngineContext } from "../client";
 import { ClockModel, CtxMapper } from "../clock";
 import { Emitter } from "../transport";
@@ -98,6 +98,14 @@ export interface EngineRigOptions {
   durationSec?: number;
   outputLatency?: number;
   tableLatencyMs?: number | null;
+  pitchKeepIdleBytes?: number;
+  /**
+   * Switches the rig to the engine's real two-phase load (bytes, then decode), which is what makes the
+   * pre-download of the next song possible. The test decides when each file's bytes arrive.
+   */
+  fetchStem?: (url: string, o: FetchStemOptions) => Promise<ArrayBuffer>;
+  /** With `fetchStem`: how long a decode takes on virtual time (default: none). */
+  decodeMs?: number;
 }
 
 export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
@@ -130,6 +138,9 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
     calibratedOffsetMs?: number | null;
     audioReadyTrackId?: string | null;
     stems?: string[];
+    /** The server's hint for the song after this one (id), or null/undefined for none. */
+    nextTrackId?: string | null;
+    nextStems?: string[];
   } = {}): { room: RoomState; assignment: Assignment | null } => {
     const assignment = over.assignment === undefined ? makeAssignment() : over.assignment;
     const trackId = over.trackId === undefined ? "song-a" : over.trackId;
@@ -139,6 +150,7 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
       createdAtServerTime: LOCAL0,
       hostClientIds: [],
       track: trackId ? track(trackId, over.stems) : null,
+      ...(over.nextTrackId === undefined ? {} : { nextTrack: over.nextTrackId ? track(over.nextTrackId, over.nextStems) : null }),
       transport: over.transport ?? { state: "stopped" },
       mode: { kind: "UNISON", params: {} },
       scenePlan: null,
@@ -178,17 +190,43 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
   };
 
   const loadCalls: string[] = [];
+  /** `pitchYields`: slices the CHOIR render has finished — the only outside sign that one is running. */
+  const counters = { pitchYields: 0 };
+  const fetchCalls: Array<{ url: string; priority: string | undefined; signal: AbortSignal | undefined }> = [];
+  const decodeCalls: number[] = [];
+  const twoPhase: Partial<BrowserAudioEngineOptions> = opts.fetchStem
+    ? {
+        fetchStem: (url, o) => {
+          fetchCalls.push({ url, priority: o.priority, signal: o.signal });
+          return opts.fetchStem!(url, o);
+        },
+        decodeStem: (async (bytes: ArrayBuffer) => {
+          decodeCalls.push(vt.nowMs);
+          if (opts.decodeMs) await new Promise((resolve) => setTimeout(resolve, opts.decodeMs));
+          void bytes;
+          return new FakeBuffer(durationSec, 44100);
+        }) as unknown as BrowserAudioEngineOptions["decodeStem"],
+      }
+    : {
+        loadStem: (async (url: string) => {
+          loadCalls.push(url);
+          if (opts.loadStem) return opts.loadStem(url);
+          return new FakeBuffer(durationSec, 44100);
+        }) as unknown as (url: string, c: AudioContext) => Promise<AudioBuffer>,
+      };
   const engine = createBrowserAudioEngine(host, {
     createContext: () => {
       const c = new SimCtx(vt, 10 + contexts.length * 1000, opts.outputLatency ?? 0);
       contexts.push(c);
       return c as unknown as AudioContext;
     },
-    loadStem: (async (url: string) => {
-      loadCalls.push(url);
-      if (opts.loadStem) return opts.loadStem(url);
-      return new FakeBuffer(durationSec, 44100);
-    }) as unknown as (url: string, c: AudioContext) => Promise<AudioBuffer>,
+    ...twoPhase,
+    // The CHOIR render yields through a timer, so it advances exactly as far as the test moves time.
+    pitchKeepIdleBytes: opts.pitchKeepIdleBytes,
+    pitchYield: () => {
+      counters.pitchYields++;
+      return new Promise<void>((resolve) => setTimeout(resolve, 0));
+    },
   }) as AudioEngine & { debug: AudioEngine["debug"] & Record<string, unknown> };
 
   return {
@@ -201,6 +239,9 @@ export function engineRig(vt: VirtualTime, opts: EngineRigOptions = {}) {
     errors,
     contexts,
     loadCalls,
+    fetchCalls,
+    decodeCalls,
+    counters,
     localMs,
     makeRoom,
     /** The most recently created context. */

@@ -8,15 +8,15 @@
  * inside CtxMapper.
  */
 import {
-  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS,
+  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, PROTOCOL_VERSION,
   SET_POSITION_MAX_HZ, computeSyncErrMs, trackTimeSec as transportTrackTimeSec,
   type Assignment, type AudioState, type ClientMessage, type ClientRecord, type HealthSnapshot,
   type ModeKind, type ModeParams, type RoomState, type ScenePlan, type ServerMessage, type StemRole,
 } from "@hive/protocol";
 import { createBrowserAudioEngine } from "./audio";
-import { ClockModel, CtxMapper, localNow } from "./clock";
+import { ClockModel, createEngineClock, CtxMapper, localNow } from "./clock";
 import type { StartDecision } from "./scheduler";
-import { Emitter, persistedClientId, RoomTransport } from "./transport";
+import { Emitter, persistedClientId, postVibe, RoomTransport } from "./transport";
 import type {
   CalibrationResult, ConnectionState, HiveAudio, HiveCalibration, HiveClient, HiveClientOptions, SyncStatus,
 } from "./index";
@@ -127,17 +127,27 @@ export interface AudioEngineContext {
 }
 
 export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveClientInternals = {}): HiveClient {
-  const clientId = opts.clientId ?? persistedClientId(opts.roomCode);
-  const clock = new ClockModel({ pairs: true });
+  const clientId = opts.clientId ?? persistedClientId(opts.roomCode, opts.kind);
+  const clock = createEngineClock();
   const mapper = new CtxMapper(clock);
   const ev = new Emitter();
 
   let room: RoomState | null = null;
   let timers: Array<ReturnType<typeof setInterval>> = [];
-  let pairTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Second halves of probe pairs that have not been sent yet. */
+  const pairTimers = new Set<ReturnType<typeof setTimeout>>();
   let probeGroup = 0;
   let lastPositionSent = 0;
   let positionFlush: ReturnType<typeof setTimeout> | null = null;
+
+  /** `WELCOME.isHost`; null until the first WELCOME. */
+  let isHost: boolean | null = null;
+  let protocolMismatch: { server: number; client: number } | null = null;
+  /** PROTO-13: nothing used to read WELCOME.protocolVersion, so a stale open tab never found out. */
+  const noteProtocolVersion = (server: number): void => {
+    protocolMismatch = server === PROTOCOL_VERSION ? null : { server, client: PROTOCOL_VERSION };
+    if (protocolMismatch) ev.emit("protocolMismatch", server, PROTOCOL_VERSION);
+  };
 
   const me = (): ClientRecord | null => (room && clientId in room.clients ? room.clients[clientId]! : null);
   const assignmentOf = (): Assignment | null => me()?.assignment ?? null;
@@ -146,11 +156,13 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     opts,
     clientId,
     {
-      onWelcome: () => {
+      onWelcome: (msg) => {
+        isHost = msg.isHost;
+        noteProtocolVersion(msg.protocolVersion);
         clock.onReconnect();
         startTimers();
       },
-      onConnection: (state) => ev.emit("connection", state),
+      onConnection: (state) => ev.emit("connection", state, isHost),
       onReconnect: () => {
         stopTimers();
         clock.onReconnect();
@@ -247,11 +259,14 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
       transport.send({ type: "NTP_REQUEST", t0, probeGroupId: id, probeGroupIndex: index });
     };
     sendOne(0);
-    if (pairTimer) clearTimeout(pairTimer);
-    pairTimer = setTimeout(() => {
-      pairTimer = null;
+    // Each pair owns its own timer. With a single slot, a burst tick and a steady tick landing together
+    // (1, 2, 3 and 4 s after WELCOME) cancelled the first one's second half: four probes lost from the
+    // burst that the first clock is built on (found by scale-net).
+    const timer = setTimeout(() => {
+      pairTimers.delete(timer);
       sendOne(1);
     }, ClockModel.pairGapMs);
+    pairTimers.add(timer);
   }
 
   function startTimers(): void {
@@ -281,8 +296,8 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
   function stopTimers(): void {
     for (const t of timers) clearInterval(t);
     timers = [];
-    if (pairTimer) clearTimeout(pairTimer);
-    pairTimer = null;
+    for (const t of pairTimers) clearTimeout(t);
+    pairTimers.clear();
   }
 
   const client: HiveClient = {
@@ -298,6 +313,12 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     },
     get connection(): ConnectionState {
       return transport.connection;
+    },
+    get isHost() {
+      return isHost;
+    },
+    get protocolMismatch() {
+      return protocolMismatch;
     },
     get status() {
       return status();
@@ -339,7 +360,10 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
         }, gap - (now - lastPositionSent));
       },
       nudge: (id, nudgeMs) => transport.send({ type: "NUDGE", clientId: id, nudgeMs: Math.round(nudgeMs) }),
-      setPlays: (plays) => transport.send({ type: "SET_PLAYS", plays }),
+      setPlays: (plays) => {
+        transport.setPlays(plays); // remembered for every later re-JOIN (HOST-06)
+        transport.send({ type: "SET_PLAYS", plays });
+      },
       kick: (id) => transport.send({ type: "KICK", clientId: id }),
       async startCalibration() {
         transport.send({ type: "CALIBRATION_START", referenceClientId: clientId });
@@ -360,15 +384,7 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
       cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
       resetCalibration: (clientId?: string) =>
         transport.send(clientId ? { type: "CALIBRATION_RESET", clientId } : { type: "CALIBRATION_RESET" }),
-      async vibe(prompt: string): Promise<ScenePlan> {
-        const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ prompt }),
-        });
-        if (!res.ok) throw new Error(`vibe failed: ${res.status}`);
-        return ((await res.json()) as { scenePlan: ScenePlan }).scenePlan;
-      },
+      vibe: (prompt: string) => postVibe(opts, prompt),
     },
     get calibration() {
       return audio.calibration;

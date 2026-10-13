@@ -23,7 +23,7 @@
  */
 import {
   NTP_PROBE_PAIR_GAP_MS, NTP_PROBE_PAIR_TOLERANCE_MS, NTP_SAMPLE_MAX_AGE_MS, NTP_WINDOW, NTP_BURST_WINDOW_MS,
-  RESYNC_THRESHOLD_MS,
+  RESYNC_THRESHOLD_MS, SYNC_FLOOR_MS,
 } from "@hive/protocol";
 
 /** Applied-offset slew rate, ms per second (docs/03-sync-engine.md, "Application"). */
@@ -56,13 +56,54 @@ export interface Probe {
 
 export type ProbeVerdict = "accepted" | "buffered" | "rejected";
 
+/**
+ * Which estimator turns probes into an offset.
+ *
+ *  - `"floor"` — what the engine runs. Every probe is kept for NTP_SAMPLE_MAX_AGE_MS; the estimate is
+ *    the sample with the smallest error *bound* (`rtt/2` plus what the crystal can have drifted since);
+ *    and the path's RTT floor is remembered, so that when nothing in the window is near it — sustained
+ *    one-way congestion, the one thing a round trip cannot tell from a clock change — the offset is
+ *    held instead of followed.
+ *  - `"pairs"` — the previous estimator: only coded pairs whose two halves saw the same uplink delay
+ *    (within 2 ms) enter a 30-sample window. Kept for A/B on /diag: on a jittery link it discards
+ *    66–89 % of probes, so the first clock takes seconds and the sparse window lets a response that sat
+ *    behind a retransmit become "the best" (measured by scale-net, SCALE-NET-06).
+ *  - `"plain"` — every probe into the 30-sample min-RTT window, no gating: `createStubClient`.
+ */
+export type ClockEstimator = "floor" | "pairs" | "plain";
+
 export interface ClockModelOptions {
-  /**
-   * Enforce coded-pair validation. On for the real engine; off for `createStubClient`, which has no
-   * audio to protect and must stay deterministic in CI.
-   */
+  /** Shorthand kept for existing callers: `true` is `estimator: "pairs"`, `false` is `"plain"`. */
   pairs?: boolean;
+  estimator?: ClockEstimator;
 }
+
+/** The clock the real engine runs. Tests and simulators build theirs through this too. */
+export const createEngineClock = (): ClockModel => new ClockModel({ estimator: "floor" });
+
+/** `"floor"`: crystal drift assumed when ranking an old sample against a new one, parts per million. */
+export const FLOOR_AGE_PPM = 50;
+/**
+ * `"floor"`: how long the offset is held when nothing in the window is near the RTT floor, before
+ * concluding that the path itself got longer and relearning the floor. At 50 ppm that is 3 ms of coast.
+ */
+export const FLOOR_HOLD_MS = 60_000;
+/** `"floor"`: a sample counts as "at the floor" within this fraction of it (and never less than 2 ms). */
+export const FLOOR_NEAR_FRACTION = 0.25;
+/**
+ * `"floor"`: the first estimate is adopted as soon as some sample bounds the error to this (its RTT is
+ * at most twice it) — the first or second probe on a good link. Otherwise the model waits for
+ * FLOOR_FIRST_MIN_PROBES (one second into the burst) and takes the best of them.
+ *
+ * Half the 30 ms floor, chosen on scale-net's links (40 seeds each): at 30 ms a phone has a clock
+ * 0.5 s sooner on venue Wi-Fi but is up to 18 ms wrong in its first seconds; at 10 ms the worst venue
+ * phone waits 2.2 s; at 15 ms the worst first clock is 1.35 s and the worst early error 13.8 ms. Fewer
+ * than ten probes for the fallback is not enough on a link with retransmits (six: 93 ms).
+ */
+export const FLOOR_FIRST_BOUND_MS = SYNC_FLOOR_MS / 2;
+export const FLOOR_FIRST_MIN_PROBES = 10;
+/** `"floor"`: hard cap on the window (the burst is 40 probes in 4 s, steady state 2 a second). */
+const FLOOR_MAX_SAMPLES = 160;
 
 interface Sample {
   offset: number;
@@ -93,14 +134,22 @@ export class ClockModel {
    */
   degraded = false;
 
+  /** `"floor"` only: true while the offset is being held because nothing in the window is near the RTT floor. */
+  holding = false;
+  /** `"floor"` only: the path's round-trip floor as currently believed, ms. */
+  floorRttMs: number | null = null;
+  readonly estimator: ClockEstimator;
+
   private readonly usePairs: boolean;
   private samples: Sample[] = [];
   private pending = new Map<number, Probe>();
   private firstProbeLocal: number | null = null;
   private lastSlewLocal = 0;
+  private lastNearFloorAt = -Infinity;
 
   constructor(opts: ClockModelOptions = {}) {
-    this.usePairs = opts.pairs ?? false;
+    this.estimator = opts.estimator ?? (opts.pairs ? "pairs" : "plain");
+    this.usePairs = this.estimator === "pairs";
   }
 
   /**
@@ -111,6 +160,7 @@ export class ClockModel {
   addProbe(t0: number, t1: number, t2: number, t3: number, probeGroupId?: number, probeGroupIndex?: 0 | 1): ProbeVerdict {
     const probe: Probe = { t0, t1, t2, t3, probeGroupId, probeGroupIndex };
     this.firstProbeLocal ??= t3;
+    if (this.estimator === "floor") return this.addProbeFloor(probe);
 
     if (!this.usePairs || probeGroupId === undefined || probeGroupIndex === undefined) {
       this.accept(probe);
@@ -171,6 +221,75 @@ export class ClockModel {
   /** The inter-departure gap a caller should aim for when sending the second probe of a pair. */
   static get pairGapMs(): number {
     return NTP_PROBE_PAIR_GAP_MS;
+  }
+
+  /**
+   * The `"floor"` estimator (see ClockEstimator). Three rules, each there for a measured reason:
+   *
+   *  1. **Keep every probe.** A sample's error is bounded by half its round trip whatever its neighbour
+   *     did, so nothing is thrown away for failing a jitter test; the window is dense, and "the best
+   *     sample in it" is never a response that happened to sit behind a retransmit.
+   *  2. **Rank by bound, not by RTT**: `rtt/2 + FLOOR_AGE_PPM × age`. An old sample is a stale sample
+   *     once the crystal has drifted under it.
+   *  3. **Hold over.** Every sample in a congested window is biased the same way (a 40 s upload on the
+   *     same Wi-Fi drags the clock ~20 ms), and their RTTs say so: none is near the floor. The offset
+   *     is then held — it was right a moment ago and a crystal moves 3 ms a minute — until a sample at
+   *     the floor returns, or FLOOR_HOLD_MS passes and the longer path is accepted as the new floor.
+   *
+   * A sample that *contradicts* what is held (intervals that cannot overlap: the clock itself moved)
+   * overrides the hold-over at once — see `dropContradicted`.
+   */
+  private addProbeFloor(p: Probe): ProbeVerdict {
+    const t3 = p.t3;
+    const fresh: Sample = { offset: offsetOf(p), rtt: rttOf(p), at: t3 };
+    const before = this.samples.length;
+    this.dropContradicted(fresh);
+    const stepped = this.samples.length < before;
+    this.samples.push(fresh);
+    this.samples = this.samples.filter((s) => t3 - s.at <= NTP_SAMPLE_MAX_AGE_MS);
+    if (this.samples.length === 0) this.samples = [fresh];
+    if (this.samples.length > FLOOR_MAX_SAMPLES) this.samples.splice(0, this.samples.length - FLOOR_MAX_SAMPLES);
+    this.accepted++;
+
+    const ppm = FLOOR_AGE_PPM / 1e6;
+    const bound = (s: Sample): number => s.rtt / 2 + ppm * (t3 - s.at);
+    const best = this.samples.reduce((a, b) => (bound(b) < bound(a) ? b : a));
+
+    if (this.offsetMs === null) {
+      // No clock yet. Take the first sample that pins the error to FLOOR_FIRST_BOUND_MS; failing that,
+      // the best of the first FLOOR_FIRST_MIN_PROBES (one second into the burst), which on a path whose
+      // floor is that long is as good as it gets. `degraded` says the bound was not met.
+      const bounded = best.rtt / 2 <= FLOOR_FIRST_BOUND_MS;
+      const waitedOut =
+        this.samples.length >= FLOOR_FIRST_MIN_PROBES ||
+        (this.firstProbeLocal !== null && t3 - this.firstProbeLocal > NTP_BURST_WINDOW_MS);
+      if (!bounded && !waitedOut) return "buffered";
+      this.degraded = !bounded;
+      this.floorRttMs = Math.min(...this.samples.map((s) => s.rtt));
+      this.lastNearFloorAt = t3;
+    } else {
+      this.floorRttMs = Math.min(this.floorRttMs ?? Infinity, fresh.rtt);
+      const nearFloor = best.rtt <= this.floorRttMs + Math.max(2, FLOOR_NEAR_FRACTION * this.floorRttMs);
+      if (nearFloor || stepped) {
+        this.lastNearFloorAt = t3;
+        this.holding = false;
+      } else if (t3 - this.lastNearFloorAt < FLOOR_HOLD_MS) {
+        // Hold-over: keep the estimate, keep slewing the applied offset towards it.
+        this.holding = true;
+        this.applySlew(t3);
+        return "accepted";
+      } else {
+        // Nothing near the old floor for a whole hold period: the path got longer. Relearn it.
+        this.floorRttMs = best.rtt;
+        this.lastNearFloorAt = t3;
+        this.holding = false;
+      }
+      if (this.degraded && best.rtt / 2 <= FLOOR_FIRST_BOUND_MS) this.degraded = false;
+    }
+    this.estimateOffsetMs = best.offset;
+    this.rttMs = best.rtt;
+    this.applySlew(t3);
+    return "accepted";
   }
 
   private accept(p: Probe): void {

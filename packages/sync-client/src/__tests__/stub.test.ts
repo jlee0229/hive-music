@@ -60,3 +60,50 @@ describe("createStubClient against the mock", () => {
     player.disconnect();
   });
 });
+
+describe("PROTO-15 · the stub announces AUDIO_READY the way the real engine does", () => {
+  const base = () => ({ wsUrl: `ws://localhost:${PORT}/ws`, apiUrl: `http://localhost:${PORT}`, roomCode: "BZQ7" });
+  const until = async (pred: () => boolean, what: string, timeoutMs = 4000) => {
+    const deadline = performance.now() + timeoutMs;
+    while (!pred()) {
+      if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  test("unlock before connect (what the player page does): the server learns the phone is ready", async () => {
+    const player = createStubClient({ ...base(), kind: "player", plays: true, name: "Early", clientId: "ready-stub-0001" });
+    try {
+      await player.audio.unlock(); // no socket, no room yet: nothing to announce to
+      expect(player.audio.state).toBe("ready");
+      await player.connect();
+      await until(() => player.me?.audioReadyTrackId === player.room?.track?.id && !!player.room?.track, "audioReadyTrackId in the snapshot");
+      expect(mock.room.clients["ready-stub-0001"]!.audioReadyTrackId).toBe(mock.room.track!.id);
+    } finally {
+      player.disconnect();
+    }
+  });
+
+  test("connect before unlock, and a later track change, are announced too — once each", async () => {
+    const host = createStubClient({ ...base(), kind: "host", plays: false, hostKey: mock.hostKey, clientId: "ready-host-0002" });
+    const player = createStubClient({ ...base(), kind: "player", plays: true, name: "Late", clientId: "ready-stub-0002" });
+    try {
+      await Promise.all([host.connect(), player.connect()]);
+      await until(() => player.room?.track != null, "a track");
+      expect(mock.room.clients["ready-stub-0002"]!.audioReadyTrackId).toBeNull(); // locked: not ready, not announced
+      await player.audio.unlock();
+      const first = mock.room.track!.id;
+      await until(() => mock.room.clients["ready-stub-0002"]?.audioReadyTrackId === first, "the first announcement");
+
+      const tracks = (await (await fetch(`${base().apiUrl}/tracks`)).json()) as { tracks: Array<{ id: string }> };
+      const other = tracks.tracks.find((t) => t.id !== first);
+      if (other) {
+        host.host.setTrack(other.id);
+        await until(() => mock.room.clients["ready-stub-0002"]?.audioReadyTrackId === other.id, "the announcement for the new track");
+      }
+    } finally {
+      host.disconnect();
+      player.disconnect();
+    }
+  });
+});
