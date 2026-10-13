@@ -73,4 +73,4 @@ bun run mock --scenario apps/web/mocks/scenarios/party-12.json     # scripted fa
   the stub engine (`NEXT_PUBLIC_HIVE_ENGINE=stub`).
 - **Bun is pinned in four places** (`package.json`, `infra/Dockerfile`, both workflows);
   `bun scripts/check-versions.ts` fails when they disagree.
-- **Uploads are heavy**: a 10-minute song is a 53 MB WAV and about 360 MB of server memory while it is processed.
+- **Uploads are heavy**: a 10-minute song is a 53 MB WAV and about 280 MB of server memory while it is processed.

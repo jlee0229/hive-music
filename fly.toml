@@ -20,9 +20,10 @@ primary_region = "ewr"
 kill_signal = "SIGINT"
 kill_timeout = 5
 
-# A 10-minute upload peaks around 360 MB of process memory (measured; docs/13 "Memory") and the
-# machine has 256 MB. Swap (free: it lives on the root disk) turns that from an OOM kill that ends
-# every party into a slow upload. It is a cushion, not a plan: the plan is a bigger machine.
+# A 10-minute upload peaks around 280 MB of process memory (measured after the upload pipeline was
+# moved to a worker; it was 360 MB before — docs/13 "Memory") and the machine has 256 MB. Swap
+# (free: it lives on the root disk) turns that from an OOM kill that ends every party into a slow
+# upload. It is a cushion, not a plan: the plan is a bigger machine.
 swap_size_mb = 512
 
 [build]
