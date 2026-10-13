@@ -7,6 +7,7 @@ import {
   ROOM_STATE_MAX_HZ,
   RoomStateSchema,
   STEMS,
+  nextInRotation,
   parseServerMessage,
   trackTimeSec,
   type RoomState,
@@ -113,7 +114,10 @@ function runSeed(seed: number, steps: number) {
       if (msg.type === "ROOM_STATE") throw new Error(`ROOM_STATE published to the whole topic ${topic}: it must be built per recipient`);
     },
   } as unknown as Bun.Server<Conn>);
-  const setLibrary = (lib: LibraryEntry[]) => void ((mgr as unknown as { library: LibraryEntry[] }).library = lib);
+  const setLibrary = (lib: LibraryEntry[]) => {
+    (mgr as unknown as { library: LibraryEntry[] }).library = lib;
+    for (const room of (mgr as unknown as { rooms: Map<string, Room> }).rooms.values()) room.onLibraryChanged(); // as RoomManager.loadLibrary does
+  };
   setLibrary(LIBRARY);
   const roomsOf = () => (mgr as unknown as { rooms: Map<string, Room> }).rooms;
 
@@ -380,6 +384,9 @@ function runSeed(seed: number, steps: number) {
       expect(new Set(state.hostClientIds).size).toBe(state.hostClientIds.length);
 
       for (const id of room.health.keys()) if (!state.clients[id]) throw new Error(`health entry for ${id}, which has no record`);
+      // nextTrack is always what the rotation would do right now with the library as it is right now
+      const promised = state.track ? nextInRotation(mgr.getLibrary(), state.track.id) : null;
+      if ((state.nextTrack?.id ?? null) !== (promised?.id ?? null)) throw new Error(`nextTrack says ${state.nextTrack?.id ?? null}, the rotation would go to ${promised?.id ?? null}`);
       if (state.calibration.state === "done") coverage.calibrationsDone++;
       if (state.calibration.state === "failed") coverage.calibrationsFailed++;
       if (state.transport.state === "paused") coverage.pausedRooms++;

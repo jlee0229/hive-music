@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LEAD_MS, PROTOCOL_VERSION, type ScenePlan, type ServerMessage, type Transport } from "@hive/protocol";
-import { currentScene, nextScene } from "../scene-timer";
+import { currentScene, nextScene } from "@hive/protocol"; // the server's copy moved there unchanged (timeline.ts)
 import { Room, type Conn } from "../rooms";
 
 type WS = Bun.ServerWebSocket<Conn>;

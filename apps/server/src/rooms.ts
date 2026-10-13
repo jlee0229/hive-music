@@ -15,6 +15,11 @@ import {
   ROOM_IDLE_TTL_MS,
   ROOM_STATE_MAX_HZ,
   STARTER_LATENCY_TABLE_MS,
+  TRACK_ADVANCE_LEAD_MS,
+  currentScene,
+  loopRestartZero,
+  nextInRotation,
+  nextScene,
   parseClientMessage,
   trackTimeSec,
   withAssignments,
@@ -26,19 +31,11 @@ import {
   type ServerMessage,
   type TrackInfo,
 } from "@hive/protocol";
-import { currentScene, nextScene } from "./scene-timer";
 import { loadLibrary, type LibraryEntry } from "./library";
 import { HostKeys, safeEqual } from "./host-key";
 import { RateLimiter } from "./rate-limit";
 
 const now = () => performance.timeOrigin + performance.now();
-
-/**
- * Gap between songs when the playlist auto-advances: long enough for most phones to download and
- * decode the next track's stems (they arrive in the same ROOM_STATE that moves the transport), so
- * the room comes in together instead of straggling. Slower phones still join mid-song when ready.
- */
-const TRACK_ADVANCE_LEAD_MS = 5000;
 
 /**
  * Hard ceiling on client records in one room (connected or retained). Not the product limit — that
@@ -374,9 +371,34 @@ export class Room {
     this.server.publish(this.code, JSON.stringify({ type: "PING", serverTime: t } satisfies ServerMessage));
   }
 
+  private static trackInfo(t: LibraryEntry): TrackInfo {
+    return { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
+  }
+
   private setTrack(t: LibraryEntry) {
-    const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
-    this.room.track = info;
+    this.room.track = Room.trackInfo(t);
+    this.refreshNextTrack();
+  }
+
+  /**
+   * `room.nextTrack`: the song the rotation would advance to when the current one ends (null for a
+   * single-song loop or no track). Phones start downloading it during the current song — the
+   * advance itself only gives TRACK_ADVANCE_LEAD_MS. A hint, recomputed whenever its inputs move:
+   * the track (setTrack) and the library (onLibraryChanged). Returns whether it changed.
+   */
+  private refreshNextTrack(): boolean {
+    const next = this.room.track ? nextInRotation(this.getLibrary(), this.room.track.id) : null;
+    const info = next ? Room.trackInfo(next) : null;
+    if (JSON.stringify(info) === JSON.stringify(this.room.nextTrack ?? null)) return false; // absent and null mean the same
+    this.room.nextTrack = info;
+    return true;
+  }
+
+  /** An upload (or the tempo backfill) changed the library: the rotation may now lead somewhere else. */
+  onLibraryChanged() {
+    if (this.destroyed || !this.refreshNextTrack()) return;
+    this.dirty = true;
+    this.flush();
   }
 
   // ---- scene timer (B5s) -------------------------------------------------------
@@ -438,16 +460,12 @@ export class Room {
   private loopBack(endServerTime: number) {
     this.loopTimer = null;
     if (this.room.transport.state !== "playing" || !this.room.track) return;
-    // Playlist rotation: real songs only, so a party never lands on a synthetic test track unless
-    // the library holds nothing else. The library is read live — a song uploaded mid-show joins
-    // the rotation before the current one ends.
-    const lib = this.getLibrary();
-    const real = lib.filter((t) => !t.generated);
-    const pool = real.length > 0 ? real : lib;
-    const idx = pool.findIndex((t) => t.id === this.room.track!.id);
-    const next = pool.length > 0 ? pool[(idx + 1) % pool.length]! : null;
+    // Playlist rotation (nextInRotation, shared with the mock): real songs only, so a party never
+    // lands on a synthetic test track unless the library holds nothing else. The library is read
+    // live — a song uploaded mid-show joins the rotation before the current one ends.
+    const next = nextInRotation(this.getLibrary(), this.room.track.id);
 
-    if (next && next.id !== this.room.track.id) {
+    if (next) {
       // Advance to the next song. Phones have not downloaded it yet, so the start gets a breather
       // (TRACK_ADVANCE_LEAD_MS) — fast phones start together on that instant, slow ones drop in
       // mid-song the moment their stems decode, exactly like a late joiner.
@@ -461,8 +479,7 @@ export class Room {
       // fires LEAD_MS early); a boundary too close or already past (a SEEK beyond the end, or a
       // room found stuck from before this timer existed) restarts with the standard lead instead —
       // a serverTimeAtTrackZero in the past would start mid-track.
-      const zero = endServerTime > now() + 100 ? endServerTime : now() + LEAD_MS;
-      this.room.transport = { state: "playing", serverTimeAtTrackZero: zero };
+      this.room.transport = { state: "playing", serverTimeAtTrackZero: loopRestartZero(endServerTime, now()) };
       this.dirty = true;
       this.flush();
     }
@@ -982,6 +999,7 @@ export class RoomManager {
 
   async loadLibrary() {
     this.library = await loadLibrary(this.opts.fixturesDir);
+    for (const room of this.rooms.values()) room.onLibraryChanged();
   }
 
   getLibrary(): LibraryEntry[] {
