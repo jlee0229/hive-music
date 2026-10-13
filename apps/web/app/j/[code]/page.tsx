@@ -311,7 +311,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
           <h1 className="font-display text-3xl font-bold">
             <button onClick={handleResume}>{resuming ? "Resuming…" : "Tap to resume"}</button>
           </h1>
-          <p style={{ color: "var(--muted)" }}>Sound paused — a call, the lock screen, or Siri interrupted it.</p>
+          <p style={{ color: "var(--muted)" }}>A call or the lock screen paused the sound.</p>
         </div>
       </main>
     );
@@ -409,7 +409,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             {trackStems.length ? (
               <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
                 <div className="flex flex-wrap justify-between gap-x-2 text-sm">
-                  <span className="font-semibold">Downloading the song</span>
+                  {/* The same words as the playing screen's "Loading the song…"; and once it is loaded, say so. */}
+                  <span className="font-semibold">{audio.loadProgress >= 1 ? "Song ready" : "Loading the song"}</span>
                   <span className="font-mono shrink-0" style={{ color: "var(--muted)" }}>
                     {Math.min(partsDone, trackStems.length)} / {trackStems.length} parts
                   </span>
@@ -429,9 +430,6 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
                   </span>
                   <span className="font-display text-[22px] font-bold" style={{ color: roleText }}>
                     {me.assignment.label}
-                  </span>
-                  <span className="text-[13px] [@media(max-height:700px)]:hidden" style={{ color: "var(--muted)" }}>
-                    The host can change this during the show.
                   </span>
                 </div>
               </div>

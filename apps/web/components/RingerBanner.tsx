@@ -14,7 +14,7 @@ export function RingerBanner() {
           Ringer on, please
         </span>
         <span className="text-[13px] leading-snug" style={{ color: "var(--ringer-body)" }}>
-          Silent mode mutes web audio. Flip the side switch.
+          Silent mode mutes the music. Flip the side switch.
         </span>
       </div>
     </div>

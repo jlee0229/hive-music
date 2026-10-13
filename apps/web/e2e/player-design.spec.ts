@@ -378,3 +378,23 @@ test.describe("landing page", () => {
     });
   }
 });
+
+test.describe("one voice", () => {
+  test.use({ mockScenario: "join.json", userAgent: IPHONE_UA });
+
+  test("the guest's way in has no engineer words and no filler", async ({ page }) => {
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.goto("/j/BZQ7");
+    await expect(page.getByText("Silent mode mutes the music. Flip the side switch.")).toBeVisible();
+    const jargon = /web audio|clock|stem|latency|\bms\b|offset|socket|server|protocol/i;
+    expect(await page.locator("main").innerText()).not.toMatch(jargon);
+
+    await page.getByPlaceholder("Your name").fill("Plain");
+    await page.getByRole("button", { name: "Tap to join" }).click();
+    await expect(page.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
+    // The download card says when it is done instead of showing a finished "downloading" forever.
+    await expect(page.getByText("Song ready")).toBeVisible();
+    await expect(page.getByText("The host can change this during the show.")).toHaveCount(0);
+    expect(await page.locator("main").innerText()).not.toMatch(jargon);
+  });
+});
