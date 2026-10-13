@@ -33,9 +33,16 @@ export class Emitter {
   }
 }
 
-/** One id per room, kept in localStorage: it is what makes a reconnect restore the same slot. */
-export function persistedClientId(roomCode: string): string {
-  const key = `hive:clientId:${roomCode}`;
+/**
+ * One id per room *and role*, kept in localStorage: it is what makes a reconnect restore the same slot.
+ *
+ * Per role because every tab of one browser shares localStorage. With a single key, opening the join
+ * page on the phone that is hosting took over the host's own slot, and an id first used by `/screen`
+ * came back as a silent viewer when the same browser later joined as a player (SG-03). Players keep
+ * the original key — nothing to migrate, and it is the one existing sessions and tests read.
+ */
+export function persistedClientId(roomCode: string, kind: HiveClientOptions["kind"] = "player"): string {
+  const key = `hive:clientId:${roomCode}${kind === "host" ? ":host" : kind === "viewer" ? ":screen" : ""}`;
   const fresh = () => globalThis.crypto?.randomUUID?.() ?? `c-${Math.random().toString(36).slice(2, 14)}`;
   try {
     const existing = globalThis.localStorage?.getItem(key);

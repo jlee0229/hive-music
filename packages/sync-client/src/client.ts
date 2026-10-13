@@ -127,7 +127,7 @@ export interface AudioEngineContext {
 }
 
 export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveClientInternals = {}): HiveClient {
-  const clientId = opts.clientId ?? persistedClientId(opts.roomCode);
+  const clientId = opts.clientId ?? persistedClientId(opts.roomCode, opts.kind);
   const clock = createEngineClock();
   const mapper = new CtxMapper(clock);
   const ev = new Emitter();

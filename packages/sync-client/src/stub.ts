@@ -23,7 +23,7 @@ import { Emitter, persistedClientId, RoomTransport } from "./transport";
 import type { CalibrationResult, ConnectionState, HiveClient, HiveClientOptions, SyncStatus } from "./index";
 
 export function createStubClient(opts: HiveClientOptions): HiveClient {
-  const clientId = opts.clientId ?? persistedClientId(opts.roomCode);
+  const clientId = opts.clientId ?? persistedClientId(opts.roomCode, opts.kind);
   const clock = new ClockModel(); // pairs: false — see the file header
   const ev = new Emitter();
   let room: RoomState | null = null;
