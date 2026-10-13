@@ -227,6 +227,52 @@ describe("mock ↔ server parity: the timeline keeps moving (the mock used to ha
       own.stop();
     }
   }, 15_000);
+
+  test("restart with wipe: the room comes back as apps/server re-creates it (new, empty, stopped, UNISON) and ordinary host commands put the show back on the old timeline", async () => {
+    const port = testPort(9);
+    const own = startMockServer({
+      port, quiet: true,
+      scenario: { players: [{ name: "Solo", position: [0.2, 0.3] }], mode: { kind: "STROBE", params: { groups: 3 } }, transport: "playing", trackId: "synthetic-60s" },
+    });
+    await own.ready;
+    try {
+      const host = await joined("par-host-0010", "host", port, own.hostKey);
+      const before = (await host.next("ROOM_STATE", (m) => m.room.transport.state === "playing")).room;
+      const zero = (before.transport as { serverTimeAtTrackZero: number }).serverTimeAtTrackZero;
+      await sleep(5); // a later clock reading for the new room's createdAtServerTime
+      const closed = new Promise<number>((r) => host.ws.addEventListener("close", (ev) => r(ev.code)));
+      own.simulateRestart({ wipe: true });
+      expect(await closed).toBe(1012);
+
+      const room = own.room;
+      expect(room.code).toBe(before.code);
+      expect(room.createdAtServerTime).toBeGreaterThan(before.createdAtServerTime);
+      expect(room.track).toBeNull();
+      expect(room.transport).toEqual({ state: "stopped" });
+      expect(room.mode).toEqual({ kind: "UNISON", params: {} });
+      expect(room.scenePlan).toBeNull();
+      expect(room.hostClientIds).toEqual([]);
+      expect(Object.keys(room.clients)).toEqual(["mock-01-solo"]); // the host's record is gone; it joins again as new
+      expect(room.clients["mock-01-solo"]!.calibratedOffsetMs).toBeNull();
+
+      // The same key is still the host, and SET_TRACK / SET_MODE / PLAY(position) restore the old timeline.
+      const back = await joined("par-host-0010", "host", port, own.hostKey);
+      const first = (await back.next("ROOM_STATE")).room;
+      expect(first.track).toBeNull();
+      expect(first.hostClientIds).toEqual(["par-host-0010"]);
+      const sentAt = performance.timeOrigin + performance.now();
+      back.send({ type: "SET_TRACK", trackId: "synthetic-60s" });
+      back.send({ type: "SET_MODE", mode: "STROBE", params: { groups: 3 } });
+      back.send({ type: "TRANSPORT", action: "PLAY", trackTimeSec: (sentAt + LEAD_MS - zero) / 1000 });
+      const resumed = (await back.next("ROOM_STATE", (m) => m.room.transport.state === "playing")).room;
+      expect(resumed.track!.id).toBe("synthetic-60s");
+      expect(resumed.mode).toEqual({ kind: "STROBE", params: { groups: 3 } });
+      expect(Math.abs((resumed.transport as { serverTimeAtTrackZero: number }).serverTimeAtTrackZero - zero)).toBeLessThan(50);
+      back.close();
+    } finally {
+      own.stop();
+    }
+  }, 15_000);
 });
 
 describe("timeline.ts (pure)", () => {

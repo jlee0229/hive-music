@@ -53,7 +53,12 @@ export const ScenarioSchema = z.object({
     .default([]),
   calibration: z.object({ state: z.enum(["running", "done"]), doneCount: z.number().int().min(0).default(0) }).nullable().default(null),
   scenePlan: z.object({ prompt: z.string(), scenes: ScenePlanCoreSchema.shape.scenes }).nullable().default(null),
-  chaos: z.object({ restartAfterSec: z.number().positive() }).nullable().default(null),
+  /**
+   * `restartAfterSec`: drop every socket that many seconds in. `wipe: true` also forgets the show, as
+   * a real restart does: apps/server keeps rooms in memory, and the host's key re-creates the room
+   * under the same code but empty (see `simulateRestart`).
+   */
+  chaos: z.object({ restartAfterSec: z.number().positive(), wipe: z.boolean().default(false) }).nullable().default(null),
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type ScenarioInput = z.input<typeof ScenarioSchema>;
@@ -760,18 +765,52 @@ export function startMockServer(opts: MockServerOptions = {}) {
    * restart behind a restored room looks like to a phone — and it is the interesting case, because the
    * timeline survives, so every phone must come back to the *same* position rather than to a new one.
    */
-  function simulateRestart() {
-    log("chaos: simulating server restart");
+  function simulateRestart(opts: { wipe?: boolean } = {}) {
+    log(`chaos: simulating server restart${opts.wipe ? " (room re-created empty)" : ""}`);
     for (const s of [...members]) s.close(1012, "mock restart");
     members.clear();
     sockets.clear();
-    for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
+    if (opts.wipe) wipeRoom();
+    else for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
     dirty = true;
+  }
+
+  /**
+   * What the room is after a real restart, once the host's key has re-created it (apps/server
+   * `Room` constructor): a new `createdAtServerTime`, no track, stopped, UNISON, no plan, no tuning,
+   * and nobody in it — every phone joins again as a new record. The seeded `mock-*` players have no
+   * socket to rejoin with, so they are simply seeded again (unmeasured, as a rejoined phone is).
+   */
+  function wipeRoom() {
+    for (const s of [...observers]) s.close(1012, "mock restart");
+    observers.clear();
+    clearCalibrationTimers();
+    cancelSceneTimer();
+    cancelLoopTimer();
+    for (const t of disconnectTimers.values()) clearTimeout(t);
+    disconnectTimers.clear();
+    health.clear();
+    joinCounter = 0;
+    room = {
+      code: room.code,
+      protocolVersion: PROTOCOL_VERSION,
+      createdAtServerTime: now(),
+      hostClientIds: [],
+      track: null,
+      transport: { state: "stopped" },
+      mode: { kind: "UNISON", params: {} },
+      scenePlan: null,
+      calibration: IDLE_CALIBRATION,
+      clients: {},
+    };
+    seedPlayers();
+    replan();
   }
 
   let chaosTimer: ReturnType<typeof setTimeout> | null = null;
   if (scenario.chaos) {
-    chaosTimer = setTimeout(simulateRestart, scenario.chaos.restartAfterSec * 1000);
+    const { wipe } = scenario.chaos;
+    chaosTimer = setTimeout(() => simulateRestart({ wipe }), scenario.chaos.restartAfterSec * 1000);
   }
 
   const ready = (async () => {
@@ -800,7 +839,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
     get room() { return room; },
     /** How many of each client message this server has handled (diagnostics; see `handle`). */
     get received() { return received; },
-    /** Drop every socket as a restart would, keeping the room (see `simulateRestart`). */
+    /** Drop every socket as a restart would, keeping the room — or, with `{ wipe: true }`, re-creating it empty (see `simulateRestart`). */
     simulateRestart,
     stop() {
       clearInterval(stateTimer); clearInterval(healthTimer); clearInterval(pingTimer);
