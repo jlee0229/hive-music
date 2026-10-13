@@ -206,7 +206,14 @@ describe("SG-02 / HOST-16 over the wire", () => {
     await host.answered;
     const guest = open({ clientId: "attacker-as-player-1", kind: "player", plays: true, name: "Mallory" }, code);
     await guest.answered;
-    const state = (await guest.until((m) => m.type === "ROOM_STATE" && m.room.hostClientIds.length > 0)) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
+    // A phone is no longer told who the host is (it gets its own record and nothing else)…
+    const mine = (await guest.until((m) => m.type === "ROOM_STATE")) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
+    expect(mine.room.hostClientIds).toEqual([]);
+    expect(Object.keys(mine.room.clients)).toEqual(["attacker-as-player-1"]);
+    // …but anyone can still read the roster by joining as a display, so the id stays public:
+    const spy = open({ clientId: "attacker-as-viewer-1", kind: "viewer", plays: false }, code);
+    await spy.answered;
+    const state = (await spy.until((m) => m.type === "ROOM_STATE" && m.room.hostClientIds.length > 0)) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
     const leakedHostId = state.room.hostClientIds[0]!;
     expect(leakedHostId).toBe("real-host-0001");
 
@@ -226,7 +233,7 @@ describe("SG-02 / HOST-16 over the wire", () => {
 
     // the real host is still the only host, still connected, and the mode never moved
     host.ws.send(JSON.stringify({ type: "SET_MODE", mode: "WAVE", params: {} }));
-    const after = (await guest.until((m) => m.type === "ROOM_STATE" && m.room.mode.kind !== "UNISON")) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
+    const after = (await spy.until((m) => m.type === "ROOM_STATE" && m.room.mode.kind !== "UNISON")) as Extract<ServerMessage, { type: "ROOM_STATE" }>;
     expect(after.room.mode.kind).toBe("WAVE"); // the host's change, not the attacker's STROBE
     expect(after.room.hostClientIds).toEqual(["real-host-0001"]);
     expect(after.room.clients["real-host-0001"]).toMatchObject({ kind: "host", connected: true });
@@ -234,5 +241,6 @@ describe("SG-02 / HOST-16 over the wire", () => {
     expect(host.log.some((m) => m.type === "ERROR")).toBe(false);
     host.ws.close();
     guest.ws.close();
+    spy.ws.close();
   });
 });

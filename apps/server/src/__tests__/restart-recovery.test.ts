@@ -25,7 +25,7 @@ function newManager() {
   m.attachServer({ publish: () => {} } as unknown as Bun.Server<Conn>);
   return m;
 }
-const types = (s: { sent: ServerMessage[] }) => s.sent.map((m) => (m.type === "ERROR" ? `ERROR ${m.code}` : m.type));
+const types = (s: { sent: ServerMessage[] }) => s.sent.filter((m) => m.type !== "ROOM_STATE").map((m) => (m.type === "ERROR" ? `ERROR ${m.code}` : m.type));
 /** A room that existed in "the process before the restart". */
 function previousLife() {
   const before = newManager();

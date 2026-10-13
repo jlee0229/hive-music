@@ -28,6 +28,9 @@ import type { LibraryEntry } from "../library";
  *   - hostClientIds is exactly the set of host records, and viewers never play;
  *   - a record is `connected` exactly when a live socket is registered for it;
  *   - everything the server sent or published parses as a ServerMessage;
+ *   - ROOM_STATE is per recipient: a player is sent its own record and nobody else's id, hosts,
+ *     viewers and observers the whole roster; no socket gets two closer than the 2 Hz cap; and
+ *     whenever the room has nothing left to flush, every open socket holds the current state;
  *   - a message from a socket that never presented the hostKey changed no host-only state, and
  *     every host-only message it sent was answered NOT_HOST;
  *   - every id in hostClientIds got there through a JOIN that carried that room's hostKey — never
@@ -67,6 +70,9 @@ interface Sock {
   room: string | null;
   welcomes: Array<{ isHost: boolean }>;
   errors: string[];
+  /** The last ROOM_STATE this socket was sent (its `room`, as JSON) and when. */
+  lastState: string | null;
+  lastStateAt: number;
   /** The JOIN this socket sent and has not had an answer to yet (it may be held: SG-15). */
   pendingJoin: { clientId: string; code: string; keyOk: boolean } | null;
 }
@@ -95,8 +101,8 @@ const coverage = {
 
 function runSeed(seed: number, steps: number) {
   const r = prng(seed);
-  const published: Array<{ topic: string; at: number }> = [];
   const wallNow = () => performance.timeOrigin + performance.now();
+  const minStateGapMs = 1000 / ROOM_STATE_MAX_HZ;
   let lastWire: string | null = null;
 
   const mgr = new RoomManager({ fixturesDir: "/nonexistent", hostKeySecret: "fuzz-secret-fuzz-secret-fuzz-secret-0123" });
@@ -104,7 +110,7 @@ function runSeed(seed: number, steps: number) {
     publish: (topic: string, data: string) => {
       const msg = parseServerMessage(data);
       if (!msg) throw new Error(`published an unparsable message: ${data.slice(0, 300)}`);
-      if (msg.type === "ROOM_STATE") published.push({ topic, at: wallNow() });
+      if (msg.type === "ROOM_STATE") throw new Error(`ROOM_STATE published to the whole topic ${topic}: it must be built per recipient`);
     },
   } as unknown as Bun.Server<Conn>);
   const setLibrary = (lib: LibraryEntry[]) => void ((mgr as unknown as { library: LibraryEntry[] }).library = lib);
@@ -134,13 +140,35 @@ function runSeed(seed: number, steps: number) {
   }
 
   function openSock(): Sock {
-    const s: Sock = { ws: null as unknown as WS, open: true, pendingClose: false, privileged: false, clientId: null, room: null, welcomes: [], errors: [], pendingJoin: null };
+    const s: Sock = { ws: null as unknown as WS, open: true, pendingClose: false, privileged: false, clientId: null, room: null, welcomes: [], errors: [], pendingJoin: null, lastState: null, lastStateAt: -Infinity };
     s.ws = {
       data: { clientId: null, roomCode: null },
       send: (raw: string) => {
         const msg = parseServerMessage(raw);
         if (!msg) throw new Error(`sent an unparsable message: ${raw.slice(0, 300)}`);
         if (msg.type === "ERROR") s.errors.push(msg.code);
+        if (msg.type === "ROOM_STATE") {
+          const t = wallNow();
+          const serverId = s.ws.data.clientId; // null: an observer
+          const live = s.ws.data.roomCode ? mgr.get(s.ws.data.roomCode) : undefined;
+          const rec = serverId && live ? live.room.clients[serverId] : undefined;
+          const ids = Object.keys(msg.room.clients);
+          if (rec?.kind === "player") {
+            if (ids.length !== 1 || ids[0] !== serverId) throw new Error(`player ${serverId} was sent the records of ${JSON.stringify(ids)}`);
+            if (msg.room.hostClientIds.length !== 0) throw new Error(`player ${serverId} was sent hostClientIds`);
+            const foreign = [...msg.room.calibration.order, ...Object.keys(msg.room.calibration.results), msg.room.calibration.referenceClientId ?? ""].filter((id) => id !== "" && id !== serverId);
+            if (foreign.length > 0) throw new Error(`player ${serverId} was sent other clients' ids in the calibration block: ${JSON.stringify(foreign)}`);
+            if (live && msg.room.calibration.order.length !== (msg.room.calibration.state === "countdown" || msg.room.calibration.state === "running" ? live.room.calibration.order.length : 0)) {
+              throw new Error(`player ${serverId}: calibration order has ${msg.room.calibration.order.length} slots, the room has ${live.room.calibration.order.length}`);
+            }
+          } else if (live && ids.length !== Object.keys(live.room.clients).length) {
+            throw new Error(`a ${rec?.kind ?? "observer"} was sent ${ids.length} of ${Object.keys(live.room.clients).length} records`);
+          }
+          // (an observer's first snapshot is sent on the spot, outside the coalescing window)
+          if (serverId !== null && t - s.lastStateAt < minStateGapMs - 0.001) throw new Error(`${serverId} was sent two ROOM_STATEs ${t - s.lastStateAt} ms apart`);
+          s.lastState = JSON.stringify((JSON.parse(raw) as { room: unknown }).room); // as sent, not as zod re-ordered it
+          s.lastStateAt = t;
+        }
         if (msg.type === "WELCOME") {
           // The model is settled here, when the answer arrives — a held JOIN is answered steps later.
           s.welcomes.push({ isHost: msg.isHost });
@@ -374,15 +402,29 @@ function runSeed(seed: number, steps: number) {
       const rec = mgr.get(s.room)?.room.clients[s.clientId];
       if (!rec?.connected) throw new Error(`socket for ${s.clientId} in ${s.room} is open, but its record is ${rec ? "disconnected" : "gone"}`);
     }
-    // ROOM_STATE is coalesced: never two broadcasts of one room closer than the rate cap allows.
-    const minGap = 1000 / ROOM_STATE_MAX_HZ;
-    const last = new Map<string, number>();
-    for (const p of published) {
-      const prev = last.get(p.topic);
-      if (prev !== undefined && p.at - prev < minGap - 0.001) throw new Error(`room ${p.topic}: two ROOM_STATEs ${p.at - prev} ms apart`);
-      last.set(p.topic, p.at);
+    // Nothing left to flush means every open socket holds the current state — the per-recipient
+    // dedupe may skip a message only when it would have said what the socket already knows.
+    for (const s of socks) {
+      if (!s.open || s.pendingClose || s.room === null || s.welcomes.length === 0) continue;
+      const room = roomsOf().get(s.room);
+      if (!room || room.dirty || s.ws.data.roomCode === null) continue;
+      if (s.lastState === null) throw new Error(`${s.clientId ?? "an observer"} in ${s.room} has never been sent a ROOM_STATE`);
+      const got = JSON.parse(s.lastState) as RoomState;
+      const serverId = s.ws.data.clientId;
+      const rec = serverId ? room.room.clients[serverId] : undefined;
+      if (serverId && !rec) continue; // kicked; its close is on the way
+      if (rec?.kind === "player") {
+        const { clients: _c, calibration: _cal, hostClientIds: _h, ...level } = room.room;
+        const { clients: gotClients, calibration: gotCal, hostClientIds: _gh, ...gotLevel } = got;
+        if (JSON.stringify(gotLevel) !== JSON.stringify(JSON.parse(JSON.stringify(level)))) throw new Error(`player ${serverId} holds stale room-level state:
+  has ${JSON.stringify(gotLevel)}
+  now ${JSON.stringify(level)}`);
+        if (JSON.stringify(gotClients[serverId!]) !== JSON.stringify(rec)) throw new Error(`player ${serverId} holds a stale copy of its own record`);
+        if (gotCal.state !== room.room.calibration.state || gotCal.startServerTime !== room.room.calibration.startServerTime) throw new Error(`player ${serverId} holds a stale calibration state`);
+      } else if (s.lastState !== JSON.stringify(room.room)) {
+        throw new Error(`${rec?.kind ?? "observer"} ${serverId ?? ""} in ${s.room} holds a stale roster`);
+      }
     }
-    if (published.length > 2000) published.splice(0, published.length - 200);
   }
 
   let step = 0;

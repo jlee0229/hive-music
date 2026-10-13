@@ -59,13 +59,15 @@ describe("scene-timer pure functions", () => {
 
 // ---- Room integration: real setTimeout wiring, short boundaries so the test stays fast ----------------
 describe("scene timer wiring (Room)", () => {
+  // ROOM_STATE is delivered per recipient (ws.send), not published to a topic; the host's copy carries
+  // the whole roster, so that is the one these tests read.
   function fakeServer() {
     const published: ServerMessage[] = [];
-    const server = { publish: (_topic: string, data: string) => published.push(JSON.parse(data)) } as unknown as Bun.Server<Conn>;
+    const server = { publish: () => {} } as unknown as Bun.Server<Conn>;
     return { server, published };
   }
-  function fakeWs(): WS {
-    return { data: { clientId: null, roomCode: null }, send: () => {}, subscribe: () => {}, close: () => {} } as unknown as WS;
+  function fakeWs(sink?: ServerMessage[]): WS {
+    return { data: { clientId: null, roomCode: null }, send: (raw: string) => void sink?.push(JSON.parse(raw)), subscribe: () => {}, close: () => {} } as unknown as WS;
   }
   const roomStates = (published: ServerMessage[]) => published.filter((m): m is Extract<ServerMessage, { type: "ROOM_STATE" }> => m.type === "ROOM_STATE");
 
@@ -73,7 +75,7 @@ describe("scene timer wiring (Room)", () => {
     const { server, published } = fakeServer();
     const room = new Room("TEST", server, () => {}, () => [{ id: "t", title: "t", durationSec: 60, stems: ["mix"], urls: {} }]);
 
-    const hostWs = fakeWs();
+    const hostWs = fakeWs(published);
     room.join(hostWs, { type: "JOIN", clientId: "host-scene-001", roomCode: "TEST", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
     const playerWs = fakeWs();
     room.join(playerWs, { type: "JOIN", clientId: "play-scene-001", roomCode: "TEST", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
@@ -114,7 +116,7 @@ describe("scene timer wiring (Room)", () => {
   test("SET_MODE (manual override) clears the plan and cancels the timer", async () => {
     const { server, published } = fakeServer();
     const room = new Room("TEST2", server, () => {}, () => [{ id: "t", title: "t", durationSec: 60, stems: ["mix"], urls: {} }]);
-    const hostWs = fakeWs();
+    const hostWs = fakeWs(published);
     room.join(hostWs, { type: "JOIN", clientId: "host-scene-002", roomCode: "TEST2", kind: "host", plays: false, hostKey: room.hostKey, device, protocolVersion: PROTOCOL_VERSION });
     room.handle(hostWs, { type: "SET_TRACK", trackId: "t" });
     room.handle(hostWs, { type: "TRANSPORT", action: "PLAY", trackTimeSec: 0 });

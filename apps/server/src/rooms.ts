@@ -129,6 +129,15 @@ function send(ws: WS, msg: ServerMessage) {
   ws.send(JSON.stringify(msg));
 }
 
+/**
+ * A state snapshot (ROOM_STATE, HEALTH) is superseded by the next one, so it is never queued behind
+ * data a socket has not taken yet: a phone that stopped reading — locked screen, dead spot — would
+ * otherwise collect every snapshot the room publishes until it is closed. Measured before this
+ * existed: 10 such sockets in a 200-phone room added 142 MB to the server in 69 s (SCALE-NET-03).
+ */
+const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
+const backlog = (ws: WS): number => (typeof ws.getBufferedAmount === "function" ? ws.getBufferedAmount() : 0);
+
 /** One room: state + sockets + every timer that keeps it alive. */
 export class Room {
   code: string;
@@ -161,6 +170,8 @@ export class Room {
    *  never delayed by a full window the way a plain setInterval poll would (docs/PROTOCOL-REQUESTS.md R-1). */
   private lastPublishAt = -Infinity;
   private trailingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The last ROOM_STATE each socket was sent, and when: what makes the per-recipient dedupe possible. */
+  private lastSent = new WeakMap<WS, { msg: string; at: number }>();
 
   constructor(
     code: string,
@@ -201,6 +212,12 @@ export class Room {
     if (this.trailingTimer) clearTimeout(this.trailingTimer);
     for (const t of this.disconnectTimers.values()) clearTimeout(t);
     for (const t of this.calibrationTimers) clearTimeout(t);
+    // A room ends with no client records, but observers are not records: a display left open on a
+    // room that idled out would otherwise stay attached to nothing — and now that state is sent
+    // per recipient rather than to a topic, it would never hear from a re-created room either.
+    // Hung up on, it reconnects and re-JOINs like anyone else.
+    for (const ws of this.observers) ws.close(1001, "room ended");
+    this.observers.clear();
   }
 
   private checkIdle() {
@@ -240,13 +257,95 @@ export class Room {
         clearTimeout(this.trailingTimer);
         this.trailingTimer = null;
       }
-      this.server.publish(this.code, JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
-    } else if (!this.trailingTimer) {
+      // A recipient that could not take this snapshot (backlog) is retried on the next window.
+      if (this.sendState()) this.dirty = true;
+    }
+    if (this.dirty && !this.trailingTimer) {
       this.trailingTimer = setTimeout(() => {
         this.trailingTimer = null;
         this.flush();
-      }, minGapMs - elapsed + Room.TRAILING_GUARD_MS);
+      }, Math.max(0, minGapMs - (now() - this.lastPublishAt)) + Room.TRAILING_GUARD_MS);
     }
+  }
+
+  /**
+   * One ROOM_STATE per recipient, built from what that recipient reads (SCALE-NET-02).
+   *
+   * The whole roster used to go to every socket: ~650 bytes per client, to every client, at up to
+   * 2 Hz — quadratic in the size of the party (8.7 MB/s at 100 phones with a busy host, 35 MB/s at
+   * 200, and past the 64 KB message budget near 74 phones). But a phone only ever reads the
+   * room-level state and its own record; the planner runs here and stamps each record with its
+   * finished assignment. So:
+   *
+   *  - a **player** gets the room-level state and a roster of exactly one: itself. `hostClientIds`
+   *    is empty for it and the calibration block is cut to what its tuning screen shows (how many
+   *    clicks, which one is its own, its own result) — other clients' ids are not sent to players;
+   *  - **hosts, viewers and observers** get the full snapshot: the map, the roster and the health
+   *    view are made of it.
+   *
+   * Both are valid ROOM_STATEs under the unchanged schema. A recipient whose message would be
+   * byte-identical to the last one it was sent is skipped (a dot dragged on the host's map changes
+   * one record, not a hundred phones' worth of state), unless `refreshOlderThanMs` says its copy is
+   * old enough to repeat anyway (the heartbeat).
+   *
+   * Returns true if some recipient was skipped because it has not drained what it was sent before.
+   */
+  private sendState(refreshOlderThanMs = Infinity): boolean {
+    const t = now();
+    const { clients, calibration, hostClientIds: _hosts, ...level } = this.room;
+    let full: string | null = null;
+    const fullView = () => (full ??= JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
+
+    // `{"code":…,"transport":…` — everything every player gets, serialised once, left open.
+    const shared = JSON.stringify({ ...level, hostClientIds: [] }).slice(0, -1);
+    const inFlight = calibration.state === "countdown" || calibration.state === "running";
+    const quiet = { state: calibration.state, referenceClientId: null, startServerTime: calibration.startServerTime, order: [] as string[], results: {} };
+    const quietJson = JSON.stringify(quiet);
+    const playerView = (id: string, rec: ClientRecord): string => {
+      const mine = calibration.results[id];
+      const isReference = calibration.referenceClientId === id;
+      const cal =
+        inFlight || mine || isReference
+          ? JSON.stringify({
+              ...quiet,
+              referenceClientId: isReference ? id : null,
+              // The slots, with every id but its own blanked: enough for "click 7 of 30, yours is the 12th".
+              order: inFlight ? calibration.order.map((o) => (o === id ? o : "")) : [],
+              results: mine ? { [id]: mine } : {},
+            })
+          : quietJson;
+      return `{"type":"ROOM_STATE","room":${shared},"calibration":${cal},"clients":{${JSON.stringify(id)}:${JSON.stringify(rec)}}}}`;
+    };
+
+    let skipped = false;
+    const deliver = (ws: WS, view: () => string) => {
+      const last = this.lastSent.get(ws);
+      if (backlog(ws) > SNAPSHOT_BACKLOG_BYTES) {
+        // Whatever it holds is stale by now; make sure it gets the current state once it drains.
+        if (last) this.lastSent.delete(ws);
+        skipped = true;
+        return;
+      }
+      const msg = view();
+      if (last && last.msg === msg && t - last.at < refreshOlderThanMs) return;
+      ws.send(msg);
+      this.lastSent.set(ws, { msg, at: t });
+    };
+    const viewFor = (id: string): (() => string) | null => {
+      const rec = clients[id];
+      if (!rec) return null;
+      return rec.kind === "player" ? () => playerView(id, rec) : fullView;
+    };
+    for (const [id, ws] of this.sockets) {
+      const view = viewFor(id);
+      if (view) deliver(ws, view);
+    }
+    for (const [id, older] of this.standby) {
+      const view = viewFor(id);
+      if (view) for (const ws of older) deliver(ws, view);
+    }
+    for (const ws of this.observers) deliver(ws, fullView);
+    return skipped;
   }
 
   private publishHealth() {
@@ -259,11 +358,11 @@ export class Room {
     for (const c of Object.values(this.room.clients)) {
       if (c.kind !== "host" && c.kind !== "viewer") continue;
       const s = this.sockets.get(c.id);
-      if (s) send(s, { type: "HEALTH", serverTime: t, clients });
+      if (s && backlog(s) <= SNAPSHOT_BACKLOG_BYTES) send(s, { type: "HEALTH", serverTime: t, clients });
     }
     // Observers too: HEALTH needs no credential (any viewer gets it), and the usual observer is the
     // host's own /screen tab, whose sync tile is made of these numbers.
-    for (const s of this.observers) send(s, { type: "HEALTH", serverTime: t, clients });
+    for (const s of this.observers) if (backlog(s) <= SNAPSHOT_BACKLOG_BYTES) send(s, { type: "HEALTH", serverTime: t, clients });
   }
 
   private tickPing() {
@@ -592,7 +691,9 @@ export class Room {
     ws.subscribe(this.code);
     this.observers.add(ws);
     send(ws, { type: "WELCOME", clientId: claimedId, roomCode: this.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: false });
-    send(ws, { type: "ROOM_STATE", room: this.room });
+    const snapshot = JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage);
+    ws.send(snapshot);
+    this.lastSent.set(ws, { msg: snapshot, at: now() });
   }
 
   disconnect(ws: WS) {
