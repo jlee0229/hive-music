@@ -465,3 +465,102 @@ test.describe("the scale", () => {
     host.close();
   });
 });
+
+test.describe("small things", () => {
+  test.use({ mockScenario: "party-12.json" });
+
+  test("every page says what it is in its tab title", async ({ page }) => {
+    await page.goto("/");
+    await expect(page).toHaveTitle("HiveMusic");
+    await page.goto("/j/bz%20q7");
+    await expect(page).toHaveTitle("Join hive BZQ7 · HiveMusic");
+    await page.goto("/qr/BZQ7");
+    await expect(page).toHaveTitle("Scan to join BZQ7 · HiveMusic");
+    await page.goto("/screen/BZQ7");
+    await expect(page).toHaveTitle("Hive BZQ7 · Big screen · HiveMusic");
+    await page.goto("/diag");
+    await expect(page).toHaveTitle("Diagnostics · HiveMusic");
+  });
+
+  test("the app icon is a hexagon with a point at the top, like the logo", async ({ page }) => {
+    await page.goto("/");
+    for (const icon of ["/icon-512.png", "/icon-192.png", "/apple-touch-icon.png"]) {
+      const px = await page.evaluate(async (src) => {
+        const img = new Image();
+        img.src = src;
+        await img.decode();
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, 0, 0);
+        const c = img.width / 2;
+        const r = img.width * 0.34; // the mark's circumradius in gen-icons.ts
+        const lit = (dx: number, dy: number) => ctx.getImageData(Math.round(c + dx * r), Math.round(c + dy * r), 1, 1).data[0]! > 128;
+        return { top: lit(0, -0.95), shoulder: lit(0.35, -0.9), side: lit(0.82, 0), centre: lit(0, 0), gap: lit(0, 0.6) };
+      }, icon);
+      // A vertex at 12 o'clock, and nothing where an octagon's flat top would be.
+      expect(px, icon).toEqual({ top: true, shoulder: false, side: true, centre: true, gap: false });
+    }
+  });
+
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1920, height: 1080 }]) {
+    test(`/screen at ${viewport.width}x${viewport.height}: the mode fits its tile and the address breaks at a slash`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/screen/BZQ7");
+      await expect(page.getByText("Scan to join")).toBeVisible({ timeout: 10_000 });
+
+      const mode = page.locator("span.font-display").filter({ hasText: /^Orchestra$/ });
+      await expect(mode).toBeVisible({ timeout: 10_000 });
+      const spill = await mode.evaluate((el) => {
+        const tile = el.parentElement!.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return Math.round(range.getBoundingClientRect().right - (tile.right - parseFloat(getComputedStyle(el.parentElement!).paddingRight)));
+      });
+      expect(spill, "px the mode name runs past its tile").toBeLessThanOrEqual(0);
+
+      // Where the join address wraps: only ever straight after a slash.
+      const breaks = await page.locator("main span.font-mono").evaluate((el) => {
+        const text = el.textContent!;
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const tops: number[] = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          for (let i = 0; i < node.textContent!.length; i++) {
+            const range = document.createRange();
+            range.setStart(node, i);
+            range.setEnd(node, i + 1);
+            tops.push(Math.round(range.getBoundingClientRect().top));
+          }
+        }
+        const out: string[] = [];
+        for (let i = 1; i < tops.length; i++) if (tops[i]! > tops[i - 1]! + 2) out.push(text[i - 1]!);
+        return out;
+      });
+      expect(breaks.filter((ch) => ch !== "/"), "the address breaks mid-word").toEqual([]);
+
+      const fit = await page.evaluate(() => ({ down: document.documentElement.scrollHeight - innerHeight, sideways: document.documentElement.scrollWidth - innerWidth }));
+      expect(fit).toEqual({ down: 0, sideways: 0 });
+      // Read from the back of the room: the labels grow with the wall.
+      const scan = await page.getByText("Scan to join").evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+      expect(scan).toBeGreaterThanOrEqual(viewport.width >= 1920 ? 26 : 18);
+    });
+
+    test(`/qr at ${viewport.width}x${viewport.height}: code and address are sized for the room`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/qr/BZQ7");
+      await expect(page.locator("canvas")).toBeVisible();
+      const sizes = await page.evaluate(() => ({
+        code: parseFloat(getComputedStyle(document.querySelector("main span.font-display")!).fontSize),
+        url: parseFloat(getComputedStyle(document.querySelector("main span.font-mono")!).fontSize),
+        qr: document.querySelector("canvas")!.getBoundingClientRect().width,
+        down: document.documentElement.scrollHeight - innerHeight,
+        sideways: document.documentElement.scrollWidth - innerWidth,
+      }));
+      expect(sizes.code).toBeGreaterThanOrEqual(viewport.height * 0.065);
+      expect(sizes.url).toBeGreaterThanOrEqual(viewport.height * 0.026);
+      expect(sizes.qr).toBeGreaterThanOrEqual(viewport.height * 0.6);
+      expect({ down: sizes.down, sideways: sizes.sideways }).toEqual({ down: 0, sideways: 0 });
+    });
+  }
+});

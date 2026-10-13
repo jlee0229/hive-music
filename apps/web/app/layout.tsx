@@ -4,7 +4,9 @@ import { StubEngineBanner } from "@/components/StubEngineBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "HiveMusic",
+  // Every tab used to be called "HiveMusic": a host with the stage, the QR page and the big
+  // screen open could not tell them apart, and neither could a guest's tab switcher or history.
+  title: { default: "HiveMusic", template: "%s · HiveMusic" },
   description: "Turn a crowd's phones into one distributed speaker.",
   manifest: "/manifest.webmanifest",
   icons: {
