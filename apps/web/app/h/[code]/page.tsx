@@ -403,7 +403,10 @@ function HostRoom({
         return;
       }
     }
-    if (amHost !== false) lastShowRef.current = recordShow(room);
+    if (amHost === false) return;
+    // (A snapshot of the re-created room from before the restore landed has no song yet: it is not news.)
+    const seen = recordShow(room);
+    if (seen || lastShowRef.current?.roomBornAt !== room.createdAtServerTime) lastShowRef.current = seen;
   }, [connection, room, tracks, amHost, client]);
 
   useEffect(() => {
