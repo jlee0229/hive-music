@@ -515,6 +515,36 @@ describe("a viewer joins read-only (protocol v4, answers frontend R-13)", () => 
 });
 
 
+describe("owned uploads on the mock: everything is shared (contracts/library-scope.md)", () => {
+  test("no track is `mine`, nothing can be removed, and a host JOIN carrying a libraryKey is accepted and ignored", async () => {
+    const auth = { Authorization: `Bearer ${mock.hostKey}` };
+    const list = await fetch(`http://localhost:${PORT}/tracks`, { headers: auth }).then((r) => r.json());
+    expect(list.tracks.length).toBeGreaterThan(0);
+    expect(list.tracks.some((t: { mine?: boolean }) => t.mine)).toBe(false);
+
+    const shared = await fetch(`http://localhost:${PORT}/tracks/${list.tracks[0].id}`, { method: "DELETE", headers: auth });
+    expect(shared.status).toBe(403);
+    expect(await shared.json()).toEqual({ error: "not_owner" });
+    expect((await fetch(`http://localhost:${PORT}/tracks/no-such-track`, { method: "DELETE", headers: auth })).status).toBe(404);
+    const after = await fetch(`http://localhost:${PORT}/tracks`).then((r) => r.json());
+    expect(after.tracks.length).toBe(list.tracks.length);
+
+    // the browser may send DELETE and the Authorization header cross-origin
+    const preflight = await fetch(`http://localhost:${PORT}/tracks/x`, { method: "OPTIONS" });
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("DELETE");
+    expect(preflight.headers.get("access-control-allow-headers")).toContain("Authorization");
+
+    const libraryKey = "k".repeat(43);
+    const host = new Fake();
+    await host.open();
+    host.send({ type: "JOIN", clientId: "lib-host-0001", roomCode: "BZQ7", kind: "host", plays: false, hostKey: mock.hostKey, libraryKey, device, protocolVersion: PROTOCOL_VERSION });
+    expect((await host.next("WELCOME")).isHost).toBe(true);
+    const state = await host.next("ROOM_STATE", (m) => !!m.room.clients["lib-host-0001"]);
+    expect(JSON.stringify(state)).not.toContain(libraryKey); // never broadcast
+    host.ws.close();
+  }, 15_000);
+});
+
 describe("the host key is the only way to be host (mirrors apps/server, audit SG-01 / SG-02)", () => {
   const post = (body: unknown) =>
     fetch(`http://localhost:${PORT}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

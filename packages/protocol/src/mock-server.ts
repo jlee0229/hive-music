@@ -219,7 +219,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
     port,
     async fetch(req, srv) {
       const url = new URL(req.url);
-      const cors = { "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" }; // as apps/server: the host key travels as a Bearer header
+      const cors = { "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS" }; // as apps/server: the host key travels as a Bearer header
       const json = (body: unknown, status = 200) => Response.json(body, { status, headers: cors });
       if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
       if (url.pathname === "/ws") {
@@ -269,6 +269,13 @@ export function startMockServer(opts: MockServerOptions = {}) {
         return json({ tracks: library.filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q)).map((t) => withUrls(t, url.origin)) });
       }
       if (url.pathname === "/tracks" && req.method === "POST") return json({ error: "uploads are not available on the mock server" }, 501);
+      // Owned uploads (contracts/library-scope.md): every fixture track is shared — nothing here is
+      // anyone's — so no entry is ever `mine` and nothing can be removed. `JOIN.libraryKey` is accepted
+      // by the schema and ignored.
+      const removal = url.pathname.match(/^\/tracks\/([A-Za-z0-9_-]+)$/);
+      if (removal && req.method === "DELETE") {
+        return library.some((t) => t.id === removal[1]) ? json({ error: "not_owner" }, 403) : json({ error: "not_found" }, 404);
+      }
       const audio = url.pathname.match(/^\/audio\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\.wav$/);
       if (audio) {
         const f = Bun.file(`${fixturesDir}/tracks/${audio[1]}/${audio[2]}.wav`);

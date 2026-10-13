@@ -3,12 +3,12 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { TrackLibraryEntry } from "@hive/protocol";
 import { reconnectDelayMs, type CalibrationProgress } from "@hive/sync-client";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { apiUrl, engineKind } from "@/lib/hive/client";
 import { fileToMonoWav, postTrack, titleFromFilename } from "@/lib/hive/upload-track";
-import { clearHostKey, getHostKey, setHostKey } from "@/lib/hive/storage";
+import { clearHostKey, getHostKey, getLibraryKey, setHostKey } from "@/lib/hive/storage";
+import { fetchLibrary, removeErrorText, removeTrack, type LibraryTrack } from "@/lib/hive/library";
 import { classifyHostClaim } from "@/lib/hive/host-claim";
 import { planStart, showTuningScreen, tuningCancelLabel, tuningNote } from "@/lib/hive/start-flow";
 import { HOST_TOAST_MS, hostErrorText } from "@/lib/hive/host-errors";
@@ -210,7 +210,10 @@ function HostRoom({
 }) {
   const [speakerOn, setSpeakerOn] = useState(false);
   const speakerOnInitialised = useRef(false);
-  const [tracks, setTracks] = useState<TrackLibraryEntry[]>([]);
+  const [tracks, setTracks] = useState<LibraryTrack[]>([]);
+  // This browser's library key: whose uploads are whose. Read once per mount, client-side only
+  // (HostRoom never renders on the server), and handed to the engine for the host's JOIN.
+  const [libraryKey] = useState(() => getLibraryKey());
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [startAnywayReady, setStartAnywayReady] = useState(false);
   const [sheetClientId, setSheetClientId] = useState<string | null>(null);
@@ -245,6 +248,7 @@ function HostRoom({
     plays: speakerOn,
     hostKey,
     clientId,
+    libraryKey,
     name: "Host",
     autoConnect: true,
   });
@@ -323,13 +327,11 @@ function HostRoom({
     let retry: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     const load = () => {
-      fetch(`${apiUrl()}/tracks`)
-        .then((r) => {
-          if (!r.ok) throw new Error(String(r.status));
-          return r.json();
-        })
-        .then((d: { tracks: TrackLibraryEntry[] }) => {
-          if (!cancelled) setTracks(d.tracks);
+      // As this hive's host (the key travels as a Bearer header): the shared songs plus this
+      // browser's own uploads, the latter marked `mine`.
+      fetchLibrary(apiUrl(), hostKey)
+        .then((list) => {
+          if (!cancelled) setTracks(list);
         })
         .catch(() => {
           if (!cancelled) retry = setTimeout(load, reconnectDelayMs(attempt++));
@@ -340,7 +342,7 @@ function HostRoom({
       cancelled = true;
       if (retry) clearTimeout(retry);
     };
-  }, [tracksVersion]);
+  }, [tracksVersion, hostKey]);
 
   // Auto-pick the first library track once the room exists and has none — and actually push it
   // to the server (host.setTrack), not just the local radio state: the mock scenarios always
@@ -427,6 +429,14 @@ function HostRoom({
     const t = setTimeout(() => setStarting(false), 3000);
     return () => clearTimeout(t);
   }, [starting, transportState]);
+
+  /** Remove one of this browser's own uploads (the drawer has already asked "Remove?"). */
+  async function removeSong(id: string) {
+    setUploadError(null);
+    const result = await removeTrack(apiUrl(), hostKey, id);
+    setUploadError(removeErrorText(result));
+    setTracksVersion((v) => v + 1); // whatever happened, show the list as the server has it now
+  }
 
   const finishAutoStart = useCallback(() => {
     if (!autoStartRef.current) return;
@@ -745,6 +755,7 @@ function HostRoom({
               if (id !== room.track?.id) selectTrack(id);
             }}
             onUpload={(f) => void onUploadFile(f)}
+            onRemove={(id) => void removeSong(id)}
             onClose={() => setShowSongs(false)}
           />
         ) : null}
