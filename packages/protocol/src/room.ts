@@ -113,6 +113,13 @@ export const RoomStateSchema = z.object({
   protocolVersion: z.number().int(),
   createdAtServerTime: z.number(),
   hostClientIds: z.array(z.string()),
+  /**
+   * Whether at least one host socket is connected right now. A guest's snapshot carries no roster
+   * and an empty `hostClientIds` (the server sends each player only its own record), so this is the
+   * one way a guest's phone can tell "the host has not pressed play" from "the host's phone has
+   * gone". Optional and additive: old servers never send it, old clients ignore it.
+   */
+  hostConnected: z.boolean().optional(),
   track: TrackInfoSchema.nullable(),
   /**
    * The track the playlist will advance to when `track` ends, when the server knows it (absent or

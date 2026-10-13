@@ -134,6 +134,26 @@ describe("ROOM_STATE per recipient (the server's own fan-out)", () => {
     }
   });
 
+  // A guest's wait line ("Waiting for the host to come back") read the roster for this and went
+  // quiet for good the day players stopped being sent one.
+  test("a phone is told whether a host is connected, without being sent the host's id or record", () => {
+    const { room, inbox, sendState } = roomWith(buildRoom(12, "UNISON", 1));
+    const hostId = room.room.hostClientIds[0]!;
+    const player = Object.values(room.room.clients).find((c) => c.kind === "player")!;
+    sendState();
+    expect(lastRoom(inbox.get(player.id)!).hostConnected).toBe(true);
+    room.room.clients[hostId] = { ...room.room.clients[hostId]!, connected: false };
+    sendState();
+    const away = inbox.get(player.id)!.at(-1)!;
+    expect(lastRoom([away]).hostConnected).toBe(false);
+    expect(lastRoom([away]).hostClientIds).toEqual([]);
+    expect(away.includes(hostId)).toBe(false);
+    room.room.clients[hostId] = { ...room.room.clients[hostId]!, connected: true };
+    sendState();
+    expect(lastRoom(inbox.get(player.id)!).hostConnected).toBe(true);
+    room.destroy();
+  });
+
   test("hosts and viewers still get the whole roster", () => {
     const state = buildRoom(100, "ORCHESTRA", 4);
     const viewerId = Object.keys(state.clients)[5]!;
