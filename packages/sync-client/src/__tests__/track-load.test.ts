@@ -137,3 +137,31 @@ describe("ENGINE-SYNC-02 · a second track change while the first is still downl
     expect(r.engine.debug.loadedTrackId).toBe("song-b");
   });
 });
+
+describe("ENGINE-SYNC-23 · a re-announce held back by the rate guard is not forgotten", () => {
+  test("a server that restarts 300 ms after the announcement still learns the phone is ready, with no further snapshot", async () => {
+    const r = engineRig(vt);
+    await r.engine.unlock();
+    r.apply({ audioReadyTrackId: null });
+    await flushMicrotasks();
+    const readies = () => r.sent.filter((m) => m.type === "AUDIO_READY").length;
+    expect(readies()).toBe(1);
+
+    // The room comes back on a fresh server 300 ms later (the first step of the reconnect backoff):
+    // its snapshot says it has never heard of this phone being ready.
+    vt.advance(300);
+    r.apply({ audioReadyTrackId: null });
+    expect(readies()).toBe(1); // inside the guard: our first message could still be in flight
+
+    vt.advance(250); // the guard expires; nothing else arrives — a settled room publishes nothing
+    expect(readies()).toBe(2);
+
+    vt.advance(30_000); // and it is not a loop
+    expect(readies()).toBe(2);
+    r.apply({ audioReadyTrackId: "song-a" }); // the server caught up
+    vt.advance(5000);
+    expect(readies()).toBe(2);
+    r.engine.dispose();
+    expect(vt.pending).toBe(0);
+  });
+});

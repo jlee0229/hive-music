@@ -37,6 +37,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
   let probeGroup = 0;
   let lastReadyAnnounceAt = -Infinity;
   let lastReadyAnnounced: string | null = null;
+  let readyRecheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   const me = (): ClientRecord | null => room?.clients[clientId] ?? null;
 
@@ -51,8 +52,17 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     const mine = me();
     if (audioState !== "ready" || !track || !mine) return;
     if (mine.audioReadyTrackId === track.id) return;
-    // The same announcement may still be in flight; a different track is always news.
-    if (lastReadyAnnounced === track.id && localNow() - lastReadyAnnounceAt < 1000 / ROOM_STATE_MAX_HZ) return;
+    // The same announcement may still be in flight; a different track is always news. Held back, it is
+    // tried again when the guard expires: the server publishes on change, so there may be no "next
+    // snapshot" to do it.
+    const wait = 1000 / ROOM_STATE_MAX_HZ - (localNow() - lastReadyAnnounceAt);
+    if (lastReadyAnnounced === track.id && wait > 0) {
+      readyRecheckTimer ??= setTimeout(() => {
+        readyRecheckTimer = null;
+        announceReadyIfUnknown();
+      }, wait + 5);
+      return;
+    }
     lastReadyAnnounceAt = localNow();
     lastReadyAnnounced = track.id;
     transport.send({ type: "AUDIO_READY", trackId: track.id });
@@ -231,6 +241,8 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     connect: () => transport.connect(),
     disconnect: () => {
       stopTimers();
+      if (readyRecheckTimer) clearTimeout(readyRecheckTimer);
+      readyRecheckTimer = null;
       transport.disconnect();
     },
     on: (e, h) => ev.on(e, h),

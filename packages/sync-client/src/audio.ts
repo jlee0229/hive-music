@@ -195,6 +195,7 @@ export function createBrowserAudioEngine(
   let waitingForClock = false;
   /** `performance.now()` of the last AUDIO_READY we sent, so a re-announce cannot become a loop. */
   let lastReadyAnnounceAt = -Infinity;
+  let readyRecheckTimer: ReturnType<typeof setTimeout> | null = null;
   /** Calibration clicks dropped because their instant had already passed (diagnostics). */
   let clicksSkipped = 0;
   /**
@@ -321,6 +322,31 @@ export function createBrowserAudioEngine(
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  /**
+   * Sends AUDIO_READY if the latest snapshot shows the server does not know this phone holds the track.
+   *
+   * When the rate guard holds it back (our previous announcement may still be in flight) it is tried
+   * again when the guard expires. It used to be left for "the next snapshot" — and the server publishes
+   * only on change, so in a quiet room there was none: a phone that re-JOINed a restarted server within
+   * half a second of its last announcement stayed "not ready" on the host's screen for good. (The first
+   * retry of the reconnect backoff is 300 ms, which lands exactly there.)
+   */
+  function announceReadyIfUnknown(): void {
+    const room = lastRoom;
+    if (!ctx || !room || !loadedTrackId || room.track?.id !== loadedTrackId) return;
+    if (room.clients[host.clientId]?.audioReadyTrackId === loadedTrackId) return;
+    const wait = READY_REANNOUNCE_MIN_MS - (performance.now() - lastReadyAnnounceAt);
+    if (wait > 0) {
+      readyRecheckTimer ??= setTimeout(() => {
+        readyRecheckTimer = null;
+        announceReadyIfUnknown();
+      }, wait + 5);
+      return;
+    }
+    lastReadyAnnounceAt = performance.now();
+    send({ type: "AUDIO_READY", trackId: loadedTrackId });
   }
 
   /** Creates the AudioContext and the scheduler on first use. Safe to call inside a gesture. */
@@ -921,14 +947,7 @@ export function createBrowserAudioEngine(
        * self-limiting: it stops the moment the snapshot reflects it, and the rate guard covers the one
        * snapshot period in which our message is still in flight.
        */
-      if (ctx && loadedTrackId && room.track?.id === loadedTrackId) {
-        const known = room.clients[host.clientId]?.audioReadyTrackId;
-        const since = performance.now() - lastReadyAnnounceAt;
-        if (known !== loadedTrackId && since >= READY_REANNOUNCE_MIN_MS) {
-          lastReadyAnnounceAt = performance.now();
-          send({ type: "AUDIO_READY", trackId: loadedTrackId });
-        }
-      }
+      announceReadyIfUnknown();
       if (!ctx) return; // still locked: nothing to schedule, the snapshot is remembered
       /*
        * `loadingTrackId`, not `state === "loading"`: a second track change that lands while the first is
@@ -1081,6 +1100,8 @@ export function createBrowserAudioEngine(
       disposed = true;
       if (loadRetryTimer) clearTimeout(loadRetryTimer);
       loadRetryTimer = null;
+      if (readyRecheckTimer) clearTimeout(readyRecheckTimer);
+      readyRecheckTimer = null;
       if (watchdogTimer) clearInterval(watchdogTimer);
       watchdogTimer = null;
       if (onVisibilityChange && typeof document !== "undefined") {
