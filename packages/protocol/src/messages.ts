@@ -64,6 +64,15 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     /** Hosts: false unless "use this phone as a speaker too". Players: must be true. */
     plays: z.boolean(),
     hostKey: z.string().max(64).optional(),
+    /**
+     * Hosts only, optional: a random secret this browser keeps (`hive:libraryKey`) that says whose
+     * uploaded songs this hive may see. The server stores only a hash of it on the room and never
+     * broadcasts it. Uploads made from this hive are owned by it; the hive's song list and playlist
+     * rotation are the shared built-in library plus this owner's uploads — never a stranger's.
+     * Ignored unless the JOIN also carries the room's hostKey. Additive: old clients omit it and
+     * get the shared library only.
+     */
+    libraryKey: z.string().min(16).max(64).optional(),
     name: z.string().max(32).optional(),
     device: DeviceInfoSchema,
     protocolVersion: z.number().int(),
