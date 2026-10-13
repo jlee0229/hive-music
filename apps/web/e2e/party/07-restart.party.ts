@@ -25,12 +25,16 @@ async function outage(devices: Device[], killedWall: number) {
 
 test("07a-restart: server restarts mid-song with the host present", async ({ party, server }) => {
   await party.begin(4, { song: "Synthetic 60" });
+  await party.setMode("Stereo"); // not the default, so "the mode came back" means something
   await sleep(4000);
   const code = party.code;
   const before = await party.sampleAll();
   party.note("before the restart:\n" + before.map(line).join("\n"));
   const hostIdBefore = party.host.clientId;
   const zeroBefore = party.host.room!.transport.state === "playing" ? party.host.room!.transport.serverTimeAtTrackZero : null;
+  const trackBefore = party.host.room!.track!.id;
+  const modeBefore = party.host.room!.mode.kind;
+  const bornBefore = party.host.room!.createdAtServerTime;
 
   const killedWall = performance.timeOrigin + performance.now();
   const killedPerf = performance.now();
@@ -42,6 +46,10 @@ test("07a-restart: server restarts mid-song with the host present", async ({ par
   let allBackAt: number | null = null;
   let soundBackAt: number | null = null;
   let pressedStartAt: number | null = null;
+  // The outage as the room hears it: from the first sample in which a guest is silent to the first
+  // in which the re-created room is playing and every guest is sounding, on the song that was on.
+  let firstSilentAt: number | null = null;
+  let musicBackAt: number | null = null;
   while (performance.now() - killedPerf < 45_000) {
     const all = await party.sampleAll();
     const host = all[0]!;
@@ -59,6 +67,9 @@ test("07a-restart: server restarts mid-song with the host present", async ({ par
     if (!last || JSON.stringify({ ...last, atMs: 0 }) !== JSON.stringify({ ...row, atMs: 0 })) timeline.push(row);
     const rejoined = (await outage(party.devices, killedWall)).every((o) => o.rejoinedMs !== null);
     if (rejoined && allBackAt === null) allBackAt = row.atMs;
+    if (firstSilentAt === null && row.guestsSounding < guests.length) firstSilentAt = row.atMs;
+    const newRoom = !!party.host.room && party.host.room.createdAtServerTime !== bornBefore;
+    if (musicBackAt === null && rejoined && newRoom && host.transport === "playing" && guests.every((g) => g.rms > SOUND_RMS && g.trackId === trackBefore && g.transport === "playing")) musicBackAt = row.atMs;
     // If the room came back stopped, the stage offers Start: a host would press it.
     if (rejoined && pressedStartAt === null && host.screen === "host:stage-stopped" && row.atMs > downMs + 1500) {
       const btn = party.host.page.getByRole("button", { name: /Start the hive|Start anyway/ });
@@ -78,12 +89,39 @@ test("07a-restart: server restarts mid-song with the host present", async ({ par
   const after = await party.sampleAll();
   party.note("after the restart:\n" + after.map(line).join("\n"));
   const zeroAfter = party.host.room?.transport.state === "playing" ? party.host.room.transport.serverTimeAtTrackZero : null;
+  // Dead air per guest from the page's own 20 Hz output-level ring (50 ms resolution): the longest
+  // silent stretch between the kill and now, and — as the song's own baseline — in the 4 s before it.
+  const longestSilence = (ring: Array<[number, number]>) => {
+    let gap = 0;
+    let runStart: number | null = null;
+    for (const [t, rms] of ring) {
+      if (rms <= SOUND_RMS) runStart ??= t;
+      else if (runStart !== null) {
+        gap = Math.max(gap, t - runStart);
+        runStart = null;
+      }
+    }
+    if (runStart !== null && ring.length) gap = Math.max(gap, ring.at(-1)![0] - runStart);
+    return Math.round(gap);
+  };
+  const deadAir: Array<{ name: string; beforeKillMs: number; afterKillMs: number }> = [];
+  for (const g of party.guests) {
+    const ring = await g.ringSince(killedWall - 4000);
+    deadAir.push({ name: g.name, beforeKillMs: longestSilence(ring.filter(([t]) => t < killedWall)), afterKillMs: longestSilence(ring.filter(([t]) => t >= killedWall)) });
+  }
   party.metrics.restart = {
     perDevice,
     allRejoinedMs: allBackAt,
     hostHadToPressStart: pressedStartAt !== null,
     pressedStartAtMs: pressedStartAt,
     allSoundingAgainMs: soundBackAt,
+    firstGuestSilentMs: firstSilentAt,
+    musicBackMs: musicBackAt,
+    silenceMs: musicBackAt === null ? null : firstSilentAt === null || firstSilentAt > musicBackAt ? 0 : musicBackAt - firstSilentAt,
+    deadAirPerGuest: deadAir,
+    longestDeadAirMs: Math.max(...deadAir.map((d) => d.afterKillMs)),
+    timelineShiftMs: zeroBefore !== null && zeroAfter !== null ? Math.round(zeroAfter - zeroBefore) : null,
+    guestPositionErrMs: after.slice(1).map((s) => (s.errMs === null ? null : Math.round(s.errMs))),
     sameCode: party.host.room?.code === code && party.host.page.url().endsWith(`/h/${code}`),
     hostStillHost: party.host.welcome?.isHost ?? null,
     hostSameClientId: party.host.clientId === hostIdBefore,
@@ -107,7 +145,16 @@ test("07a-restart: server restarts mid-song with the host present", async ({ par
     )
     .toEqual([]);
   expect.soft(soundBackAt, "every guest is making sound again within 45 s").not.toBeNull();
-  expect.soft(pressedStartAt, "the music came back without the host pressing Start again").toBeNull();
+  // PARTY-02: the host page puts the show back by itself — same song, same mode, the position the
+  // song would have reached, no tuning moment. These are the regression; they are not soft.
+  expect(pressedStartAt, "the music came back without the host pressing Start again").toBeNull();
+  expect(musicBackAt, "every guest is sounding again on the song that was playing").not.toBeNull();
+  expect(party.host.room?.track?.id, "the song that was playing is the song that is playing").toBe(trackBefore);
+  expect(party.host.room?.mode.kind, "the mode came back").toBe(modeBefore);
+  expect(timeline.some((r) => /tuning|calibrat/i.test(r.hostScreen) || /tuning|calibrat/i.test(r.guestScreens)), "no tuning moment on the way back").toBe(false);
+  expect(zeroBefore !== null && zeroAfter !== null ? Math.abs(zeroAfter - zeroBefore) : null, "the song is where it would have been without the restart (ms off the old timeline)").toBeLessThan(250);
+  expect.soft(Math.max(...deadAir.map((d) => d.afterKillMs)), "longest silence any guest heard across the restart (ms)").toBeLessThan(2000);
+  for (const s of after.slice(1)) expect.soft(Math.abs(s.errMs ?? Infinity), `${s.name} is emitting the position the server says (ms)`).toBeLessThan(250);
   const sp = party.spread(after.slice(1));
   party.metrics.spreadAfter = sp;
   if (sp.residualSpreadMs !== null) expect.soft(sp.residualSpreadMs, "sync spread after the restart (ms)").toBeLessThan(15);
