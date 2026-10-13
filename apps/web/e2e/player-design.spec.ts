@@ -207,18 +207,25 @@ test.describe("join screen", () => {
 test.describe("tuning screen", () => {
   test.use({ mockScenario: "join.json" });
 
-  /** Puts this phone last in a tuning run of `phones`, five of them already measured. */
+  /**
+   * Puts this phone last in a tuning run of `phones` that is five clicks in — as the server tells a
+   * player about it: every other slot's id blanked, nobody else's result, the run's start time. (This
+   * used to hand the page 63 other phones' ids and five of their results, which no server sends a
+   * player; the screen counted those results, and so showed progress here and none at a party.)
+   */
   async function tuneWith(page: Page, phones: number) {
     let me = "";
+    let startServerTime: number | null = null;
     await page.routeWebSocket(/\/ws$/, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((message) => {
         const msg = JSON.parse(String(message));
         if (msg.type === "WELCOME") me = msg.clientId;
         if (msg.type === "ROOM_STATE") {
-          const order = [...Array.from({ length: phones - 1 }, (_, i) => `other-${i}`), me];
-          const results = Object.fromEntries(order.slice(0, 5).map((id) => [id, { residualMs: 3, confidence: 0.9 }]));
-          msg.room.calibration = { state: "running", referenceClientId: null, startServerTime: msg.room.createdAtServerTime, order, results };
+          // The mock's clock is this machine's: five and a bit 400 ms slots ago.
+          startServerTime ??= Date.now() - 5.2 * 400;
+          const order = [...Array.from({ length: phones - 1 }, () => ""), me];
+          msg.room.calibration = { state: "running", referenceClientId: null, startServerTime, order, results: {} };
         }
         ws.send(JSON.stringify(msg));
       });
@@ -235,11 +242,14 @@ test.describe("tuning screen", () => {
       expect(fit.sideways, "the page scrolls sideways").toBeLessThanOrEqual(fit.w);
       expect(fit.page, "the page scrolls").toBeLessThanOrEqual(fit.h);
       await expect(page.getByText(/Hold still/)).toBeInViewport({ ratio: 1 });
-      await expect(page.getByText(/Phone 6 of 64/)).toBeInViewport({ ratio: 1 });
+      await expect(page.getByText(/Phone \d+ of 64/)).toBeInViewport({ ratio: 1 });
       // Progress is one bar, however many phones: its width never depends on the head-count.
       const bar = page.getByRole("progressbar");
-      await expect(bar).toHaveAttribute("aria-valuenow", "5");
       await expect(bar).toHaveAttribute("aria-valuemax", "64");
+      // Part-way through, and moving: the run is on a clock (a click every 400 ms), so no fixed number.
+      const now = Number(await bar.getAttribute("aria-valuenow"));
+      expect(now).toBeGreaterThanOrEqual(5);
+      expect(now).toBeLessThan(64);
       const box = (await bar.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
