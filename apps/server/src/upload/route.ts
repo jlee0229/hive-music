@@ -17,11 +17,9 @@
 //     Float32 → analyse → encode) runs for one upload at a time;
 //   - the library has a byte quota well under the volume size, checked before anything is written;
 //   - a failed upload leaves nothing behind, and meta.json appears atomically, last.
-import { mkdir, readdir, rename, rm, stat, statfs } from "node:fs/promises";
+import { readdir, rm, stat, statfs } from "node:fs/promises";
 import { STEMS, TrackInfoSchema } from "@hive/protocol";
-import { alignStemLengths, normalizeStem, type NormalizedStem } from "./convert";
-import { writeMonoWav16 } from "./wav";
-import { buildTrackMeta } from "./meta";
+import { processUpload, type UploadJob, type UploadOutcome } from "./process";
 import { withUrls } from "../library";
 import type { RoomManager } from "../rooms";
 
@@ -38,8 +36,7 @@ export const OWNER_MAX_TRACKS = 40;
 export const OWNER_MAX_BYTES = 400 * MIB;
 /** An upload is refused if it would leave the tracks volume with less free space than this. */
 export const VOLUME_MIN_FREE_BYTES = 100 * MIB;
-/** A "track" shorter than this is a mistake or an attack: durationSec 0 fails TrackInfoSchema on every phone. */
-export const MIN_TRACK_SEC = 1;
+export { MIN_TRACK_SEC } from "./process";
 const MAX_BUFFERED_UPLOADS = 2;
 
 let buffered = 0;
@@ -49,6 +46,39 @@ function exclusive<T>(job: () => Promise<T>): Promise<T> {
   const run = lastJob.then(job, job);
   lastJob = run.catch(() => {});
   return run;
+}
+
+/**
+ * Decode / analyse / encode / write one upload — in a Worker unless UPLOAD_WORKER=0. Inline, that
+ * work held the event loop for every room on the server (147 ms for a 3.5-minute song, 270 ms for
+ * ten minutes; a PLAY issued inside that window starts late). The worker gets the upload's bytes
+ * by transfer, not by copy, and is terminated when it answers, which hands its whole heap back.
+ */
+const UPLOAD_IN_WORKER = process.env.UPLOAD_WORKER !== "0";
+const UPLOAD_WORKER_TIMEOUT_MS = 120_000;
+function runUpload(job: UploadJob): Promise<UploadOutcome> {
+  if (!UPLOAD_IN_WORKER) return processUpload(job);
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL("./worker.ts", import.meta.url).href);
+  } catch {
+    return processUpload(job); // no worker on this runtime: slower for the rooms, but the upload still lands
+  }
+  return new Promise((resolve) => {
+    const finish = (outcome: UploadOutcome) => {
+      clearTimeout(timer);
+      worker.terminate();
+      resolve(outcome);
+    };
+    const failed = (log: string): UploadOutcome => ({ ok: false, status: 507, error: "the song could not be saved — try again", log });
+    const timer = setTimeout(() => finish(failed("worker timed out")), UPLOAD_WORKER_TIMEOUT_MS);
+    worker.onmessage = (event: MessageEvent<UploadOutcome>) => finish(event.data);
+    worker.onerror = (event) => finish(failed(`worker error: ${event.message}`));
+    worker.postMessage(
+      job,
+      job.stems.map((stem) => stem.bytes.buffer as ArrayBuffer),
+    );
+  });
 }
 
 function slugify(title: string): string {
@@ -194,58 +224,42 @@ export async function handleUploadTracks(
     const stemNames = entries.map(([name]) => name);
 
     return await exclusive(async () => {
-      const normalized: NormalizedStem[] = [];
-      for (const [name, f] of entries) {
-        try {
-          normalized.push(normalizeStem(new Uint8Array(await (f as File).arrayBuffer())));
-        } catch (e) {
-          // parseWav's own messages are written for the uploader; anything else (a RangeError from
-          // a hostile header, say) is not something to echo back.
-          const known = e instanceof Error && e.constructor === Error;
-          manager.log(`upload refused: stem '${name}' ${known ? (e as Error).message : "unparsable"} (${sizeMb} MB)`);
-          return json({ error: `stem '${name}': ${known ? (e as Error).message : "could not be parsed as WAV"}` }, 400, corsHeaders);
-        }
-      }
-      alignStemLengths(normalized);
-      if (normalized[0]!.durationSec < MIN_TRACK_SEC) return json({ error: `that is under ${MIN_TRACK_SEC} second of audio` }, 400, corsHeaders);
-
-      const needed = normalized.reduce((sum, s) => sum + 44 + s.samples.length * 2, 0);
+      // How much this upload may add, measured now that it is this upload's turn.
       const usage = await libraryUsage(fixturesDir);
       let used = 0;
       for (const bytes of usage.values()) used += bytes;
       const free = await (limits.volumeFreeBytes ?? volumeFreeBytes)(fixturesDir);
-      if (used + needed > limits.libraryQuotaBytes || (free !== null && free - needed < (limits.volumeMinFreeBytes ?? VOLUME_MIN_FREE_BYTES))) return refuse("library_full");
+      const roomInLibrary = Math.min(limits.libraryQuotaBytes - used, free === null ? Infinity : free - (limits.volumeMinFreeBytes ?? VOLUME_MIN_FREE_BYTES));
+      let roomForOwner: number | null = null;
       if (owner !== null) {
         // (re-checked here: this runs one upload at a time, the early check above does not)
         const mine = manager.getLibrary().filter((t) => t.owner === owner);
         if (mine.length >= ownerMaxTracks) return refuse("too_many_tracks");
-        if (mine.reduce((sum, t) => sum + (usage.get(t.id) ?? 0), 0) + needed > ownerMaxBytes) return refuse("owner_quota");
+        roomForOwner = ownerMaxBytes - mine.reduce((sum, t) => sum + (usage.get(t.id) ?? 0), 0);
       }
 
       const id = slugify(title);
       const trackDir = `${fixturesDir}/tracks/${id}`;
-      try {
-        await mkdir(trackDir, { recursive: true });
-        for (let i = 0; i < stemNames.length; i++) await writeMonoWav16(`${trackDir}/${stemNames[i]}.wav`, normalized[i]!.samples, normalized[i]!.sampleRate);
-        const meta = buildTrackMeta(id, title, stemNames, normalized);
-        // meta.json is what makes a directory a track (library.ts globs for it). Written last and
-        // renamed into place, a crash at any point leaves either a complete track or none.
-        // `owner` ties the track to the uploading browser; without one (LIBRARY_SCOPE=global and an
-        // old client) the track is shared, as every upload was before.
-        await Bun.write(`${trackDir}/meta.json.tmp`, JSON.stringify(owner ? { ...meta, owner } : meta, null, 2) + "\n");
-        await rename(`${trackDir}/meta.json.tmp`, `${trackDir}/meta.json`);
+      const stems: UploadJob["stems"] = [];
+      for (const [name, f] of entries) stems.push({ name, bytes: new Uint8Array(await (f as File).arrayBuffer()) });
+      const outcome = await runUpload({ id, title, trackDir, owner, stems, roomInLibrary, roomForOwner });
+      if (!outcome.ok) {
+        await rm(trackDir, { recursive: true, force: true }).catch(() => {}); // whatever a failed attempt left
+        if (outcome.refusal) return refuse(outcome.refusal);
+        manager.log(`upload refused: ${outcome.log} (${sizeMb} MB)`);
+        return json({ error: outcome.error }, outcome.status, corsHeaders);
+      }
 
-        await manager.reloadLibrary();
-        // The entry as the library now holds it (validated on load), as this owner is allowed to see it.
-        const entry = manager.getLibrary().find((t) => t.id === id);
-        if (!entry) throw new Error("the track did not load back from disk");
-        manager.log(`upload accepted: ${id} — ${stemNames.length} stem(s), ${entry.durationSec.toFixed(1)} s of audio, ${sizeMb} MB, ${Math.round(performance.now() - startedAt)} ms${entry.bpm ? `, ${entry.bpm} BPM` : ""}`);
-        return json({ track: withUrls(entry, origin, owner) }, 201, corsHeaders);
-      } catch (e) {
+      await manager.reloadLibrary();
+      // The entry as the library now holds it (validated on load), as this owner is allowed to see it.
+      const entry = manager.getLibrary().find((t) => t.id === id);
+      if (!entry) {
         await rm(trackDir, { recursive: true, force: true }).catch(() => {});
-        console.warn(`[hive-server] upload ${id} failed:`, e instanceof Error ? e.message : e);
+        manager.log(`upload refused: ${id} did not load back from disk (${sizeMb} MB)`);
         return json({ error: "the song could not be saved — try again" }, 507, corsHeaders);
       }
+      manager.log(`upload accepted: ${id} — ${stemNames.length} stem(s), ${entry.durationSec.toFixed(1)} s of audio, ${sizeMb} MB, ${Math.round(performance.now() - startedAt)} ms${entry.bpm ? `, ${entry.bpm} BPM` : ""}`);
+      return json({ track: withUrls(entry, origin, owner) }, 201, corsHeaders);
     });
   } finally {
     buffered--;
