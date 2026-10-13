@@ -52,7 +52,7 @@ There is exactly **one** source of truth for playback, `room.transport`:
 - **SEEK / resume** = a new PLAY with a new `serverTimeAtTrackZero`.
 - **End of track** (server timer, `LEAD_MS` before the boundary; pure rules in `timeline.ts`): with another real
   (non-`generated`) song in the library the room **advances** to it — `track` changes, `scenePlan` is cleared,
-  `serverTimeAtTrackZero = oldEnd + TRACK_ADVANCE_LEAD_MS` (5000 ms, so phones can fetch and decode it) and the room is
+  `serverTimeAtTrackZero = oldEnd + TRACK_ADVANCE_LEAD_MS` (2000 ms: phones have already downloaded it via `nextTrack` and only need to decode and schedule it) and the room is
   re-planned. With nothing to advance to, the same track **loops** seamlessly: `serverTimeAtTrackZero = oldEnd`.
   The transport never stays `playing` past the end.
 - Late joiners, reconnects and tab-resume all use this same computation. No scheduled PLAY/PAUSE messages exist.

@@ -163,7 +163,7 @@ export function createBrowserAudioEngine(
    * The next song's stem files, downloaded ahead of the advance (RoomState.nextTrack).
    *
    * What is kept is the *bytes*, not decoded audio. The network is the slow part — an 18.9 MB WAV is
-   * 15 s on a 10 Mbit/s link against a 5.6 s advance lead — and the bytes are the cheap part: 18 MB
+   * 15 s on a 10 Mbit/s link against an advance lead of a few seconds — and the bytes are the cheap part: 18 MB
    * against 39 MB decoded at 48 kHz, held for minutes. Decoding is ~0.2 s on a desktop (measured in
    * Chromium, off the main thread; call it 1–2 s on a phone), which the lead covers several times over,
    * so it is done when the song actually becomes current. Holding two decoded songs is exactly what
