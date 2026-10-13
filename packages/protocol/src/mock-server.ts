@@ -56,9 +56,11 @@ export const ScenarioSchema = z.object({
   /**
    * `restartAfterSec`: drop every socket that many seconds in. `wipe: true` also forgets the show, as
    * a real restart does: apps/server keeps rooms in memory, and the host's key re-creates the room
-   * under the same code but empty (see `simulateRestart`).
+   * under the same code but empty (see `simulateRestart`). With `roomGoneSec` the room is instead
+   * *gone* for that long afterwards — every JOIN is answered NO_ROOM, as the real server answers one
+   * for a room its host has not restored yet — and then it is back (see `loseRoom`).
    */
-  chaos: z.object({ restartAfterSec: z.number().positive(), wipe: z.boolean().default(false) }).nullable().default(null),
+  chaos: z.object({ restartAfterSec: z.number().positive(), wipe: z.boolean().default(false), roomGoneSec: z.number().positive().optional() }).nullable().default(null),
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type ScenarioInput = z.input<typeof ScenarioSchema>;
@@ -285,7 +287,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
       }
       const roomMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)$/);
       if (roomMatch && req.method === "GET") {
-        const exists = roomMatch[1]!.toUpperCase() === room.code;
+        const exists = !roomGone && roomMatch[1]!.toUpperCase() === room.code;
         return json({ code: roomMatch[1]!.toUpperCase(), exists, players: exists ? Object.values(room.clients).filter((c) => c.kind === "player").length : 0 }, exists ? 200 : 404);
       }
       const vibeMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)\/vibe$/);
@@ -382,6 +384,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
 
   /** Read-only sockets with no client identity: a keyless JOIN that named a host record (see JOIN). */
   const observers = new Set<Bun.ServerWebSocket<{ clientId: string | null }>>();
+  /** True while the room is "not there" for joiners (see `loseRoom`). */
+  let roomGone = false;
   const received: Partial<Record<ClientMessage["type"], number>> = {};
 
   function handle(ws: Bun.ServerWebSocket<{ clientId: string | null }>, msg: ClientMessage) {
@@ -396,7 +400,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
     };
     switch (msg.type) {
       case "JOIN": {
-        if (msg.roomCode.toUpperCase() !== room.code) return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
+        // As the server: the refusal is an ERROR on a socket that stays open.
+        if (roomGone || msg.roomCode.toUpperCase() !== room.code) return send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
         const existing = room.clients[msg.clientId];
         // The user agent (up to 512 chars) is dead weight on every ROOM_STATE; never store it (as the server).
         const device = { ...msg.device, userAgent: "" };
@@ -807,10 +812,29 @@ export function startMockServer(opts: MockServerOptions = {}) {
     replan();
   }
 
+  /**
+   * A restart after which the host has not brought the room back (yet): every socket is dropped and
+   * every JOIN is answered NO_ROOM until `restoreRoom()` — what apps/server says once its restart
+   * grace window is over, or after a room idled out. The mock keeps the room's state for the return.
+   */
+  function loseRoom() {
+    roomGone = true;
+    simulateRestart();
+  }
+  function restoreRoom() {
+    log("chaos: the room is back");
+    roomGone = false;
+  }
+
   let chaosTimer: ReturnType<typeof setTimeout> | null = null;
+  let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   if (scenario.chaos) {
-    const { wipe } = scenario.chaos;
-    chaosTimer = setTimeout(() => simulateRestart({ wipe }), scenario.chaos.restartAfterSec * 1000);
+    const { restartAfterSec, wipe, roomGoneSec } = scenario.chaos;
+    chaosTimer = setTimeout(() => {
+      if (roomGoneSec === undefined) return simulateRestart({ wipe });
+      loseRoom();
+      restoreTimer = setTimeout(restoreRoom, roomGoneSec * 1000);
+    }, restartAfterSec * 1000);
   }
 
   const ready = (async () => {
@@ -841,6 +865,9 @@ export function startMockServer(opts: MockServerOptions = {}) {
     get received() { return received; },
     /** Drop every socket as a restart would, keeping the room — or, with `{ wipe: true }`, re-creating it empty (see `simulateRestart`). */
     simulateRestart,
+    /** As `simulateRestart`, and every JOIN is refused with NO_ROOM until `restoreRoom()`. */
+    loseRoom,
+    restoreRoom,
     stop() {
       clearInterval(stateTimer); clearInterval(healthTimer); clearInterval(pingTimer);
       clearCalibrationTimers();
@@ -849,6 +876,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
       for (const t of disconnectTimers.values()) clearTimeout(t);
       disconnectTimers.clear();
       if (chaosTimer) clearTimeout(chaosTimer);
+      if (restoreTimer) clearTimeout(restoreTimer);
       server.stop(true);
     },
   };

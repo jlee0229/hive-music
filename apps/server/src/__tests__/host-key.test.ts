@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, jest, test } from "bun:test";
 import { PROTOCOL_VERSION, ROOM_CODE_ALPHABET, type ServerMessage } from "@hive/protocol";
 import { HOST_KEY_RESTORE_TTL_MS, HostKeys } from "../host-key";
-import { JOIN_PARK_MS, RoomManager, type Conn } from "../rooms";
+import { RESTART_GRACE_MS, RoomManager, type Conn } from "../rooms";
 
 /**
  * Audit SG-01. `POST /rooms {code}` used to answer with the existing room's hostKey for anyone who
@@ -151,7 +151,7 @@ describe("SG-01: the host's own socket brings the room back (no page reload need
       after.handleMessage(asPlayer.ws, joinMsg("player-key-0001", room.code, "player", room.hostKey));
       expect(after.get(room.code)).toBeUndefined();
 
-      jest.advanceTimersByTime(JOIN_PARK_MS + 100); // nobody with the key showed up
+      jest.advanceTimersByTime(RESTART_GRACE_MS + 100); // nobody with the key showed up before the grace window ended
       expect(forged.sent).toEqual([expect.objectContaining({ type: "ERROR", code: "NO_ROOM" })]);
       expect(asPlayer.sent).toEqual([expect.objectContaining({ type: "ERROR", code: "NO_ROOM" })]);
       expect(after.get(room.code)).toBeUndefined();

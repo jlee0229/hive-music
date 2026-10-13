@@ -64,8 +64,15 @@ export const ROOM_UNCLAIMED_TTL_MS = 120_000;
  * the room back, the held JOINs are admitted as if nothing had happened.
  */
 export const RESTART_GRACE_MS = 120_000; // how long after boot a missing room may still be on its way back
-export const JOIN_PARK_MS = 15_000; // how long one JOIN waits for it before the usual NO_ROOM
 export const MAX_PARKED_JOINS = 1000; // process-wide; past this a miss is answered at once
+/**
+ * Held JOINs one caller address may have at once. A JOIN is held until the room is restored or the
+ * grace window ends (PARTY-01: it used to be 15 s, and a host whose phone was locked through a deploy
+ * came back 30 s later to a room every guest had already been turned away from). Holding for longer
+ * must not let one address sit on the whole process-wide pool for the whole window, so each address
+ * gets a share: more than any party behind one NAT (MAX_PLAYERS is 64), a tenth of the pool.
+ */
+export const MAX_PARKED_PER_ADDRESS = 100;
 
 /** Rooms alive at once, process-wide. Far above real use; the point is that the number is finite. */
 export const MAX_ROOMS = 2000;
@@ -1060,23 +1067,44 @@ export class RoomManager {
   private bootAt = performance.now();
   private parked = new Map<string, Array<{ ws: WS; msg: Extract<ClientMessage, { type: "JOIN" }>; timer: ReturnType<typeof setTimeout> }>>();
   private parkedTotal = 0;
+  /** Held JOINs per caller address (MAX_PARKED_PER_ADDRESS). An address with none has no entry. */
+  private parkedByCaller = new Map<string, number>();
 
   get parkedCount(): number {
     return this.parkedTotal;
   }
 
-  /** Holds a JOIN for a room that does not exist (yet). See RESTART_GRACE_MS. */
+  /** True while a JOIN for a missing room may be held: the grace window is open and neither pool is full. */
+  private canPark(caller: string): boolean {
+    return performance.now() - this.bootAt < RESTART_GRACE_MS && this.parkedTotal < MAX_PARKED_JOINS && (this.parkedByCaller.get(caller) ?? 0) < MAX_PARKED_PER_ADDRESS;
+  }
+
+  /**
+   * Holds a JOIN for a room that does not exist (yet), until the room is restored or the grace
+   * window ends — whichever is first. One timer per held JOIN: its NO_ROOM deadline.
+   */
   private park(ws: WS, msg: Extract<ClientMessage, { type: "JOIN" }>, code: string) {
+    const caller = ws.data.ip ?? "local";
     const timer = setTimeout(() => {
       this.unpark(ws);
-      this.missedJoins.allow(ws.data.ip ?? "local");
+      this.missedJoins.allow(caller);
       send(ws, { type: "ERROR", code: "NO_ROOM", message: `room ${msg.roomCode} does not exist` });
-    }, JOIN_PARK_MS);
+    }, Math.max(0, RESTART_GRACE_MS - (performance.now() - this.bootAt)));
     const list = this.parked.get(code) ?? [];
     list.push({ ws, msg, timer });
     this.parked.set(code, list);
     this.parkedTotal++;
+    this.parkedByCaller.set(caller, (this.parkedByCaller.get(caller) ?? 0) + 1);
     ws.data.parked = code;
+  }
+
+  /** One held JOIN fewer for the address of `ws` (it was admitted, it expired, or its socket closed). */
+  private releaseParkedSlot(ws: WS) {
+    this.parkedTotal--;
+    const caller = ws.data.ip ?? "local";
+    const left = (this.parkedByCaller.get(caller) ?? 1) - 1;
+    if (left > 0) this.parkedByCaller.set(caller, left);
+    else this.parkedByCaller.delete(caller);
   }
 
   private unpark(ws: WS) {
@@ -1086,7 +1114,7 @@ export class RoomManager {
     const rest = (this.parked.get(code) ?? []).filter((e) => {
       if (e.ws !== ws) return true;
       clearTimeout(e.timer);
-      this.parkedTotal--;
+      this.releaseParkedSlot(ws);
       return false;
     });
     if (rest.length > 0) this.parked.set(code, rest);
@@ -1100,7 +1128,7 @@ export class RoomManager {
     this.parked.delete(room.code);
     for (const e of list) {
       clearTimeout(e.timer);
-      this.parkedTotal--;
+      this.releaseParkedSlot(e.ws);
       e.ws.data.parked = undefined;
       room.join(e.ws, e.msg);
     }
@@ -1151,6 +1179,7 @@ export class RoomManager {
     }
     this.parked.clear();
     this.parkedTotal = 0;
+    this.parkedByCaller.clear();
     for (const room of this.rooms.values()) room.destroy();
     this.rooms.clear();
     return closed;
@@ -1341,7 +1370,7 @@ export class RoomManager {
           room.join(ws, msg); // the host first, then everyone who was waiting for the room
           return this.admitParked(room);
         } else if (this.opts.fixedCode && upper === this.opts.fixedCode) room = this.spawn(upper);
-        else if (performance.now() - this.bootAt < RESTART_GRACE_MS && this.isDealtCode(upper) && this.parkedTotal < MAX_PARKED_JOINS) {
+        else if (this.isDealtCode(upper) && this.canPark(caller)) {
           return this.park(ws, msg, upper);
         } else {
           this.missedJoins.allow(caller);
