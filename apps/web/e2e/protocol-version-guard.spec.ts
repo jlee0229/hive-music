@@ -9,12 +9,16 @@ test("a PROTOCOL_VERSION mismatch reloads once, then shows a banner instead of l
     route.fulfill({ json: { ok: true, protocolVersion: 999_999, serverTime: Date.now(), mock: true } }),
   );
 
-  let loads = 0;
-  page.on("load", () => loads++);
+  // Committed navigations, not "load" events: on a slow machine the guard's reload can land before
+  // the first document has finished loading, and then that document never fires "load" at all.
+  let navigations = 0;
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) navigations++;
+  });
 
-  await page.goto("/j/BZQ7");
-  // One load for the initial navigation, a second once the guard's one-shot reload fires.
-  await expect.poll(() => loads, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  await page.goto("/j/BZQ7", { waitUntil: "commit" });
+  // One for the initial navigation, a second once the guard's one-shot reload fires.
+  await expect.poll(() => navigations, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
 
   await expect(page.getByRole("alert").filter({ hasText: "older version" })).toBeVisible({ timeout: 10_000 });
 });
