@@ -285,6 +285,8 @@ export function HiveMap({
             {/* Names only while they fit between neighbours; a big party is dots, and a tap or the Players list has the name. */}
             {metrics.showLabels ? (
               <text x={cx} y={cy + metrics.labelDy} textAnchor="middle" fontSize={metrics.font} fill="var(--muted)" fontFamily="IBM Plex Sans, sans-serif">
+                {/* The label is cut to fit; the whole name stays on the element (tooltip, assistive tech). */}
+                <title>{client.name}</title>
                 {fitLabel(client.name, metrics.labelChars)}
               </text>
             ) : null}
