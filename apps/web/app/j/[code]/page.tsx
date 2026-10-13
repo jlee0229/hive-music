@@ -256,7 +256,9 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   // The host's phone locking, their tab closing or their battery dying all look the same from
   // here: no connected host. The wait line used to keep saying "waiting for the host to start"
   // (or "Paused") for as long as the guest cared to look at it.
-  const hostHere = !!room && room.hostClientIds.some((id) => room.clients[id]?.connected);
+  // A guest's snapshot has no roster to look the host up in; the server says it in one room-level flag
+  // (the roster check is for a server from before the flag existed).
+  const hostHere = !!room && (room.hostConnected ?? room.hostClientIds.some((id) => room.clients[id]?.connected));
   useEffect(() => {
     if (hostHere) setHostSeen(true);
   }, [hostHere]);

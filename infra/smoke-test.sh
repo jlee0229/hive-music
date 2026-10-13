@@ -94,7 +94,7 @@ uid=$(server_uid)
 [ -n "$uid" ] || die "could not find the server process in the container"
 [ "$uid" != "0" ] || die "the server is running as root (uid 0); see the entrypoint log above"
 echo "server uid: $uid"
-docker exec -i "$NAME" bun run - < infra/smoke-upload.ts || die "upload failed on a root-owned volume"
+docker exec -i -e SMOKE_KEEP=1 "$NAME" bun run - < infra/smoke-upload.ts || die "upload failed on a root-owned volume"
 owner=$(docker exec "$NAME" /bin/sh -c 'stat -c %U /app/fixtures/tracks/smoke-test-*/mix.wav')
 [ "$owner" = "bun" ] || die "the uploaded file is owned by '$owner', expected 'bun'"
 

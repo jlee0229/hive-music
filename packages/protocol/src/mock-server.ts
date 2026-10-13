@@ -661,9 +661,15 @@ export function startMockServer(opts: MockServerOptions = {}) {
     });
   }
 
+  /** As the server: one room-level flag, because a guest's own snapshot there has no roster to read it from. */
+  function stampHostConnected() {
+    room.hostConnected = room.hostClientIds.some((id) => room.clients[id]?.connected === true);
+  }
+
   function flush() {
     if (!dirty) return;
     dirty = false;
+    stampHostConnected();
     server.publish(room.code, JSON.stringify({ type: "ROOM_STATE", room } satisfies ServerMessage));
   }
 

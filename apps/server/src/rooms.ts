@@ -333,6 +333,7 @@ export class Room {
    */
   private sendState(refreshOlderThanMs = Infinity, onlyStale = false): { sent: number; skipped: boolean } {
     const t = now();
+    this.room.hostConnected = this.room.hostClientIds.some((id) => this.room.clients[id]?.connected === true);
     const { clients, calibration, hostClientIds: _hosts, ...level } = this.room;
     let full: string | null = null;
     const fullView = () => (full ??= JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
