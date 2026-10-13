@@ -242,7 +242,7 @@ function HostRoom({
   const autoStartSawTuningRef = useRef(false);
   const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { client, room, me, connection, audio, health, healthServerTime, protocolMismatch } = useHiveClient({
+  const { client, room, me, connection, audio, health, healthServerTime, protocolMismatch, isHost } = useHiveClient({
     roomCode,
     kind: "host",
     plays: speakerOn,
@@ -287,13 +287,14 @@ function HostRoom({
     return () => client.disconnect();
   }, [client]);
 
-  // "Am I the host?" is answered by the server's own list of hosts, never by this record's `kind`:
-  // a JOIN whose key is not the room's is admitted as a plain guest (a speaker!), and a keyless JOIN
-  // under a host's client id is a read-only observer whose `me` is the real host's record. The
-  // moment the room says this client is not a host, say so and leave — HostPage unmounts this
-  // component, which closes the socket (below), so the tab does not linger as a phantom speaker.
-  // (The engine does not surface WELCOME.isHost; when it does, this is the one place to read it.)
-  const amHost = room ? room.hostClientIds.includes(client.clientId) : null;
+  // "Am I the host?" is the server's answer, never this record's `kind`: a JOIN whose key is not
+  // the room's is admitted as a plain guest (a speaker!), and a keyless JOIN under a host's client
+  // id is a read-only observer whose `me` — and whose id in `hostClientIds` — is the real host's.
+  // WELCOME.isHost is the one fact that tells those apart, so it wins whenever the engine has it;
+  // the room's host list is only the fallback before the first WELCOME is known. The moment the
+  // answer is "no", say so and leave — HostPage unmounts this component, which closes the socket
+  // (below), so the tab does not linger as a phantom speaker.
+  const amHost = isHost ?? (room ? room.hostClientIds.includes(client.clientId) : null);
   useEffect(() => {
     if (amHost === false && connection === "open") onNotHost();
     // eslint-disable-next-line react-hooks/exhaustive-deps

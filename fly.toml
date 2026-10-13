@@ -6,17 +6,17 @@
 # THREE RULES
 #   1. One machine, always. Rooms live in this process's memory; a second machine would split a
 #      party across two servers that cannot see each other. Never `fly scale count 2`.
-#   2. Every deploy/restart ends every running party (rooms are not persisted, and codes are
-#      random, so a room cannot be re-created under the same code). Deploy when nobody is playing.
+#   2. Every deploy/restart interrupts every running party: rooms are not persisted, the music
+#      stops, and each room comes back (same code, nothing playing) only when its host's phone
+#      reconnects. Deploy when nobody is playing.
 #   3. Keep auto-stop off: an idle-stopped machine would drop the room between songs.
 
 app = "playhivemusic-api"
 primary_region = "ewr"
 
-# Fly sends this signal, waits kill_timeout seconds, then SIGKILLs. These are Fly's defaults,
-# written out because the server has no shutdown handler yet: it simply exits on SIGINT, sockets
-# drop, and phones show their reconnect state. Raising the timeout buys nothing until the server
-# learns to say goodbye (docs/13-operations.md, "What a deploy does to a party").
+# Fly sends this signal, waits kill_timeout seconds, then SIGKILLs. On SIGINT the server tells
+# every phone "service restart" and exits within a fraction of a second, so the default timeout is
+# plenty (docs/13-operations.md, "What a deploy does to a party").
 kill_signal = "SIGINT"
 kill_timeout = 5
 
@@ -42,6 +42,9 @@ swap_size_mb = 512
   # shares one budget (30 new hives a minute between them). Never set it on a host with no proxy:
   # there the header is whatever the client typed.
   TRUST_PROXY_IP = "1"
+  # Only a room's host may ask the vibe director for a timeline. The web app sends the host key
+  # with that request; this makes the server refuse a request without one.
+  VIBE_REQUIRE_HOST_KEY = "1"
 
 # What production has run on since launch (`fly scale show`, 2026-10-11). Written out so a deploy
 # can never change the bill by accident. The audit's recommendation is 512mb or 1gb — a few

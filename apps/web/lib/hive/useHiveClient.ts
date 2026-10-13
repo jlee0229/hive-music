@@ -31,16 +31,15 @@ export interface UseHiveClientResult {
   healthServerTime: number | null;
   /** True once a one-shot reload has already failed to clear a PROTOCOL_VERSION mismatch. */
   protocolMismatch: boolean;
+  /** What the server's last WELCOME said about this socket; null before the first one. */
+  isHost: boolean | null;
   /** Call inside a user gesture (tap), then connect(). Safe to call multiple times. */
   connect: () => Promise<void>;
 }
 
 /** The one hook every page uses: one HiveClient per page, subscribed to every event, re-rendered from the latest snapshot. */
 export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
-  // `libraryKey` is an engine option that arrives with the owned-uploads work (HiveClientOptions
-  // gains it and the transport puts it in a host's JOIN). The intersection type keeps this file
-  // compiling on either side of that merge; an engine without the option ignores the extra field.
-  const clientOpts: HiveClientOptions & { libraryKey?: string } = useMemo(
+  const clientOpts: HiveClientOptions = useMemo(
     () => ({
       wsUrl: wsUrl(),
       apiUrl: apiUrl(),
@@ -79,6 +78,7 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
   const [health, setHealth] = useState<Record<string, HealthSnapshot>>({});
   const [healthServerTime, setHealthServerTime] = useState<number | null>(null);
   const [protocolMismatch, setProtocolMismatch] = useState(false);
+  const [isHost, setIsHost] = useState<boolean | null>(client.isHost);
 
   useEffect(() => {
     guardProtocolVersion(clientOpts.apiUrl).then((result) => {
@@ -95,7 +95,20 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
       setMe(client.me);
     });
     const offStatus = client.on("status", setStatus);
-    const offConnection = client.on("connection", setConnection);
+    // The server's own answer to "is this socket a host?" rides on every WELCOME and is current by
+    // the time the connection reports "open" — on the first join and after every reconnect.
+    const offConnection = client.on("connection", (state, host) => {
+      setConnection(state);
+      setIsHost(host);
+    });
+    // The mount-time check above only catches a tab that *loads* stale. A tab left open across a
+    // server deploy goes stale while running; the engine notices on the next WELCOME, and the same
+    // one-reload-then-banner rule applies (the engine itself never reloads the page).
+    const offMismatch = client.on("protocolMismatch", () => {
+      guardProtocolVersion(clientOpts.apiUrl).then((result) => {
+        if (result === "banner") setProtocolMismatch(true);
+      });
+    });
     const offAudio = client.on("audio", (s, p) => {
       setAudioState(s);
       setLoadProgress(p);
@@ -113,6 +126,7 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
       offState();
       offStatus();
       offConnection();
+      offMismatch();
       offAudio();
       offHealth();
     };
@@ -129,6 +143,7 @@ export function useHiveClient(opts: UseHiveClientOptions): UseHiveClientResult {
     health,
     healthServerTime,
     protocolMismatch,
+    isHost,
     connect: () => {
       everConnectedRef.current = true;
       return client.connect();

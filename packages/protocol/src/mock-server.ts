@@ -6,8 +6,7 @@
  *
  * Parity with apps/server is the point of this file — the whole e2e suite runs against it. What is
  * deliberately different, and only this: one room (the scenario's), a fixed `hostKey`, seeded `mock-*`
- * players with synthetic health and fake calibration results, a calibration order that does not yet
- * require AUDIO_READY (PROTO-15, see startCalibration), a fixed rules-only `/vibe` plan, no
+ * players with synthetic health and fake calibration results, a fixed rules-only `/vibe` plan, no
  * `POST /tracks` upload (501), no idle TTL, no ping timeout, a fixed 2 Hz publish tick instead of the
  * server's leading-edge coalescer, and a short audio cache lifetime. Everything else must behave like
  * `apps/server/src/rooms.ts`; `scripts/parity-probe.ts` runs the same probes against both.
@@ -620,12 +619,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
     /*
      * Only a connected speaker can produce a click worth measuring; anyone else is a silent slot.
      *
-     * KNOWN DIVERGENCE (PROTO-15): the server additionally requires `c.audioReadyTrackId === room.track?.id`.
-     * The mock cannot yet: the stub engine the e2e suite runs on never sends AUDIO_READY when a player
-     * unlocks before it connects (which is what /j does), so no e2e player would ever be scheduled and
-     * f7-calibrate's "player flashes" test — which passes only because of this gap — would fail. Once
-     * packages/sync-client/src/stub.ts announces AUDIO_READY on the first ROOM_STATE after unlock, set
-     * REQUIRE_AUDIO_READY_FOR_CALIBRATION to true and flip the test.failing in mock-parity.test.ts.
+     * Like the server, a speaker must also have announced AUDIO_READY for the current track
+     * (REQUIRE_AUDIO_READY_FOR_CALIBRATION): a phone still loading cannot click on time.
      */
     const order = Object.values(room.clients)
       .filter((c) => c.plays && c.id !== referenceClientId && c.connected && (!REQUIRE_AUDIO_READY_FOR_CALIBRATION || c.audioReadyTrackId === room.track?.id))

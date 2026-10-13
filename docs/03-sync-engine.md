@@ -57,7 +57,7 @@ Semantics the implementation must keep:
 - `host.vibe(prompt)` POSTs `/rooms/:code/vibe` and resolves with `scenePlan` (LLM or rules).
 - `clock.ctxTimeFor(S)` = the AudioContext time at which server time `S` reaches this device's speaker, i.e. the plain clock mapping below without compensation or delay (the engine applies those when it schedules sources). The UI uses it to time flashes; the stub returns seconds-from-now.
 - `nudgeSelf(ms)` sends `NUDGE {clientId: me, nudgeMs}`; the server accepts `NUDGE` from a player only for its own id.
-- Reconnect: `connection` → `reconnecting`, backoff `min(5000, 300·2^min(attempt,4))` ms (300, 600, 1200, 2400, 4800), re-`JOIN` with the same `clientId`, `WELCOME` resets the counter. `ERROR KICKED` closes for good (`room = null`).
+- Reconnect: `connection` → `reconnecting`, backoff `min(5000, 300·2^min(attempt,4))` ms with the first retry counted as attempt 1, so a phone waits 600, 1200, 2400, 4800, 4800… ms, each stretched by up to +50 % of random jitter so a restarted server is not hit by every phone on the same millisecond; re-`JOIN` with the same `clientId`, `WELCOME` resets the counter. `ERROR KICKED` closes for good (`room = null`).
 
 ## Sign conventions
 
