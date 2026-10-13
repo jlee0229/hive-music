@@ -232,6 +232,13 @@ const server = Bun.serve<Conn>({
     // (JOIN ~1 KB, a CALIBRATION_REPORT for a full room ~25 KB); anything bigger closes the socket
     // before it is ever buffered or parsed.
     maxPayloadLength: 64 * 1024,
+    // What the server will hold for a socket that is not reading. State snapshots are never queued
+    // behind a backlog (rooms.ts SNAPSHOT_BACKLOG_BYTES), so a healthy-but-slow phone stays far
+    // below this; a socket that reaches it is not coming back in time to matter, and closing it
+    // frees the memory at once instead of at the 45 s ping timeout. Bun's default is 16 MB per
+    // socket with no close — a handful of phones on dead cellular against a 256 MB machine.
+    backpressureLimit: 1024 * 1024,
+    closeOnBackpressureLimit: true,
     open() {
       /* subscribed to its room's topic once JOIN resolves which room it is */
     },

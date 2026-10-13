@@ -20,12 +20,15 @@ const args = parseArgs(process.argv.slice(2));
 const N = Number(args.get("clients") ?? 200);
 const K = Number(args.get("stalled") ?? 10);
 const DURATION_SEC = Number(args.get("duration") ?? 150);
+// --stalled-kind viewer: the stalled sockets are displays, which are sent the whole roster (players
+// are sent only their own record since SCALE-NET-02, so they are no longer the worst case).
+const STALLED_KIND = (args.get("stalled-kind") ?? "player") as "player" | "viewer";
 const PORT = 26000 + Math.floor(Math.random() * 900);
 const BASE = `http://localhost:${PORT}`;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const device = { userAgent: "", platform: "load-test", browserFamily: "android-chrome" as const };
 
-function join(clientId: string, roomCode: string, kind: "host" | "player", hostKey?: string): ClientMessage {
+function join(clientId: string, roomCode: string, kind: "host" | "player" | "viewer", hostKey?: string): ClientMessage {
   return { type: "JOIN", clientId, roomCode, kind, plays: kind === "player", hostKey, device, protocolVersion: PROTOCOL_VERSION };
 }
 
@@ -52,7 +55,7 @@ function stalledClient(clientId: string, roomCode: string): Promise<net.Socket> 
       if (!upgraded) {
         if (!chunk.toString("latin1").startsWith("HTTP/1.1 101")) return reject(new Error("upgrade refused"));
         upgraded = true;
-        sock.write(frame(JSON.stringify(join(clientId, roomCode, "player"))));
+        sock.write(frame(JSON.stringify(join(clientId, roomCode, STALLED_KIND))));
         return;
       }
       sock.pause(); // from here on the kernel buffer fills and the server has to hold the rest
