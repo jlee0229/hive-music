@@ -288,3 +288,93 @@ test.describe("playing screen", () => {
     }
   });
 });
+
+test.describe("landing page", () => {
+  test.use({ mockScenario: "join.json" });
+
+  const HEADLINE = "Party wherever. Party together. Become the speaker.";
+
+  async function headline(page: Page) {
+    const h1 = page.getByRole("heading", { level: 1 });
+    await expect(h1).toHaveText(HEADLINE);
+    return h1.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const fontSize = parseFloat(cs.fontSize);
+      const sentences = [...el.querySelectorAll("span")].map((s) => ({ text: s.textContent!.trim(), lines: Math.round(s.getBoundingClientRect().height / (fontSize * 1.02)) }));
+      const r = el.getBoundingClientRect();
+      return { fontSize, align: cs.textAlign, left: r.left, right: r.right, sentences };
+    });
+  }
+
+  async function scrolls(page: Page) {
+    return page.evaluate(() => ({ down: document.documentElement.scrollHeight - innerHeight, sideways: document.documentElement.scrollWidth - innerWidth }));
+  }
+
+  for (const viewport of [SMALLEST, { width: 375, height: 667 }, SAFARI, { width: 393, height: 852 }]) {
+    test(`${viewport.width}x${viewport.height}: headline, both actions, creators and GitHub fit one screen`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/");
+      const h = await headline(page);
+      expect(h.align).toBe("center");
+      expect(h.left).toBeGreaterThanOrEqual(0);
+      expect(h.right).toBeLessThanOrEqual(viewport.width);
+      // No sentence is broken in an awkward place: the two short ones hold a line each, and the
+      // third takes at most two ("Become the / speaker.").
+      expect(h.sentences.map((s) => s.text)).toEqual(["Party wherever.", "Party together.", "Become the speaker."]);
+      expect(h.sentences[0]!.lines).toBe(1);
+      expect(h.sentences[1]!.lines).toBe(1);
+      expect(h.sentences[2]!.lines).toBeLessThanOrEqual(2);
+      expect(h.fontSize, "the headline is still a headline").toBeGreaterThanOrEqual(34);
+
+      expect(await scrolls(page)).toEqual({ down: 0, sideways: 0 });
+      for (const el of [
+        page.getByRole("button", { name: "Host a hive" }),
+        page.getByLabel("Hive code"),
+        page.getByRole("button", { name: "Join" }),
+        page.getByText("Creators: Frank Lucci & Jaeho Lee"),
+        page.getByRole("link", { name: "HiveMusic on GitHub" }),
+      ]) {
+        await expect(el).toBeInViewport({ ratio: 1 });
+      }
+      // The byline stays prominent, and GitHub stays a bar with its mark.
+      const byline = await page.getByText("Creators: Frank Lucci & Jaeho Lee").evaluate((el) => ({ size: parseFloat(getComputedStyle(el).fontSize), height: el.getBoundingClientRect().height }));
+      expect(byline.size).toBeGreaterThanOrEqual(17);
+      expect(byline.height, "the byline wraps").toBeLessThan(byline.size * 1.8);
+      const github = (await page.getByRole("link", { name: "HiveMusic on GitHub" }).boundingBox())!;
+      expect(github.height).toBeGreaterThanOrEqual(44);
+      expect(github.width).toBeGreaterThanOrEqual(viewport.width - 48);
+      await expect(page.getByRole("link", { name: "HiveMusic on GitHub" }).locator("svg")).toHaveCount(1);
+    });
+  }
+
+  test("320x568: the too-short-code message does not push anything off the screen", async ({ page }) => {
+    await page.setViewportSize(SMALLEST);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Join" }).click();
+    await expect(page.locator("main").getByRole("alert")).toBeVisible();
+    expect(await scrolls(page)).toEqual({ down: 0, sideways: 0 });
+    await expect(page.getByRole("link", { name: "HiveMusic on GitHub" })).toBeInViewport({ ratio: 1 });
+  });
+
+  test("852x393 sideways: both actions are on screen without scrolling", async ({ page }) => {
+    await page.setViewportSize({ width: 852, height: 393 });
+    await page.goto("/");
+    await headline(page);
+    expect(await scrolls(page)).toEqual({ down: 0, sideways: 0 });
+    await expect(page.getByRole("button", { name: "Host a hive" })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole("button", { name: "Join" })).toBeInViewport({ ratio: 1 });
+  });
+
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1920, height: 1080 }]) {
+    test(`${viewport.width}x${viewport.height} desktop: one sentence a line, large, nothing to scroll`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/");
+      const h = await headline(page);
+      expect(h.sentences.map((s) => s.lines)).toEqual([1, 1, 1]);
+      expect(h.fontSize).toBeGreaterThanOrEqual(64);
+      expect(await scrolls(page)).toEqual({ down: 0, sideways: 0 });
+      // The actions stay a hand-sized column instead of stretching across the monitor.
+      expect((await page.getByRole("button", { name: "Host a hive" }).boundingBox())!.width).toBeLessThanOrEqual(480);
+    });
+  }
+});

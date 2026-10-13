@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* A phone held sideways: plenty of width, about 390 px of height. `sideways:flex-row` etc. */
+@custom-variant sideways (@media (orientation: landscape) and (max-height: 500px));
+
+
 :root {
   --stage: #0b0f14;
   --surface: #151b23;
@@ -120,6 +124,24 @@ button,
 
 .font-mono {
   font-family: var(--font-mono);
+}
+
+/*
+ * The landing headline, one sentence to a line. In this face at weight 800 "Party wherever." is
+ * 7.48 em wide, so (width - gutters) / 7.7 is the largest size at which it still holds one line;
+ * "Become the speaker." (9.82 em) then breaks once, as "Become the / speaker.", until the column is
+ * wide enough for it (about 710 px), where the headline is three lines of 72 px.
+ */
+:root {
+  --landing-headline: min(72px, calc((100vw - 40px) / 7.7));
+  /* The byline is 15.7 em wide; one line, as large as fits, 20 px at most. */
+  --landing-byline: min(20px, calc((100vw - 40px) / 16.2));
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  :root {
+    --landing-headline: min(40px, calc((50vw - 36px) / 7.7), 10dvh);
+    --landing-byline: min(20px, calc((50vw - 36px) / 16.2));
+  }
 }
 
 /* Small print in capitals above a value ("YOU ARE", "YOU'LL PLAY", "GET READY"). */
