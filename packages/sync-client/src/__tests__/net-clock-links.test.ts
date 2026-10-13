@@ -15,16 +15,19 @@
  *    200 ms apart, and one pair per second, the two halves 10 ms apart — including the detail that a
  *    burst tick and a steady tick landing together cancel the first one's second half.
  *
- * Every number asserted below is a *characterisation* of the estimator as it is today, with headroom;
- * the `test.failing` cases are the measured gaps, written as the behaviour we want (flip to `test` when
- * engine-sync lands the change). Set NET_REPORT=<path> to write the full table as JSON + text.
+ * The "current" rows characterise the coded-pair estimator this file was written against (still in
+ * ClockModel as `estimator: "pairs"`, for A/B). The "engine" rows are what the engine runs now: the
+ * proposal prototyped below, landed in ClockModel as `estimator: "floor"` and combined with the step
+ * detection it already had (engine-sync wave 2). The three measured gaps that were `test.failing` here
+ * are plain tests against the engine's clock, and still fail against "current" (asserted, so the
+ * comparison cannot rot). Set NET_REPORT=<path> to write the full table as JSON + text.
  */
 import { describe, expect, test } from "bun:test";
 import {
   NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_PROBE_PAIR_GAP_MS, NTP_SAMPLE_MAX_AGE_MS, NTP_STEADY_INTERVAL_MS,
   RESYNC_THRESHOLD_MS, SYNC_FLOOR_MS, SYNC_TARGET_MS,
 } from "@hive/protocol";
-import { ClockModel, SLEW_RATE_MS_PER_SEC } from "../clock";
+import { ClockModel, createEngineClock, SLEW_RATE_MS_PER_SEC } from "../clock";
 
 // ---- seeded randomness ----------------------------------------------------------------------------------
 function rng(seed: number): () => number {
@@ -166,6 +169,7 @@ interface Variant {
   steadyHz?: number;
 }
 const VARIANTS: Record<string, Variant> = {
+  engine: { name: "engine (floor estimator, ClockModel)", make: () => createEngineClock() },
   current: { name: "current (coded pairs, min-RTT of 30)", make: () => new ClockModel({ pairs: true }) },
   noPairs: { name: "pair test off (min-RTT of 30)", make: () => new ClockModel({ pairs: false }) },
   current2Hz: { name: "current, 2 pairs/s", make: () => new ClockModel({ pairs: true }), steadyHz: 2 },
@@ -450,20 +454,45 @@ describe("clock sync vs. the network", () => {
     expect(cell("hotspotStepAsym", "floorHold").errSteady.max).toBeGreaterThan(40);
   });
 
-  // ---- measured gaps, written as the behaviour we want ---------------------------------------------------
-  test.failing("venue Wi-Fi: every phone has a clock within 2 s of joining", () => {
-    expect(cell("venueWifi", "current").firstEstimateMs.max).toBeLessThan(2000);
+  // ---- the measured gaps: closed by the engine's estimator, still open in the pair estimator -----------
+  test("venue Wi-Fi: every phone has a clock within 2 s of joining", () => {
+    expect(cell("venueWifi", "engine").firstEstimateMs.max).toBeLessThan(2000); // 1.35 s; pairs: 4.3 s
+    expect(cell("venueWifi", "current").firstEstimateMs.max).toBeGreaterThan(4000);
   });
 
-  test.failing("venue Wi-Fi: no phone is ever more than the 30 ms floor wrong once it has settled", () => {
-    // Today 7 of 40 three-minute runs have an excursion past 30 ms (worst 138 ms): the pair test leaves
-    // so few samples in the window that a response which sat behind a retransmit becomes "the best".
-    expect(cell("venueWifi", "current").runsOver30).toBe(0);
+  test("venue Wi-Fi: no phone is ever more than the 30 ms floor wrong once it has settled", () => {
+    // The pair estimator leaves so few samples in the window that a response which sat behind a
+    // retransmit becomes "the best": 3 of 40 runs past 30 ms (worst 124 ms) even with step detection.
+    expect(cell("venueWifi", "engine").runsOver30).toBe(0);
+    expect(cell("venueWifi", "engine").errSteady.max).toBeLessThan(SYNC_TARGET_MS);
+    expect(cell("venueWifi", "current").runsOver30).toBeGreaterThan(0);
   });
 
-  test.failing("LTE: the fallback after a burst with no accepted pair does not adopt a 100 ms-wrong clock", () => {
-    // `degraded` takes the better half of ONE rejected pair; every probe the burst already saw is ignored.
-    expect(cell("lte", "current").errFirst5s.max).toBeLessThan(SYNC_FLOOR_MS);
+  test("LTE: the first clock is never 100 ms wrong (nor past the 30 ms floor)", () => {
+    // The pair estimator's `degraded` fallback takes the better half of ONE rejected pair. The engine's
+    // adopts only a sample that bounds the error, or the best of the first ten probes.
+    expect(cell("lte", "engine").errFirst5s.max).toBeLessThan(SYNC_FLOOR_MS); // 15 ms, 7.5 of it the path's own bias
+    expect(cell("lte", "current").errFirst5s.max).toBeGreaterThan(SYNC_FLOOR_MS);
+  });
+
+  test("the engine's estimator is at least as good as proposal C on every link, and better in the first seconds", () => {
+    for (const link of Object.keys(LINKS)) {
+      const engine = cell(link, "engine");
+      const proposal = cell(link, "floorHold");
+      expect(engine.errSteady.p95).toBeLessThanOrEqual(proposal.errSteady.p95 + 0.2);
+      expect(engine.errSteady.max).toBeLessThanOrEqual(proposal.errSteady.max + 0.5);
+      expect(engine.firstEstimateMs.max).toBeLessThan(2000);
+      // the prototype adopts whatever its first three probes say: 226 ms wrong on venue Wi-Fi when all
+      // three sat behind a stall. The engine waits for a sample that bounds the error.
+      expect(engine.errFirst5s.max).toBeLessThanOrEqual(Math.max(proposal.errFirst5s.max, 20));
+    }
+    for (const link of ["lan", "homeWifi", "venueWifi", "lte", "hotspotStep", "uplinkBurst"]) {
+      expect(cell(link, "engine").runsOver30).toBe(0);
+    }
+    expect(cell("venueWifi", "floorHold").errFirst5s.max).toBeGreaterThan(100);
+    expect(cell("venueWifi", "engine").errFirst5s.max).toBeLessThan(20);
+    // the one-way congestion case the pair test existed for: held over, not followed
+    expect(cell("uplinkBurst", "engine").errSteady.max).toBeLessThan(SYNC_TARGET_MS / 2);
   });
 
   test("report", async () => {
@@ -472,7 +501,7 @@ describe("clock sync vs. the network", () => {
     const variants = Object.keys(VARIANTS);
     const cells = links.flatMap((l) => variants.map((v) => cell(l, v)));
     const pairs: Array<[string, string]> = [["lan", "lan"], ["homeWifi", "homeWifi"], ["lan", "homeWifi"], ["homeWifi", "lte"], ["homeWifi", "venueWifi"], ["venueWifi", "venueWifi"], ["venueWifi", "lte"], ["lan", "hotspotStepAsym"], ["lan", "uplinkBurst"]];
-    const skews = pairs.flatMap(([a, b]) => ["current", "floorHold"].map((v) => ({ a: LINKS[a]!.name, b: LINKS[b]!.name, variant: VARIANTS[v]!.name, ...skew(a, b, v) })));
+    const skews = pairs.flatMap(([a, b]) => ["engine", "current", "floorHold"].map((v) => ({ a: LINKS[a]!.name, b: LINKS[b]!.name, variant: VARIANTS[v]!.name, ...skew(a, b, v) })));
     const lines = [
       `Clock-offset error by link and estimator — ${SEEDS} seeded runs x ${DURATION_MS / 1000} s each, 30 ppm crystal drift, error sampled every ${GRID_MS} ms`,
       `columns: |err| p50/p95/max ms over the whole run | first 5 s p95/max | steady (>=10 s) p50/p95/max | mean signed | steady time >10 ms / >30 ms wrong, runs with a >30 ms excursion | first estimate p50/p95/max ms | converged (within 5 ms of the link's own bias, held 10 s) p50/p95 ms, runs never | probes accepted | degraded runs`,

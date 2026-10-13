@@ -12,17 +12,18 @@
  * is exercised.
  */
 import {
-  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, SET_POSITION_MAX_HZ,
+  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, PROTOCOL_VERSION, ROOM_STATE_MAX_HZ,
+  SET_POSITION_MAX_HZ,
   trackTimeSec as transportTrackTimeSec,
   type Assignment, type AudioState, type ClientRecord, type HealthSnapshot, type ModeKind, type ModeParams,
   type RoomState, type ScenePlan, type StemRole,
 } from "@hive/protocol";
 import { ClockModel, localNow } from "./clock";
-import { Emitter, persistedClientId, RoomTransport } from "./transport";
+import { Emitter, persistedClientId, postVibe, RoomTransport } from "./transport";
 import type { CalibrationResult, ConnectionState, HiveClient, HiveClientOptions, SyncStatus } from "./index";
 
 export function createStubClient(opts: HiveClientOptions): HiveClient {
-  const clientId = opts.clientId ?? persistedClientId(opts.roomCode);
+  const clientId = opts.clientId ?? persistedClientId(opts.roomCode, opts.kind);
   const clock = new ClockModel(); // pairs: false — see the file header
   const ev = new Emitter();
   let room: RoomState | null = null;
@@ -32,9 +33,41 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
   let timers: Array<ReturnType<typeof setInterval>> = [];
   let pairTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPositionSent = 0;
+  let protocolMismatch: { server: number; client: number } | null = null;
+  let isHost: boolean | null = null;
   let probeGroup = 0;
+  let lastReadyAnnounceAt = -Infinity;
+  let lastReadyAnnounced: string | null = null;
+  let readyRecheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   const me = (): ClientRecord | null => room?.clients[clientId] ?? null;
+
+  /**
+   * AUDIO_READY, driven by what the server says it knows — the real engine's rule. The stub used to
+   * announce once, inside unlock(), and only if a snapshot already existed; the player page unlocks
+   * *before* it connects, so no stub player ever announced, and the calibration e2e passed only
+   * because the mock did not ask (PROTO-15). Self-limiting: it stops once the snapshot reflects it.
+   */
+  function announceReadyIfUnknown(): void {
+    const track = room?.track;
+    const mine = me();
+    if (audioState !== "ready" || !track || !mine) return;
+    if (mine.audioReadyTrackId === track.id) return;
+    // The same announcement may still be in flight; a different track is always news. Held back, it is
+    // tried again when the guard expires: the server publishes on change, so there may be no "next
+    // snapshot" to do it.
+    const wait = 1000 / ROOM_STATE_MAX_HZ - (localNow() - lastReadyAnnounceAt);
+    if (lastReadyAnnounced === track.id && wait > 0) {
+      readyRecheckTimer ??= setTimeout(() => {
+        readyRecheckTimer = null;
+        announceReadyIfUnknown();
+      }, wait + 5);
+      return;
+    }
+    lastReadyAnnounceAt = localNow();
+    lastReadyAnnounced = track.id;
+    transport.send({ type: "AUDIO_READY", trackId: track.id });
+  }
   const status = (): SyncStatus => ({
     clockOffsetMs: clock.offsetMs,
     rttMs: clock.rttMs,
@@ -50,8 +83,13 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     opts,
     clientId,
     {
-      onWelcome: () => startTimers(),
-      onConnection: (c) => ev.emit("connection", c),
+      onWelcome: (msg) => {
+        isHost = msg.isHost;
+        protocolMismatch = msg.protocolVersion === PROTOCOL_VERSION ? null : { server: msg.protocolVersion, client: PROTOCOL_VERSION };
+        if (protocolMismatch) ev.emit("protocolMismatch", msg.protocolVersion, PROTOCOL_VERSION);
+        startTimers();
+      },
+      onConnection: (c) => ev.emit("connection", c, isHost),
       onReconnect: () => stopTimers(),
       onMessage: (m, at) => {
         switch (m.type) {
@@ -65,6 +103,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
             ev.emit("state", room);
             const next = me()?.assignment ?? null;
             if (prev !== JSON.stringify(next)) ev.emit("assignment", next);
+            announceReadyIfUnknown();
             break;
           }
           case "HEALTH":
@@ -130,6 +169,8 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     get me() { return me(); },
     get assignment() { return me()?.assignment ?? null; },
     get connection(): ConnectionState { return transport.connection; },
+    get isHost() { return isHost; },
+    get protocolMismatch() { return protocolMismatch; },
     get status() { return status(); },
     clock: {
       serverNow: () => clock.serverNow(),
@@ -148,7 +189,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
         }
         audioState = "ready";
         ev.emit("audio", audioState, 1);
-        if (room?.track) transport.send({ type: "AUDIO_READY", trackId: room.track.id });
+        announceReadyIfUnknown(); // nothing to announce to yet if this ran before connect(): ROOM_STATE does it
       },
       get state() { return audioState; },
       get loadProgress() { return loadProgress; },
@@ -172,7 +213,10 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
         transport.send({ type: "SET_POSITION", clientId: id, x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) });
       },
       nudge: (id, nudgeMs) => transport.send({ type: "NUDGE", clientId: id, nudgeMs }),
-      setPlays: (plays) => transport.send({ type: "SET_PLAYS", plays }),
+      setPlays: (plays) => {
+        transport.setPlays(plays);
+        transport.send({ type: "SET_PLAYS", plays });
+      },
       kick: (id) => transport.send({ type: "KICK", clientId: id }),
       async startCalibration() {
         transport.send({ type: "CALIBRATION_START", referenceClientId: clientId });
@@ -188,13 +232,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
       cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
       resetCalibration: (clientId?: string) =>
         transport.send(clientId ? { type: "CALIBRATION_RESET", clientId } : { type: "CALIBRATION_RESET" }),
-      async vibe(prompt: string): Promise<ScenePlan> {
-        const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
-          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }),
-        });
-        if (!res.ok) throw new Error(`vibe failed: ${res.status}`);
-        return ((await res.json()) as { scenePlan: ScenePlan }).scenePlan;
-      },
+      vibe: (prompt: string) => postVibe(opts, prompt),
     },
     calibration: {
       async runAsReference(): Promise<CalibrationResult> {
@@ -206,6 +244,8 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     connect: () => transport.connect(),
     disconnect: () => {
       stopTimers();
+      if (readyRecheckTimer) clearTimeout(readyRecheckTimer);
+      readyRecheckTimer = null;
       transport.disconnect();
     },
     on: (e, h) => ev.on(e, h),

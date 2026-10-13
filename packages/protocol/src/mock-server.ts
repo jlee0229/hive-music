@@ -55,8 +55,8 @@ export type ScenarioInput = z.input<typeof ScenarioSchema>;
 /** Upper bound on one client→server frame (proposed for apps/server too: PROTO-03). */
 export const MAX_CLIENT_FRAME_BYTES = 64 * 1024;
 
-/** See startCalibration: false only until the stub engine announces AUDIO_READY (PROTO-15). */
-const REQUIRE_AUDIO_READY_FOR_CALIBRATION = false;
+/** See startCalibration. True since the stub engine announces AUDIO_READY like the real one (PROTO-15). */
+const REQUIRE_AUDIO_READY_FOR_CALIBRATION = true;
 
 const now = () => performance.timeOrigin + performance.now();
 const HEALTH_SYNC_ERR: Record<HealthLevel, number | null> = { good: 3, warn: 12, bad: 38, unknown: null };

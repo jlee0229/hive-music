@@ -31,6 +31,13 @@ export interface HiveClientOptions {
   /** Hosts: "use this phone as a speaker too". Players: always true. Viewers: forced false by the server. */
   plays: boolean;
   hostKey?: string;
+  /**
+   * Hosts only: the secret this browser keeps to say whose uploads its hives may see (`hive:libraryKey`).
+   * Passed to the server in JOIN — on the first join and on every reconnect — and nowhere else: it is
+   * a bearer secret, so the engine never logs it and it appears in no status or diagnostic output.
+   * Ignored for players and viewers.
+   */
+  libraryKey?: string;
   name?: string;
   /** Override the auto-generated, localStorage-persisted client id (tests). */
   clientId?: string;
@@ -89,13 +96,25 @@ export type HiveEvents = {
   health: (clients: Record<string, HealthSnapshot>, serverTime: number) => void;
   /** Sync numbers changed (after every probe). */
   status: (status: SyncStatus) => void;
-  connection: (state: ConnectionState) => void;
+  /**
+   * The second argument is `client.isHost` at that moment: null until the first WELCOME, then what the
+   * latest WELCOME said. It is already up to date when "open" is emitted, on the first join and after
+   * every reconnect.
+   */
+  connection: (state: ConnectionState, isHost: boolean | null) => void;
   audio: (state: AudioState, loadProgress: number) => void;
   /** Own assignment changed (derived from `state`, emitted for convenience). */
   assignment: (assignment: Assignment | null) => void;
   /** Player screens flash on this; the click itself is scheduled by the engine. */
   calibrationClick: (clickAtServerTime: number) => void;
   error: (code: string, message: string) => void;
+  /**
+   * The server that just WELCOMEd this client speaks a different protocol version than this bundle
+   * (PROTO-13). Fired on every WELCOME that disagrees — the first join and each reconnect, which is
+   * the case that matters: a tab left open across a deploy. The engine carries on as best it can and
+   * never reloads anything itself; the page decides (its one-shot reload guard).
+   */
+  protocolMismatch: (serverVersion: number, clientVersion: number) => void;
 };
 
 export interface HiveClock {
@@ -187,6 +206,16 @@ export interface HiveClient {
   readonly me: ClientRecord | null;
   readonly assignment: Assignment | null;
   readonly connection: ConnectionState;
+  /**
+   * Whether the server seated this socket as a host: `WELCOME.isHost`. Null before the first WELCOME,
+   * updated on every one — it can go from true to false across a reconnect (the room was re-created
+   * under another key), and a host JOIN with a missing or wrong key is answered `false` even though
+   * `me` may then resolve to the host's own record (a read-only observer seat). This, not
+   * `room.hostClientIds`, is what tells a page whether its controls will be obeyed.
+   */
+  readonly isHost: boolean | null;
+  /** Set by the last WELCOME if its protocol version differs from this bundle's; null when they agree. */
+  readonly protocolMismatch: { server: number; client: number } | null;
   readonly status: SyncStatus;
   readonly clock: HiveClock;
   readonly audio: HiveAudio;
@@ -228,5 +257,5 @@ export type { AudioEngine, AudioEngineContext, CreateHiveClientInternals } from 
 export { createStubClient } from "./stub";
 /** The clock model and the serverTime↔AudioContext mapping (exported for the rig, /diag and tests). */
 export { ClockModel, CtxMapper, SLEW_RATE_MS_PER_SEC, localNow } from "./clock";
-export { reconnectDelayMs } from "./transport";
+export { jitteredReconnectDelayMs, reconnectDelayMs } from "./transport";
 export { CalibrationCancelledError } from "./calibration/reference";

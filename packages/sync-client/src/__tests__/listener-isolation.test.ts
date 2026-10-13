@@ -41,7 +41,7 @@ describe("ENGINE-SYNC-13 · one bad listener, one stray snapshot", () => {
         throw new Error("a bug in a UI handler");
       });
       ev.on("connection", () => seen.push("third"));
-      expect(() => ev.emit("connection", "open")).not.toThrow();
+      expect(() => ev.emit("connection", "open", null)).not.toThrow();
     } finally {
       console.error = quiet;
     }

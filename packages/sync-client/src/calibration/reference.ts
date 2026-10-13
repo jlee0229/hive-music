@@ -55,7 +55,8 @@ export const PLAN_TIMEOUT_MS = 10_000;
 
 export interface ReferenceDeps {
   ctx: AudioContext;
-  mapper: CtxMapper;
+  /** No longer read (the recording is stamped from a same-tick reading of both clocks); optional so callers compile. */
+  mapper?: CtxMapper;
   /** Estimated server time now. */
   serverNow: () => number;
   /** Resolves with the plan the server sends to the reference. */
@@ -66,6 +67,14 @@ export interface ReferenceDeps {
 }
 
 /** One captured block and where it sits on the context's own sample timeline. */
+/**
+ * The server time at which ctx time `ctxTime` happened, from one same-tick reading of both clocks
+ * (`ctxNow`, `serverNow`). The inverse of the scheduler's own `CtxMapper.ctxTimeForNow`.
+ */
+export function serverTimeOfCtx(ctxTime: number, ctxNow: number, serverNow: number): number {
+  return serverNow + (ctxTime - ctxNow) * 1000;
+}
+
 export interface CapturedChunk {
   samples: Float32Array;
   /** Frames since the first captured block, from the audio graph; null when the graph did not say. */
@@ -207,7 +216,7 @@ export async function runAsReference(
   deps: ReferenceDeps,
   opts: { onProgress?: (p: CalibrationProgress) => void } = {},
 ): Promise<CalibrationResult> {
-  const { ctx, mapper } = deps;
+  const { ctx } = deps;
   const progress = (p: CalibrationProgress) => opts.onProgress?.(p);
   /*
    * Cancellation is checked, never trusted to unwinding: the mic is the resource that matters, and on
@@ -276,8 +285,11 @@ export async function runAsReference(
     capture.stop();
     capture = null;
 
-    const recordingStartServerTime =
-      mapper.serverTimeForCtx(firstFrameCtxTime) ?? deps.serverNow() - recordingSec * 1000;
+    // Both clocks read in this one tick. The sampled mapping (CtxMapper's median of the last ten
+    // probes) answers for a relation that may be seconds old: opening the microphone switches the iOS
+    // audio session and can interrupt the context right before this run, after which the median needs
+    // six fresh probes to be right again — and with none yet it had nothing to say at all.
+    const recordingStartServerTime = serverTimeOfCtx(firstFrameCtxTime, ctx.currentTime, deps.serverNow());
 
     const template = renderClick(spec, ctx.sampleRate);
     const analysis = analyzeClicks({

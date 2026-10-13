@@ -3,9 +3,9 @@
  * exchange and the host controls. No audio: the engine says so out loud rather than reporting a
  * readiness it cannot deliver (that arrives with B3).
  *
- * The clock assertion here is the one the unit tests cannot make: it proves the *wire* half of the
- * coded-pair mechanism. `ClockModel` is built with `pairs: true`, so an offset only ever appears if the
- * server echoed `probeGroupId`/`probeGroupIndex` and the two halves validated against each other.
+ * The clock assertion here is the one the unit tests cannot make: it proves the *wire* half of the probe
+ * exchange — an offset only ever appears if NTP_REQUESTs went out and the server's stamps came back.
+ * (The engine's estimator no longer gates on the coded pairs; the ids are still sent and echoed.)
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startMockServer } from "@hive/protocol/mock-server";

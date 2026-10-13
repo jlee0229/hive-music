@@ -284,6 +284,16 @@ export class Scheduler {
    * Lets go of the decoded audio (a track change). Branches that are still sounding keep their own
    * reference through their source nodes, so the tail of the old song is unaffected.
    */
+  /**
+   * Ctx time at which the last branch that is fading or playing out (a hand-over tail, a crossfade)
+   * stops sounding; 0 when there is none. Until then its buffers cannot be collected.
+   */
+  get tailEndsAtCtx(): number {
+    let end = 0;
+    for (const branch of this.retiring) if (Number.isFinite(branch.endsAtCtx)) end = Math.max(end, branch.endsAtCtx);
+    return end;
+  }
+
   get bufferCount(): number {
     return this.buffers.size;
   }
