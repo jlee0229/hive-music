@@ -21,12 +21,12 @@ export function ModeChips({ current, host }: { current: ModeKind; host: HiveHost
             key={kind}
             onClick={() => host.setMode(kind)}
             aria-pressed={active}
-            className="h-11 min-w-0 rounded-full border px-1 text-sm"
+            className="h-11 min-w-0 rounded-full border px-1 text-sm font-semibold"
+            // The outline is the chip's only edge: --border-strong (3.5:1), not the 1.5:1 hairline.
             style={{
-              borderColor: active ? "var(--primary-fill)" : "var(--border)",
+              borderColor: active ? "var(--primary-fill)" : "var(--border-strong)",
               background: active ? "var(--primary-fill)" : "transparent",
               color: active ? "var(--primary-text)" : "var(--text)",
-              fontWeight: active ? 600 : 500,
             }}
           >
             {label(kind)}

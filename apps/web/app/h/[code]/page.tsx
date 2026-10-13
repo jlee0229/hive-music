@@ -140,11 +140,11 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
   }, [roomCode]);
 
   if (problem) {
-    const primary = "flex h-13 items-center justify-center rounded-2xl px-6 font-semibold";
-    const primaryStyle = { height: 52, background: "var(--primary-fill)", color: "var(--primary-text)" };
+    const primary = "flex h-14 items-center justify-center rounded-2xl px-8 text-base font-semibold";
+    const primaryStyle = { background: "var(--primary-fill)", color: "var(--primary-text)" };
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="font-display text-2xl font-bold">
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-5 text-center">
+        <h1 className="font-display text-[2rem] leading-tight font-bold">
           {problem === "ended" ? "This hive has ended" : problem === "elsewhere" ? "This hive is hosted on another device" : "Can’t reach the hive"}
         </h1>
         {problem === "unreachable" ? (
@@ -159,8 +159,8 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
         ) : null}
         <Link
           href="/"
-          className="flex h-13 items-center justify-center rounded-2xl border px-6 font-semibold"
-          style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+          className="flex h-14 items-center justify-center rounded-2xl border px-8 text-base font-semibold"
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)" }}
         >
           {problem === "unreachable" ? "Back home" : "Start a new hive"}
         </Link>
@@ -170,8 +170,8 @@ export default function HostPage({ params }: { params: Promise<{ code: string }>
 
   if (!hostKeyState || checking) {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
-        <span className="font-display text-2xl font-bold">Starting the hive…</span>
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-5 text-center">
+        <span className="font-display text-xl font-bold">Starting the hive…</span>
       </main>
     );
   }
@@ -550,6 +550,19 @@ function HostRoom({
     }
   }
 
+  // A drawer or a phone's sheet covers the stage, and the stage behind it must not move: the lists
+  // scroll inside themselves (overscroll-contain), and while one is open the page does not scroll.
+  const overlayOpen = showSongs || showPlayers || sheetClientId !== null;
+  useEffect(() => {
+    if (!overlayOpen) return;
+    const root = document.documentElement;
+    const before = root.style.overflow;
+    root.style.overflow = "hidden";
+    return () => {
+      root.style.overflow = before;
+    };
+  }, [overlayOpen]);
+
   const playerCount = room ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected).length : 0;
   const connectedPlayers = room ? Object.values(room.clients).filter((c) => c.kind === "player" && c.connected) : [];
   const allReady = !!room?.track && connectedPlayers.every((c) => c.audioReadyTrackId === room.track!.id);
@@ -579,26 +592,32 @@ function HostRoom({
   }
 
   if (showStage && room) {
+    const action = "flex h-14 min-w-0 grow items-center justify-center rounded-2xl border px-2 text-sm font-semibold min-[360px]:text-base";
+    const actionStyle = { background: "var(--surface)", borderColor: "var(--border-strong)" };
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-3.5" style={{ padding: safeAreaPadding(52, 20, 24) }}>
-        <div className="flex items-center justify-between">
+      // One page shell (16 / 20 / 16), one order: what a host reaches for — the QR link, play /
+      // pause, the mode, the song — is the first screen of a 320x568 phone; the map and the
+      // once-a-party toggle follow. Songs / Players / Tune used to be the last row of a page 1.3
+      // to 2.2 screens tall.
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-3" style={{ padding: safeAreaPadding(16, 20, 16) }}>
+        <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <button
               onClick={exitHive}
               aria-label="Exit the hive"
-              className="flex h-11 w-11 items-center justify-center rounded-full border text-[15px] font-semibold"
-              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+              className="flex h-11 w-11 items-center justify-center rounded-full border text-base font-semibold"
+              style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--muted)" }}
             >
               ←
             </button>
-            <span className="font-mono rounded-full border px-3 py-1.5 text-[13px] tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+            <span className="font-mono rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
               {roomCode}
             </span>
           </div>
-          <span className="text-[13px]" style={{ color: "var(--muted)" }}>
+          <span className="text-sm" style={{ color: "var(--muted)" }}>
             {playerCount} players
           </span>
-          <span className="font-mono rounded-full px-2.5 py-1 text-[11px] font-semibold tracking-widest" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
+          <span className="font-mono rounded-full px-2.5 py-1 text-xs font-semibold tracking-widest" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
             HOST
           </span>
         </div>
@@ -608,7 +627,7 @@ function HostRoom({
         {hostToast ? (
           <div
             role="alert"
-            className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium"
+            className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold"
             style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
           >
             <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--ringer-fg)" }} />
@@ -616,11 +635,11 @@ function HostRoom({
           </div>
         ) : null}
 
-        <div className="flex items-center justify-between rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-          <Link href={`/qr/${roomCode}`} target="_blank" className="-my-3 flex h-11 items-center text-lg font-bold underline">
+        <div className="flex h-14 shrink-0 items-center justify-between rounded-2xl border px-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <Link href={`/qr/${roomCode}`} target="_blank" className="flex h-11 items-center text-xl font-semibold underline underline-offset-4">
             Join QR code
           </Link>
-          <button onClick={copyJoinLink} className="-my-3 -mr-2 h-11 px-2 text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+          <button onClick={copyJoinLink} className="-mr-2 h-11 px-2 text-sm font-semibold" style={{ color: "var(--muted)" }}>
             {screenLinkCopied ? "Copied!" : "Copy link"}
           </button>
         </div>
@@ -632,24 +651,24 @@ function HostRoom({
         <fieldset
           disabled={offline}
           data-testid="host-controls"
-          className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0"
+          className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0"
           style={offline ? { opacity: 0.45, pointerEvents: "none" } : undefined}
         >
         {room.transport.state === "stopped" ? (
-          <div className="flex flex-col gap-2.5">
-            <span className="line-clamp-2 text-center text-[15px] [overflow-wrap:anywhere]" style={{ color: "var(--muted)" }}>
+          <div className="flex flex-col gap-2">
+            <span className="line-clamp-2 text-center text-base [overflow-wrap:anywhere]" style={{ color: "var(--muted)" }}>
               Up next: <span className="font-semibold" style={{ color: "var(--text)" }}>{room.track!.title}</span>
             </span>
             <button
               onClick={startHive}
               disabled={!selectedTrackId || !canStart || starting}
-              className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
+              className="flex h-14 items-center justify-center rounded-2xl text-xl font-semibold disabled:opacity-60"
               style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
             >
               {starting
                 ? "Starting…"
                 : !selectedTrackId
-                  ? "Pick a track"
+                  ? "Pick a song"
                   : allReady || connectedPlayers.length === 0
                     ? "Start the hive"
                     : startAnywayReady
@@ -658,7 +677,7 @@ function HostRoom({
             </button>
             {audio.state === "locked" && speakerOn ? (
               <p className="text-center text-xs" style={{ color: "var(--faint)" }}>
-                Tap the speaker toggle again if this phone doesn&apos;t make sound once the show starts.
+                No sound from this phone after you start? Switch “This phone plays music too” off and on.
               </p>
             ) : null}
           </div>
@@ -668,6 +687,25 @@ function HostRoom({
 
         <ModeChips current={room.mode.kind} host={client.host} />
         {room.mode.kind === "STROBE" ? <StrobeControls room={room} host={client.host} /> : null}
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              setShowSongs(true);
+              setTracksVersion((v) => v + 1); // songs added from another phone since this page loaded
+            }}
+            className={action}
+            style={actionStyle}
+          >
+            Songs
+          </button>
+          <button onClick={() => setShowPlayers(true)} className={action} style={actionStyle}>
+            Players
+          </button>
+          <button onClick={startTuning} className={action} style={actionStyle}>
+            Tune the hive
+          </button>
+        </div>
 
         <VibeBox host={client.host} />
         <SceneStrip room={room} clock={client.clock} />
@@ -683,10 +721,14 @@ function HostRoom({
           <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} host={client.host} onOpenSheet={setSheetClientId} />
         </div>
 
-        <Legend partsApply={partsApply(room)} ringHealth={Object.values(room.clients).some((c) => c.connected && c.assignment && c.assignment.role !== "unison")} />
+        <Legend
+          mode={room.mode.kind}
+          partsApply={partsApply(room)}
+          ringHealth={Object.values(room.clients).some((c) => c.connected && c.assignment && c.assignment.role !== "unison")}
+        />
 
         {/* Lives on the stage, not the lobby: a per-party choice, not a per-song one. */}
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+        <label className="flex h-14 cursor-pointer items-center gap-3 rounded-2xl border px-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
           <input
             type="checkbox"
             checked={speakerOn}
@@ -694,35 +736,8 @@ function HostRoom({
             className="h-6 w-6 shrink-0"
             style={{ accentColor: "var(--primary-fill)" }}
           />
-          <span className="text-[15px] font-semibold">This phone plays music too</span>
+          <span className="text-base font-semibold">This phone plays music too</span>
         </label>
-
-        <div className="flex gap-2.5">
-          <button
-            onClick={startTuning}
-            className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
-            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            Tune the hive
-          </button>
-          <button
-            onClick={() => {
-              setShowSongs(true);
-              setTracksVersion((v) => v + 1); // songs added from another phone since this page loaded
-            }}
-            className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
-            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            Songs
-          </button>
-          <button
-            onClick={() => setShowPlayers(true)}
-            className="flex h-13 grow items-center justify-center rounded-2xl border text-[15px] font-semibold"
-            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            Players
-          </button>
-        </div>
         </fieldset>
 
         {sheetClientId && room.clients[sheetClientId] ? (
@@ -769,9 +784,11 @@ function HostRoom({
   // The moment between the room existing and the first track being auto-picked (well under a
   // second): a splash, never a separate lobby screen.
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
-      <span className="font-display text-[60px] leading-none font-extrabold tracking-[0.14em]">{roomCode}</span>
-      <span className="text-[15px]" style={{ color: "var(--muted)" }}>
+    <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-5 text-center">
+      <span className="font-display leading-none font-extrabold tracking-[0.14em]" style={{ fontSize: "clamp(2.5rem, 15vw, 3.75rem)" }}>
+        {roomCode}
+      </span>
+      <span className="text-base" style={{ color: "var(--muted)" }}>
         Setting up your hive…
       </span>
       {/* If the server cannot be reached this is where the host waits, so say so here too. */}

@@ -55,16 +55,16 @@ export function SongsDrawer({
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: "var(--stage)" }}>
       {/* min-h-0 down the flex chain: without it the track list refuses to shrink, so it can't
           scroll and shoves the upload/back buttons off-screen once the library grows. */}
-      <div className="mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(52, 20, 28) }}>
-        <div className="flex shrink-0 items-center justify-between">
+      <div className="mx-auto flex min-h-0 w-full max-w-md flex-1 flex-col gap-4" style={{ padding: safeAreaPadding(16, 20, 16) }}>
+        <div className="flex h-11 shrink-0 items-center justify-between gap-3">
           <span className="font-display text-xl font-bold">Songs</span>
           {playing ? (
-            <span className="text-[13px]" style={{ color: "var(--muted)" }}>
-              picking another stops the music
+            <span className="text-right text-sm" style={{ color: "var(--muted)" }}>
+              Picking another stops the music.
             </span>
           ) : null}
         </div>
-        <label className="flex h-11 shrink-0 items-center gap-2.5 rounded-2xl border px-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+        <label className="flex h-11 shrink-0 items-center gap-2 rounded-2xl border px-4" style={{ background: "var(--surface)", borderColor: "var(--border-strong)" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <circle cx="11" cy="11" r="7" />
             <path d="M20 20l-3.5-3.5" />
@@ -74,11 +74,11 @@ export function SongsDrawer({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search the library"
             aria-label="Search the library"
-            className="min-w-0 grow bg-transparent text-[15px] outline-none"
+            className="min-w-0 grow bg-transparent text-base outline-none"
             style={{ color: "var(--text)" }}
           />
         </label>
-        <div className="flex min-h-0 grow flex-col gap-2 overflow-y-auto">
+        <div className="flex min-h-0 grow flex-col gap-2 overflow-y-auto overscroll-contain">
           {shown.map((t) => {
             const removable = !!t.mine && !!onRemove;
             const confirming = confirmingId === t.id;
@@ -93,10 +93,10 @@ export function SongsDrawer({
                     setConfirmingId(null);
                     onSelect(t.id);
                   }}
-                  className="flex min-w-0 grow items-center gap-3 rounded-2xl px-3.5 py-3 text-left"
+                  className="flex min-w-0 grow items-center gap-3 rounded-2xl px-4 py-3 text-left"
                 >
                   <span className="flex min-w-0 grow flex-col gap-0.5">
-                    <span className="line-clamp-2 text-[15px] font-semibold [overflow-wrap:anywhere]">{t.title}</span>
+                    <span className="line-clamp-2 text-base font-semibold [overflow-wrap:anywhere]">{t.title}</span>
                     <span className="text-xs" style={{ color: "var(--muted)" }}>
                       {songSubtitle(t, t.id === currentTrackId ? (playing ? "playing" : "next") : null)}
                     </span>
@@ -110,8 +110,8 @@ export function SongsDrawer({
                       setConfirmingId(null);
                       onRemove!(t.id);
                     }}
-                    className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-2xl px-3 text-[13px] font-semibold"
-                    style={{ color: confirming ? "var(--health-bad)" : "var(--faint)" }}
+                    className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-2xl px-3 text-sm font-semibold"
+                    style={{ color: confirming ? "var(--danger)" : "var(--faint)" }}
                   >
                     {confirming ? (
                       "Remove?"
@@ -145,8 +145,8 @@ export function SongsDrawer({
         <button
           onClick={() => inputRef.current?.click()}
           disabled={uploadPhase !== null}
-          className="flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-dashed px-3.5 py-3 text-[15px] font-semibold disabled:opacity-60"
-          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+          className="flex h-14 shrink-0 items-center justify-center gap-2 rounded-2xl border px-4 text-base font-semibold disabled:opacity-60"
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--muted)" }}
         >
           {uploadPhase === "analyzing"
             ? "Analyzing…"
@@ -155,14 +155,14 @@ export function SongsDrawer({
               : "+ Upload a song"}
         </button>
         {uploadError ? (
-          <p role="alert" className="shrink-0 text-center text-sm" style={{ color: "var(--health-bad)" }}>
+          <p role="alert" className="shrink-0 text-center text-sm" style={{ color: "var(--danger)" }}>
             {uploadError}
           </p>
         ) : null}
         <button
           onClick={onClose}
-          className="flex h-13 shrink-0 items-center justify-center rounded-2xl border font-semibold"
-          style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)" }}
+          className="flex h-14 shrink-0 items-center justify-center rounded-2xl border text-base font-semibold"
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)" }}
         >
           Back to the stage
         </button>
