@@ -54,6 +54,15 @@ export function tuningNote(input: { calibrationState: RoomState["calibration"]["
 }
 
 /**
+ * What the tuning screen's bottom button says. Pressed during Start's automatic tuning it does not
+ * take the host back to a stopped stage — it starts the music without tuning — so there it says so.
+ * A tuning the host asked for with "Tune the hive" is simply cancelled.
+ */
+export function tuningCancelLabel(input: { autoStart: boolean }): string {
+  return input.autoStart ? "Skip tuning" : "Cancel";
+}
+
+/**
  * Whether the full-screen tuning moment should cover the stage. A run in progress always does. A
  * failed one only if this page started it: `failed` stays in the room until the next run, and a
  * host who reloads must land on the stage, not on an old "Couldn't finish".

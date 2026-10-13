@@ -1,59 +1,78 @@
-import { connectAsHost } from "./helpers/host-driver";
+import { MOCK_HOST_KEY } from "./helpers/host-key";
+import { MOCK_URL } from "./helpers/mock";
 import { test, expect } from "./fixtures";
 
-test.use({ mockScenario: "join.json" });
+/**
+ * A host page that holds the key and is told "NOT_HOST" all the same. The server no longer demotes
+ * a keyed host, so this is rare — but the old recovery for it (throw the key away, re-claim one with
+ * `POST /rooms {code}`) is exactly the request the server now refuses with 403, and would lock the
+ * real host out. The page keeps its key and asks about it instead.
+ *
+ * (History: this file used to assert that a *stale* key is replaced via POST /rooms, then that a
+ * stale key on a host-less room is accepted outright. Neither is true any more — a key that is not
+ * the room's never makes anyone host; see host-recovery.spec.ts for those cases.)
+ */
+test.use({ mockScenario: "join.json" }); // seeded with the room's real key (fixtures.ts)
 
-const STALE = "stale-key-from-before-the-restart";
-
-test("F2: a stale hostKey on a hive nobody hosts yet lands on the stage as host, without looping", async ({ page }) => {
-  // A room re-created server-side (a restart of a fixed-code room, an idle timeout) has a fresh
-  // hostKey while this tab still holds the old one. Both servers accept a `kind: "host"` JOIN while
-  // `hostClientIds` is empty (R-16), so there is no demotion to recover from any more: the page is
-  // simply the host. It therefore keeps the key it had — the old expectation that the stored key gets
-  // replaced described the pre-R-16 detour through POST /rooms and is deliberately gone (what that
-  // leaves broken — REST calls that check the key, i.e. uploads — is finding HOST-04).
-  await page.addInitScript(
-    ([code, key]) => {
-      localStorage.setItem(`hive:hostKey:${code}`, key!);
-    },
-    ["BZQ7", STALE],
+/** Lets a test put one ERROR NOT_HOST into the page's socket, as if a command had been refused. */
+async function refusable(page: import("@playwright/test").Page): Promise<{ refuse: () => void; joins: Array<{ clientId: string; hostKey?: string }> }> {
+  const joins: Array<{ clientId: string; hostKey?: string }> = [];
+  let current: { send: (m: string) => void } | null = null;
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    ws.connectToServer();
+    current = { send: (m) => ws.send(m) };
+  });
+  page.on("websocket", (ws) =>
+    ws.on("framesent", (f) => {
+      const text = String(f.payload);
+      if (text.includes('"JOIN"')) joins.push(JSON.parse(text));
+    }),
   );
+  return { refuse: () => current!.send(JSON.stringify({ type: "ERROR", code: "NOT_HOST", message: "host only" })), joins };
+}
+
+test("host demotion: NOT_HOST with a good key -> the page asks about its key (keeping it), re-joins under a fresh client id and is host again", async ({ page }) => {
+  const posts: Array<{ code?: string; hostKey?: string }> = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url() === `${MOCK_URL}/rooms`) posts.push(r.postDataJSON() ?? {});
+  });
+  const socket = await refusable(page);
 
   await page.goto("/h/BZQ7");
-  await expect(page.getByText("Synthetic 60")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("link", { name: "Join QR code" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Start the hive|Start anyway/ })).toBeVisible({ timeout: 10_000 });
+  expect(posts).toEqual([]); // a page that holds the key does not ask anything before joining
+
+  socket.refuse();
+
+  // Back on the stage, as host, without a reload.
+  await expect.poll(() => socket.joins.length, { timeout: 10_000 }).toBe(2);
+  await expect(page.getByRole("button", { name: /Start the hive|Start anyway/ })).toBeVisible({ timeout: 10_000 });
+  expect(posts).toEqual([{ code: "BZQ7", hostKey: MOCK_HOST_KEY }]); // never a key-less re-claim
+  expect(await page.evaluate(() => localStorage.getItem("hive:hostKey:BZQ7"))).toBe(MOCK_HOST_KEY);
+  expect(socket.joins[1]!.hostKey).toBe(MOCK_HOST_KEY);
+  expect(socket.joins[1]!.clientId).not.toBe(socket.joins[0]!.clientId);
 
   // Fully functional as host afterwards -- not just visually present.
   await page.getByRole("button", { name: /Start the hive|Start anyway/ }).click();
   await expect(page.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10_000 });
 });
 
-test("F2: a stale hostKey on a hive someone else is hosting never strands the phone on a spinner", async ({ page }) => {
-  // Another host holds the room, so this JOIN is demoted to a plain player. What happens next is the
-  // server's call (today POST /rooms hands the real key back and the page re-joins as host; the
-  // host-key redesign will refuse) — either way the page must end somewhere usable: the stage, as a
-  // working host, or the "hosted on another phone" screen with its exits.
-  const realHost = await connectAsHost("BZQ7");
-  await page.addInitScript(
-    ([code, key]) => {
-      if (!sessionStorage.getItem("seeded")) localStorage.setItem(`hive:hostKey:${code}`, key!);
-      sessionStorage.setItem("seeded", "1");
-    },
-    ["BZQ7", STALE],
-  );
+test("host demotion: NOT_HOST and the server does not confirm the key -> 'hosted on another device', no loop", async ({ page }) => {
+  let posts = 0;
+  await page.route(`${MOCK_URL}/rooms`, (route) => {
+    posts++;
+    return route.fulfill({ status: 403, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify({ error: "NOT_HOST" }) });
+  });
+  const socket = await refusable(page);
 
   await page.goto("/h/BZQ7");
-  const stage = page.getByRole("link", { name: "Join QR code" });
-  const elsewhere = page.getByRole("heading", { name: "This hive is hosted on another phone" });
-  await expect(stage.or(elsewhere)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: /Start the hive|Start anyway/ })).toBeVisible({ timeout: 10_000 });
+  socket.refuse();
 
-  if (await elsewhere.isVisible()) {
-    await expect(page.getByRole("link", { name: "Join it instead" })).toHaveAttribute("href", "/j/BZQ7");
-    await expect(page.getByRole("link", { name: "Back home" })).toHaveAttribute("href", "/");
-  } else {
-    expect(await page.evaluate(() => localStorage.getItem("hive:hostKey:BZQ7"))).not.toBe(STALE);
-    await page.getByRole("button", { name: /Start the hive|Start anyway/ }).click();
-    await expect(page.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10_000 });
-  }
-  realHost.close();
+  await expect(page.getByRole("heading", { name: "This hive is hosted on another device" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("link", { name: "Join as a guest" })).toHaveAttribute("href", "/j/BZQ7");
+  await expect(page.getByRole("link", { name: "Start a new hive" })).toHaveAttribute("href", "/");
+  await page.waitForTimeout(1000);
+  expect(posts).toBe(1);
+  expect(socket.joins.length).toBe(1);
 });

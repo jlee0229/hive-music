@@ -15,6 +15,7 @@ export function HostCalibrate({
   host,
   onClose,
   micError,
+  cancelLabel = "Cancel",
 }: {
   room: RoomState;
   clock: HiveClock;
@@ -22,6 +23,8 @@ export function HostCalibrate({
   onClose: () => void;
   /** Set when runAsReference() rejected (mic denied, etc.) -- the server-side run still runs its course and reports "failed". */
   micError?: string | null;
+  /** What the bottom button says. During Start's automatic tuning it starts the music untuned, so the page passes "Skip tuning". */
+  cancelLabel?: string;
 }) {
   const { state, order, results, startServerTime } = room.calibration;
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(CALIBRATION_COUNTDOWN_MS / 1000));
@@ -155,7 +158,7 @@ export function HostCalibrate({
           className="flex h-12 items-center justify-center rounded-2xl text-[15px] font-semibold"
           style={{ color: "var(--muted)" }}
         >
-          Cancel
+          {cancelLabel}
         </button>
       </div>
     </div>

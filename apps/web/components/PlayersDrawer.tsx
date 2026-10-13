@@ -33,20 +33,22 @@ export function PlayersDrawer({
               <button
                 key={p.id}
                 onClick={() => onSelect(p.id)}
-                className="flex items-center gap-2.5 rounded-2xl border px-3.5 py-3 text-left"
+                className="flex shrink-0 items-center gap-2.5 rounded-2xl border px-3.5 py-3 text-left"
                 style={{ background: "var(--surface)", borderColor: "var(--border)" }}
               >
                 <span
                   className="h-3 w-3 shrink-0 rounded-full"
                   style={{ background: p.assignment ? ROLE_COLORS[p.assignment.role] : ROLE_COLORS.unison, boxShadow: `0 0 0 2px var(--surface), 0 0 0 4px ${{ good: "#22C55E", warn: "#EAB308", bad: "#EF4444", unknown: "#64748B" }[level]}` }}
                 />
-                <span className="flex grow flex-col">
-                  <span className="text-[15px] font-semibold">{p.name}</span>
+                {/* The part label can be two parts long now ("vocals + other"): it wraps inside its own
+                    column instead of squeezing the number next to it onto two lines. */}
+                <span className="flex min-w-0 grow flex-col">
+                  <span className="truncate text-[15px] font-semibold">{p.name}</span>
                   <span className="text-xs" style={{ color: "var(--muted)" }}>
                     {deviceLabel(p.device)} · {p.assignment?.label ?? "—"}
                   </span>
                 </span>
-                <span className="font-mono text-xs" style={{ color: "var(--muted)" }}>
+                <span className="font-mono shrink-0 whitespace-nowrap text-xs" style={{ color: "var(--muted)" }}>
                   {formatMs(p.assignment?.compensationMs)}
                 </span>
               </button>
