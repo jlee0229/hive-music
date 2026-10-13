@@ -180,13 +180,13 @@ export function PlayerPlayingScreen({
       style={{
         background: roleColor,
         color: ink,
-        // Scaled down on short viewports (a phone in landscape is ~375 px tall); the safe-area
-        // insets are always added on top.
+        // The page shell every guest screen uses (16 / 20 / 16); the safe-area insets are always
+        // added on top.
         padding: [
-          "calc(min(52px, 6dvh) + env(safe-area-inset-top, 0px))",
-          "calc(24px + env(safe-area-inset-right, 0px))",
-          "calc(min(28px, 4dvh) + env(safe-area-inset-bottom, 0px))",
-          "calc(24px + env(safe-area-inset-left, 0px))",
+          "calc(16px + env(safe-area-inset-top, 0px))",
+          "calc(20px + env(safe-area-inset-right, 0px))",
+          "calc(16px + env(safe-area-inset-bottom, 0px))",
+          "calc(20px + env(safe-area-inset-left, 0px))",
         ].join(" "),
         overscrollBehavior: "none",
         touchAction: "manipulation",
@@ -202,68 +202,85 @@ export function PlayerPlayingScreen({
           style={{ background: DARK, opacity: 0 }}
         />
       ) : null}
-      <svg
-        ref={ringsRef}
-        className="pointer-events-none absolute"
-        style={{ left: "calc(50% - 300px)", top: "calc(50% - 300px)", transformOrigin: "center", transition: "transform 60ms linear" }}
-        width="600"
-        height="600"
-        viewBox="0 0 600 600"
-        fill="none"
-        aria-hidden="true"
-      >
-        <circle cx="300" cy="300" r="120" stroke="currentColor" strokeOpacity="0.22" strokeWidth="2" />
-        <circle cx="300" cy="300" r="200" stroke="currentColor" strokeOpacity="0.14" strokeWidth="2" />
-        <circle cx="300" cy="300" r="280" stroke="currentColor" strokeOpacity="0.07" strokeWidth="2" />
-      </svg>
 
       <div className="relative flex shrink-0 items-center justify-between">
-        <span className="font-mono text-[13px] tracking-widest" style={{ opacity: soft }}>
+        <span className="font-mono text-sm tracking-widest" style={{ opacity: soft }}>
           HIVE · {roomCode}
         </span>
       </div>
 
-      {/* The middle takes whatever height is left and clips inside itself, so the controls below
-          are never pushed off a no-scroll screen. */}
-      <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-2.5 overflow-hidden text-center">
-        <span className="shrink-0 text-[13px] tracking-[0.22em]" style={{ opacity: soft }}>
-          YOU ARE
-        </span>
-        <span
-          className="font-display shrink-0 leading-none font-extrabold tracking-tight whitespace-nowrap uppercase"
-          // One line, sized to the label: this face runs ~0.63em per capital on average and
-          // ~0.72em for a word of wide ones ("DRUMS"), so 0.76em a character always fits and
-          // "SOPRANO" / "STROBE 3" are no longer cropped on a 320 px phone. A 76 px word needs no
-          // help from the OS text-size setting, which would only push it back off the screen.
-          style={{
-            fontSize: `min(76px, 20dvh, calc((100vw - 48px) / ${(Math.max(label.length, 4) * 0.76).toFixed(2)}))`,
-            WebkitTextSizeAdjust: "100%",
-            textSizeAdjust: "100%",
-          }}
+      {/* The middle takes whatever height is left. The rings are centred on it — that is, on the
+          role — by layout: they used to sit at the centre of the *screen*, which is 70 px below
+          the word on a tall phone because the panel underneath takes the bottom third. They are
+          not clipped here (they run on under the panel and off the edges; <main> clips them). */}
+      <div className="relative min-h-0 flex-1">
+        <svg
+          ref={ringsRef}
+          className="pointer-events-none absolute"
+          style={{ left: "calc(50% - 300px)", top: "calc(50% - 300px)", transformOrigin: "center", transition: "transform 60ms linear" }}
+          width="600"
+          height="600"
+          viewBox="0 0 600 600"
+          fill="none"
+          aria-hidden="true"
         >
-          {label}
-        </span>
-        <span className="flex max-w-full shrink-0 justify-center text-[15px]" style={{ opacity: soft }}>
-          {statusLine}
-        </span>
+          <circle cx="300" cy="300" r="120" stroke="currentColor" strokeOpacity="0.22" strokeWidth="2" />
+          <circle cx="300" cy="300" r="200" stroke="currentColor" strokeOpacity="0.14" strokeWidth="2" />
+          <circle cx="300" cy="300" r="280" stroke="currentColor" strokeOpacity="0.07" strokeWidth="2" />
+        </svg>
+        {/* The text clips inside this box, so the controls below are never pushed off a no-scroll
+            screen. Lines of equal height above and below the role keep the role itself on the centre. */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 overflow-hidden text-center">
+          <span className="eyebrow flex h-6 shrink-0 items-center" style={{ opacity: soft }}>
+            YOU ARE
+          </span>
+          <span
+            className="font-display shrink-0 leading-none font-extrabold tracking-tight whitespace-nowrap uppercase"
+            // One line, sized to the label: this face runs ~0.63em per capital on average and
+            // ~0.72em for a word of wide ones ("DRUMS"), so 0.76em a character always fits and
+            // "SOPRANO" / "STROBE 3" are no longer cropped on a 320 px phone. A 76 px word needs no
+            // help from the OS text-size setting, which would only push it back off the screen.
+            style={{
+              fontSize: `min(76px, 20dvh, calc((100vw - 40px) / ${(Math.max(label.length, 4) * 0.76).toFixed(2)}))`,
+              WebkitTextSizeAdjust: "100%",
+              textSizeAdjust: "100%",
+            }}
+          >
+            {label}
+          </span>
+          <span className="flex h-6 max-w-full shrink-0 items-center justify-center text-base" style={{ opacity: soft }}>
+            {statusLine}
+          </span>
+        </div>
       </div>
 
       {/* No nudge slider here anymore: timing is automatic (live latency + the tuning moment), and
           a visible correction control read as "this app needs fixing". The host still has a
-          per-player nudge in the player sheet for emergencies. */}
-      <div className="relative flex shrink-0 flex-col gap-3 rounded-[20px] p-4" style={{ background: "var(--scrim)", color: "var(--text)" }}>
+          per-player nudge in the player sheet for emergencies.
+          One panel, three things in order of use: the control, the sponsor, the byline. 24 px
+          corners with 12 px of padding, so the 12 px corners inside it are concentric. */}
+      <div className="relative flex shrink-0 flex-col gap-3 rounded-3xl p-3" style={{ background: "var(--scrim)", color: "var(--text)" }}>
         <ReconnectBanner connection={connection} />
         <button
           onClick={() => client.audio.setMuted(!muted)}
           aria-pressed={muted}
-          className="flex h-12 shrink-0 items-center justify-center rounded-xl border font-semibold"
-          // The edge was --border: 1.1–2.4:1 against the panel, so the control read as a caption.
-          style={{ borderColor: "rgba(241,245,249,0.5)", background: muted ? "#F1F5F9" : "transparent", color: muted ? "#0B0F14" : "#F1F5F9" }}
+          className="flex h-14 shrink-0 items-center justify-center gap-2.5 rounded-xl border text-base font-semibold [@media(max-height:480px)]:h-11"
+          // A filled, outlined, full-width button with a speaker on it. It was a bare outline at
+          // 1.1–2.4:1 against the panel, which read as a caption rather than a control.
+          style={{
+            borderColor: muted ? "#F1F5F9" : "rgba(241,245,249,0.5)",
+            background: muted ? "#F1F5F9" : "rgba(241,245,249,0.1)",
+            color: muted ? "#0B0F14" : "#F1F5F9",
+          }}
         >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M11 5 6 9H3v6h3l5 4z" />
+            {muted ? <path d="m16 9 5 6m0-6-5 6" /> : <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />}
+          </svg>
           {muted ? "Unmute my phone" : "Mute my phone"}
         </button>
         {/* Landscape phones have no room for the footer; drop it whole rather than crop it. */}
-        <div className="flex flex-col gap-3 [@media(max-height:480px)]:hidden">
+        <div className="flex flex-col gap-2.5 [@media(max-height:480px)]:hidden">
           <AdSlot dark />
           <Creators dark />
         </div>

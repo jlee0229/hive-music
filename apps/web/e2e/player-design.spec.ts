@@ -246,3 +246,45 @@ test.describe("tuning screen", () => {
     });
   }
 });
+
+test.describe("playing screen", () => {
+  test.use({ mockScenario: "party-12.json" });
+
+  for (const viewport of [SMALLEST, SAFARI, { width: 393, height: 852 }, { width: 430, height: 932 }, { width: 852, height: 393 }]) {
+    test(`${viewport.width}x${viewport.height}: the rings are centred on the role, not on the screen`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await join(page, "Centred");
+      await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
+      const centres = await page.evaluate(() => {
+        const mid = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        };
+        const labels = document.querySelectorAll("main span.font-display");
+        // A ring's own centre: the svg pulses (scales about its centre), which does not move it.
+        return { label: mid(labels[labels.length - 1]!), rings: mid(document.querySelector("main svg circle")!) };
+      });
+      expect(Math.abs(centres.rings.x - centres.label.x), "rings off-centre sideways").toBeLessThanOrEqual(2);
+      expect(Math.abs(centres.rings.y - centres.label.y), "rings off-centre vertically").toBeLessThanOrEqual(8);
+    });
+  }
+
+  test("the mute control is a full-size labelled button, and the page never scrolls", async ({ page }) => {
+    await page.setViewportSize(SMALLEST);
+    await join(page, "Loud");
+    await expect(page.getByText("YOU ARE")).toBeVisible({ timeout: 10_000 });
+    for (const viewport of [SMALLEST, SAFARI, { width: 393, height: 852 }]) {
+      await page.setViewportSize(viewport);
+      const mute = page.getByRole("button", { name: "Mute my phone" });
+      await expect(mute).toBeInViewport({ ratio: 1 });
+      const box = (await mute.boundingBox())!;
+      expect(box.height, `mute height at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(56);
+      expect(box.width).toBeGreaterThanOrEqual(viewport.width - 80);
+      await expect(page.getByText("Sponsored")).toBeInViewport({ ratio: 1 });
+      await expect(page.getByText(/Creators:/)).toBeInViewport({ ratio: 1 });
+      const fit = await page.evaluate(() => ({ page: document.documentElement.scrollHeight, sideways: document.documentElement.scrollWidth, w: innerWidth, h: innerHeight }));
+      expect(fit.page).toBeLessThanOrEqual(fit.h);
+      expect(fit.sideways).toBeLessThanOrEqual(fit.w);
+    }
+  });
+});
