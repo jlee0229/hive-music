@@ -11,7 +11,8 @@ test("a code with no hive behind it says so before the guest types a name or tap
   await page.goto("/j/ZZZZ");
 
   await expect(page.getByRole("heading", { name: "Hive not found" })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText(/ZZZZ/)).toBeVisible();
+  // On the page itself (the code is in the tab title too, since each page names itself there).
+  await expect(page.locator("main").getByText(/ZZZZ/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Tap to join" })).toHaveCount(0);
 
   // ...and there is a way forward.

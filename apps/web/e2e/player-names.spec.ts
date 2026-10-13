@@ -85,16 +85,22 @@ test("HTML in a name is shown as text on the projector, never run", async ({ pag
     void d.dismiss();
   });
   await screen.goto("/screen/BZQ7");
-  // The map shortens a long name to fit between its neighbours ("<img src=x…"), so the label is a
-  // prefix of the name rather than all of it. What matters is unchanged: exactly one label carries
-  // the markup, as characters in a text node — the angle bracket is on screen, no element was made.
+  // The map shortens a long name to fit between its neighbours ("<img src=x…") and keeps the whole
+  // name in an SVG <title> on the same label (a tooltip). What matters is unchanged: exactly one
+  // label carries the markup, and all of it is characters in text nodes — the angle bracket is on
+  // screen, the only element inside the label is that inert <title>, and nothing was made of it.
   const label = screen.locator("svg[aria-label^='Hive map'] text").filter({ hasText: "<img" });
   await expect(label).toHaveCount(1, { timeout: 10_000 });
-  const shown = (await label.textContent())!;
-  const stem = shown.replace(/…$/, "");
-  expect(stem.length, `label "${shown}" is too short to prove anything`).toBeGreaterThanOrEqual(4);
-  expect(hostile.startsWith(stem), `label "${shown}" is not the start of the name`).toBe(true);
-  expect(await label.evaluate((el) => el.childElementCount)).toBe(0);
+  const parts = await label.evaluate((el) => ({
+    shown: [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join(""),
+    tooltip: el.querySelector(":scope > title")?.textContent ?? null,
+    otherElements: el.querySelectorAll(":scope > :not(title)").length,
+  }));
+  const stem = parts.shown.replace(/…$/, "");
+  expect(stem.length, `label "${parts.shown}" is too short to prove anything`).toBeGreaterThanOrEqual(4);
+  expect(hostile.startsWith(stem), `label "${parts.shown}" is not the start of the name`).toBe(true);
+  if (parts.tooltip !== null) expect(parts.tooltip).toBe(hostile);
+  expect(parts.otherElements).toBe(0);
   await expect(screen.locator("svg[aria-label^='Hive map'] :is(img, image, foreignObject, script)")).toHaveCount(0);
   await expect(screen.locator("img[src='x']")).toHaveCount(0);
   expect(dialogs).toBe(0);
