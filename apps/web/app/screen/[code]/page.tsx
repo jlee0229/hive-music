@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { Fragment, use, useEffect, useState } from "react";
 import type { ModeKind } from "@hive/protocol";
 import { useHiveClient } from "@/lib/hive/useHiveClient";
 import { QrCode } from "@/components/QrCode";
@@ -75,7 +75,12 @@ export default function ScreenPage({ params }: { params: Promise<{ code: string 
   }, []);
   const wide = win.w >= 900;
   const mapSize = Math.round(Math.max(240, wide ? Math.min((win.w - 112) * (1.4 / 2.4), win.h - 150) : win.w - 48));
-  const qrSize = Math.round(Math.min(260, Math.max(120, win.h * 0.24)));
+  // On a 1080p wall there is room under the tiles that the QR can use; on 720p there is not.
+  const qrSize = Math.round(win.h >= 900 ? Math.min(360, win.h * 0.3) : Math.min(260, Math.max(120, win.h * 0.24)));
+  // Type that is read from across a room scales with the screen (it was fixed at phone sizes:
+  // 14 px tile labels and an 18 px "Scan to join" on a 1920 px wall).
+  const label = { fontSize: "clamp(0.875rem, 1vw, 1.25rem)" };
+  const numeral = { fontSize: "clamp(1.5rem, 2.4vw, 3rem)" };
 
   const [missing, setMissing] = useState(false);
   useEffect(() => client.on("error", (errorCode) => {
@@ -118,10 +123,12 @@ export default function ScreenPage({ params }: { params: Promise<{ code: string 
     <main className={wide ? "grid h-dvh grid-cols-[1fr_1.4fr] gap-8 overflow-hidden p-10" : "flex min-h-dvh flex-col gap-6 p-6"} style={{ background: "var(--stage)" }}>
       <div className="flex min-h-0 min-w-0 flex-col gap-6">
         <div className="flex flex-col gap-1">
-          <span className="font-display text-2xl font-semibold" style={{ color: "var(--muted)" }}>
+          <span className="font-display font-semibold" style={{ color: "var(--muted)", fontSize: "clamp(1.5rem, 1.9vw, 2.25rem)" }}>
             HIVE
           </span>
-          <span className="font-display text-[76px] leading-none font-extrabold tracking-[0.08em]">{roomCode}</span>
+          <span className="font-display leading-none font-extrabold tracking-[0.08em]" style={{ fontSize: "clamp(4.75rem, 6vw, 7.5rem)" }}>
+            {roomCode}
+          </span>
         </div>
 
         <div className="flex items-center gap-6 rounded-3xl border p-6" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
@@ -129,36 +136,50 @@ export default function ScreenPage({ params }: { params: Promise<{ code: string 
             <QrCode value={joinUrl} size={qrSize} />
           </div>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-lg" style={{ color: "var(--muted)" }}>
-              Scan to join
+            <span style={{ color: "var(--muted)", fontSize: "clamp(1.125rem, 1.5vw, 1.75rem)" }}>Scan to join</span>
+            {/* Breaks after a slash, never in the middle of the domain or the code ("localhost:317 /
+                0/j/BZQ7" was how break-all set it at 1280 px). */}
+            <span className="font-mono break-words" style={{ fontSize: "clamp(1.125rem, 1.6vw, 2rem)" }}>
+              {joinUrl
+                .replace(/^https?:\/\//, "")
+                .split("/")
+                .map((part, i, parts) => (
+                  // Fragments, not spans: no element here should have the bare code as its whole text.
+                  <Fragment key={i}>
+                    {part}
+                    {i < parts.length - 1 ? "/" : ""}
+                    <wbr />
+                  </Fragment>
+                ))}
             </span>
-            <span className="font-mono text-2xl break-all">{joinUrl.replace(/^https?:\/\//, "")}</span>
           </div>
         </div>
 
         {/* One row, however many tiles there are (Synced only appears once there is a number). */}
-        <div className="grid grid-flow-col gap-4" style={{ gridAutoColumns: "minmax(0, 1fr)" }}>
+        {/* Numbers take the room they need and the mode gets the rest: in three equal columns
+            "Orchestra" ran out of its 150 px tile at 1280 px. */}
+        <div className="grid gap-4" style={{ gridTemplateColumns: medianSyncMs == null ? "auto minmax(0, 1fr)" : "auto auto minmax(0, 1fr)" }}>
           <div className="flex flex-col gap-1 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-            <span className="text-sm" style={{ color: "var(--muted)" }}>
-              Players
+            <span style={{ color: "var(--muted)", ...label }}>Players</span>
+            <span className="font-display leading-tight font-bold" style={numeral}>
+              {playerCount}
             </span>
-            <span className="font-display text-4xl font-bold">{playerCount}</span>
           </div>
           {/* The server sends HEALTH to hosts, and to viewers only where it has been taught to, so
               without this check the tile read "—" for the whole party. */}
           {medianSyncMs == null ? null : (
             <div className="flex flex-col gap-1 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-              <span className="text-sm" style={{ color: "var(--muted)" }}>
-                Synced
+              <span style={{ color: "var(--muted)", ...label }}>Synced</span>
+              <span className="font-display leading-tight font-bold whitespace-nowrap" style={numeral}>
+                ±{Math.round(medianSyncMs)} ms
               </span>
-              <span className="font-display text-4xl font-bold whitespace-nowrap">±{Math.round(medianSyncMs)} ms</span>
             </div>
           )}
-          <div className="flex flex-col gap-1 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-            <span className="text-sm" style={{ color: "var(--muted)" }}>
-              Mode
+          <div className="flex min-w-0 flex-col gap-1 rounded-2xl border p-5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+            <span style={{ color: "var(--muted)", ...label }}>Mode</span>
+            <span data-testid="screen-mode" className="font-display truncate leading-tight font-bold" style={numeral}>
+              {room ? modeLabel(room.mode.kind) : "—"}
             </span>
-            <span className="font-display text-4xl font-bold">{room ? modeLabel(room.mode.kind) : "—"}</span>
           </div>
         </div>
 

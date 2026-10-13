@@ -2,7 +2,7 @@
 export function RingerBanner() {
   return (
     <div
-      className="flex gap-3 rounded-2xl border p-3.5"
+      className="flex gap-3 rounded-2xl border p-3"
       style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)" }}
     >
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--ringer-fg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden="true">
@@ -13,8 +13,8 @@ export function RingerBanner() {
         <span className="text-sm font-semibold" style={{ color: "var(--ringer-fg)" }}>
           Ringer on, please
         </span>
-        <span className="text-[13px] leading-snug" style={{ color: "#cbb27a" }}>
-          Silent mode mutes web audio. Flip the side switch.
+        <span className="text-sm leading-snug" style={{ color: "var(--ringer-body)" }}>
+          Silent mode mutes the music. Flip the side switch.
         </span>
       </div>
     </div>

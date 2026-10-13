@@ -9,6 +9,19 @@ import { Creators } from "@/components/Creators";
 /** The server accepts 3–8 character codes (random ones are 4); see ClientMessageSchema JOIN. */
 const CODE_MIN = 3;
 const CODE_MAX = 8;
+/**
+ * Why "Host a hive" did not work, in the page's own words. The service says no for two reasons a
+ * person can act on, and "check your connection" is the wrong advice for both of them.
+ */
+const HOST_ERRORS = {
+  /** 429 rate_limited: too many hives started from this network in the last minute. */
+  tooMany: "Too many hives started from here just now. Wait a minute and try again.",
+  /** 503 server_full: every hive the service can run is running. */
+  full: "HiveMusic is full right now. Try again in a little while.",
+  /** No answer, a dropped request, or any other failure. */
+  connection: "Couldn't start a hive. Check your connection and try again.",
+} as const;
+
 /** A cold server can take a few seconds to answer; past this the guest needs their button back. */
 const HOST_TIMEOUT_MS = 10_000;
 
@@ -41,7 +54,14 @@ export default function LandingPage() {
         body: JSON.stringify({}),
         signal: abort.signal,
       });
-      if (!res.ok) throw new Error(`POST /rooms failed: ${res.status}`);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (res.status === 429) setError(HOST_ERRORS.tooMany);
+        else if (res.status === 503 && body?.error === "server_full") setError(HOST_ERRORS.full);
+        else setError(HOST_ERRORS.connection);
+        setHosting(false);
+        return;
+      }
       const data = (await res.json()) as { code: string; hostKey: string };
       try {
         globalThis.localStorage?.setItem(`hive:hostKey:${data.code}`, data.hostKey);
@@ -50,7 +70,7 @@ export default function LandingPage() {
       }
       router.push(`/h/${data.code}`);
     } catch {
-      setError("Couldn't start a hive. Check your connection and try again.");
+      setError(HOST_ERRORS.connection);
       setHosting(false);
     } finally {
       clearTimeout(deadline);
@@ -69,65 +89,73 @@ export default function LandingPage() {
   }
 
   return (
+    // One screen on every phone: brand, the headline, the two actions, the byline, GitHub.
+    // Upright the three blocks stack; on a phone held sideways (the `sideways` variant in
+    // globals.css) the headline and the actions sit side by side. On a desktop the column widens
+    // for the headline only — the actions stay a hand-sized column.
     <main
-      className="mx-auto flex min-h-dvh max-w-md flex-col justify-between gap-8"
-      style={{ padding: safeAreaPadding(56, 24, 32) }}
+      className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col gap-6 sideways:flex-row sideways:items-center sideways:gap-8"
+      style={{ padding: safeAreaPadding(16, 20, 16) }}
     >
-      <div className="flex items-center gap-2.5">
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="var(--text)" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
-          <path d="M14 2l10.4 6v12L14 26 3.6 20V8z" />
-          <circle cx="14" cy="14" r="4" />
-        </svg>
-        <span className="font-display text-xl font-bold tracking-wide">HiveMusic</span>
-      </div>
+      <div className="flex flex-1 flex-col gap-6 sideways:self-stretch">
+        <div className="flex items-center gap-2 lg:justify-center">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="var(--text)" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+            <path d="M14 2l10.4 6v12L14 26 3.6 20V8z" />
+            <circle cx="14" cy="14" r="4" />
+          </svg>
+          <span className="font-display text-xl font-bold tracking-wide">HiveMusic</span>
+        </div>
 
-      <div className="flex flex-col gap-4">
-        <h1 className="font-display text-center text-5xl leading-[1.02] font-extrabold tracking-tight">
-          Party wherever. Party together. Become the speaker.
+        {/* The words are the founder's and are not to be edited. A sentence to a line, sized from
+            the width so "Party wherever." always holds one line (--landing-headline): it used to
+            be a fixed 48 px, which broke as "Party / wherever. / Party / together. / Become the /
+            speaker." on a 320 px phone and pushed the Join row off the screen. */}
+        <h1 className="font-display my-auto text-center leading-[1.02] font-extrabold tracking-tight" style={{ fontSize: "var(--landing-headline)" }}>
+          <span className="block">Party wherever.</span> <span className="block">Party together.</span>{" "}
+          <span className="block" style={{ textWrap: "balance" }}>
+            Become the speaker.
+          </span>
         </h1>
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div className="mx-auto flex w-full max-w-md flex-col gap-3 sideways:flex-1">
         <button
           onClick={hostAHive}
           disabled={hosting}
-          className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold disabled:opacity-60"
+          className="flex h-14 shrink-0 items-center justify-center rounded-2xl text-xl font-semibold disabled:opacity-60"
           style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
         >
           {hosting ? "Creating your hive…" : "Host a hive"}
         </button>
-        <form onSubmit={join} className="flex items-end gap-2.5">
-          <label className="flex grow flex-col gap-1.5 text-xs" style={{ color: "var(--muted)" }}>
-            Hive code
-            <input
-              ref={codeInput}
-              value={code}
-              onChange={(e) => {
-                setCode(codeFromInput(e.target.value));
-                setError(null);
-              }}
-              aria-label="Hive code"
-              // Not a real code: the old demo code here read as "this is the code to type".
-              placeholder="CODE"
-              autoCapitalize="characters"
-              autoCorrect="off"
-              autoComplete="off"
-              spellCheck={false}
-              enterKeyHint="go"
-              className="font-mono h-13 w-full rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none focus-visible:border-[color:var(--text)]"
-              style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
-            />
-          </label>
+        <form onSubmit={join} className="flex gap-2">
+          <input
+            ref={codeInput}
+            value={code}
+            onChange={(e) => {
+              setCode(codeFromInput(e.target.value));
+              setError(null);
+            }}
+            aria-label="Hive code"
+            // Says what goes here, and is not a real code: the old demo code read as "type this".
+            placeholder="Hive code"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            enterKeyHint="go"
+            className="font-mono h-14 min-w-0 grow rounded-2xl border px-4 text-xl tracking-[0.2em] uppercase outline-none focus-visible:border-[color:var(--text)]"
+            style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
+          />
           <button
             type="submit"
-            className="flex h-13 items-center justify-center rounded-2xl border px-5 font-semibold"
-            style={{ height: 52, background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
+            className="flex h-14 shrink-0 items-center justify-center rounded-2xl border px-5 text-base font-semibold"
+            style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
           >
             Join
           </button>
         </form>
         {error ? (
-          <p role="alert" className="text-center text-sm" style={{ color: "var(--health-bad)" }}>
+          <p role="alert" className="text-center text-sm" style={{ color: "var(--danger)" }}>
             {error}
           </p>
         ) : null}
@@ -137,8 +165,8 @@ export default function LandingPage() {
           target="_blank"
           rel="noreferrer"
           aria-label="HiveMusic on GitHub"
-          className="flex items-center justify-center gap-2.5 rounded-2xl border px-4 py-3 text-[14px] font-semibold"
-          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
+          className="flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-semibold"
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--muted)" }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path

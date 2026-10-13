@@ -286,12 +286,12 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   let body: React.ReactNode;
   if (view === "removed") {
     body = (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center">
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-5 text-center">
         <div role="alert" className="flex flex-col items-center gap-4">
-          <h1 className="font-display text-3xl font-bold">{gone!.heading}</h1>
+          <h1 className="font-display text-[2rem] leading-tight font-bold">{gone!.heading}</h1>
           <p style={{ color: "var(--muted)" }}>{gone!.detail}</p>
         </div>
-        <Link href="/" className="mt-4 rounded-2xl px-6 py-3 font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
+        <Link href="/" className="mt-4 flex h-14 items-center justify-center rounded-2xl px-8 text-base font-semibold" style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}>
           Back home
         </Link>
       </main>
@@ -301,17 +301,20 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   if (view === "resume") {
     body = (
       <main
-        className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-6 text-center"
+        className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 p-5 text-center"
         style={{ overscrollBehavior: "none", touchAction: "manipulation" }}
         onClick={handleResume}
       >
         {/* The whole screen is the tap target, but a keyboard or a screen reader needs a control
             to land on; the tap bubbles to <main>, and handleResume ignores the second call. */}
         <div role="alert" className="flex flex-col items-center gap-4">
-          <h1 className="font-display text-3xl font-bold">
-            <button onClick={handleResume}>{resuming ? "Resuming…" : "Tap to resume"}</button>
+          <h1 className="font-display text-[2rem] leading-tight font-bold">
+            {/* 56 px tall: the words alone were a 36 px target for the one thing this screen is for. */}
+            <button onClick={handleResume} className="min-h-14 px-4">
+              {resuming ? "Resuming…" : "Tap to resume"}
+            </button>
           </h1>
-          <p style={{ color: "var(--muted)" }}>Sound paused — a call, the lock screen, or Siri interrupted it.</p>
+          <p style={{ color: "var(--muted)" }}>A call or the lock screen paused the sound.</p>
         </div>
       </main>
     );
@@ -344,6 +347,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
     const level = selfHealthLevel(status, audio.state, client.clock.serverNow());
     const ringColor = HEALTH_COLORS[level];
     const roleColor = me?.assignment ? ROLE_COLORS[me.assignment.role] : "#94A3B8";
+    // Bass as text on a dark card: the swatch colour is 4.1:1 there, the lighter violet 6.4:1.
+    const roleText = me?.assignment?.role === "bass" ? "var(--role-bass-text)" : roleColor;
 
     body = (
       // h-dvh + overflow-hidden silently clips anything that doesn't fit. So: the footer (what the
@@ -355,16 +360,16 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         style={{
           gap: "min(12px, 1.6dvh)",
           padding: [
-            "calc(min(40px, 5dvh) + env(safe-area-inset-top, 0px))",
+            "calc(16px + env(safe-area-inset-top, 0px))",
             "calc(20px + env(safe-area-inset-right, 0px))",
-            "calc(14px + env(safe-area-inset-bottom, 0px))",
+            "calc(16px + env(safe-area-inset-bottom, 0px))",
             "calc(20px + env(safe-area-inset-left, 0px))",
           ].join(" "),
         }}
       >
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ gap: "min(12px, 1.6dvh)" }}>
           <div className="flex shrink-0 items-center justify-between gap-3">
-            <span className="flex min-w-0 items-center gap-2 text-[15px] font-semibold">
+            <span className="flex min-w-0 items-center gap-2 text-base font-semibold">
               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: roleColor }} />
               <span className="truncate">{name.trim() || "You"}</span>
             </span>
@@ -376,7 +381,7 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
           <ReconnectBanner connection={connection} />
           <ProtocolMismatchBanner show={protocolMismatch} />
 
-          <div className="flex shrink-0 flex-col items-center gap-2.5 pt-1 [@media(max-height:480px)]:pt-0">
+          <div className="flex shrink-0 flex-col items-center gap-2 pt-1 [@media(max-height:480px)]:pt-0">
             <svg
               className="[@media(max-height:480px)]:hidden"
               style={{ width: "clamp(56px, 12dvh, 96px)", height: "clamp(56px, 12dvh, 96px)" }}
@@ -399,15 +404,16 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
                 <path d="M40 62l13 13 27-30" stroke={ringColor} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
               ) : null}
             </svg>
-            <span className="font-display text-[34px] leading-tight font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
+            <span className="font-display text-[2rem] leading-tight font-bold tracking-tight">{status.syncErrMs == null ? "Syncing…" : "Synced"}</span>
           </div>
 
           <div className="flex shrink-0 flex-col [@media(max-height:480px)]:flex-row" style={{ gap: "min(12px, 1.6dvh)" }}>
             {/* Nothing to download until the host has picked a song. */}
             {trackStems.length ? (
-              <div className="flex min-w-0 flex-1 flex-col justify-center gap-2.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+              <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
                 <div className="flex flex-wrap justify-between gap-x-2 text-sm">
-                  <span className="font-semibold">Downloading the song</span>
+                  {/* The same words as the playing screen's "Loading the song…"; and once it is loaded, say so. */}
+                  <span className="font-semibold">{audio.loadProgress >= 1 ? "Song ready" : "Loading the song"}</span>
                   <span className="font-mono shrink-0" style={{ color: "var(--muted)" }}>
                     {Math.min(partsDone, trackStems.length)} / {trackStems.length} parts
                   </span>
@@ -419,17 +425,14 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             ) : null}
 
             {me?.assignment ? (
-              <div className="flex min-w-0 flex-1 items-center gap-3.5 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+              <div className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
                 <span className="h-11 w-11 shrink-0 rounded-xl" style={{ background: roleColor }} />
                 <div className="flex min-w-0 flex-col gap-1">
-                  <span className="text-xs tracking-widest" style={{ color: "var(--muted)" }}>
+                  <span className="eyebrow" style={{ color: "var(--muted)" }}>
                     YOU&apos;LL PLAY
                   </span>
-                  <span className="font-display text-[22px] font-bold" style={{ color: roleColor }}>
+                  <span className="font-display text-xl font-bold" style={{ color: roleText }}>
                     {me.assignment.label}
-                  </span>
-                  <span className="text-[13px] [@media(max-height:700px)]:hidden" style={{ color: "var(--muted)" }}>
-                    The host can change this during the show.
                   </span>
                 </div>
               </div>
@@ -438,13 +441,13 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
         </div>
 
         <div className="flex shrink-0 flex-col items-center gap-2">
-          <span className="flex items-center gap-2 text-[15px]" style={{ color: "var(--muted)" }}>
+          <span className="flex items-center gap-2 text-base" style={{ color: "var(--muted)" }}>
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--muted)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--faint)" }} />
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--border)" }} />
             {waitLine}
           </span>
-          <span className="text-center text-[13px]" style={{ color: "var(--faint)" }}>
+          <span className="text-center text-sm" style={{ color: "var(--faint)" }}>
             Keep your screen on. Don&apos;t lock your phone.
           </span>
         </div>
@@ -461,22 +464,19 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
 
   if (view === "join") {
     body = (
-    <main
-      className="mx-auto flex min-h-dvh max-w-md flex-col gap-6"
-      style={{ padding: safeAreaPadding(56, 24, 32) }}
-      onClick={handleJoin}
-    >
-      <div className="flex items-center justify-between">
-        <span className="font-display text-xl font-bold">Joining a hive</span>
-        <span className="font-mono rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-          {roomCode}
-        </span>
-      </div>
+      // One screen, no scrolling, on every phone: the code, a name box, and the button. The
+      // three-step explainer and the line under the button used to stand between a guest and
+      // "Tap to join" — on a 320x568 iPhone the button was 150 px below the fold.
+      <main className="mx-auto flex h-dvh max-w-md flex-col gap-4" style={{ padding: safeAreaPadding(16, 20, 16) }} onClick={handleJoin}>
+        <div className="flex shrink-0 items-center justify-between gap-3">
+          <span className="font-display text-xl font-bold">Joining a hive</span>
+          <span className="font-mono shrink-0 rounded-full border px-3 py-1.5 text-sm tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+            {roomCode}
+          </span>
+        </div>
 
-      <ProtocolMismatchBanner show={protocolMismatch} />
+        <ProtocolMismatchBanner show={protocolMismatch} />
 
-      <label className="flex flex-col gap-2 text-[13px]" style={{ color: "var(--muted)" }} onClick={(e) => e.stopPropagation()}>
-        Your name
         <input
           value={name}
           onChange={(e) => {
@@ -484,6 +484,8 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
             setName(v);
             setPlayerName(v);
           }}
+          // The whole screen joins on a tap; the name box is the one place a tap means "type here".
+          onClick={(e) => e.stopPropagation()}
           // The keyboard's own "go" key joins: nobody should have to dismiss the keyboard to find
           // the button underneath it.
           onKeyDown={(e) => {
@@ -492,46 +494,30 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
               void handleJoin();
             }
           }}
+          aria-label="Your name"
           placeholder="Your name"
           autoComplete="nickname"
           autoCapitalize="words"
           autoCorrect="off"
           spellCheck={false}
           enterKeyHint="go"
-          className="h-14 rounded-2xl border px-4 text-lg outline-none focus-visible:border-[color:var(--text)]"
-          style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text)" }}
+          className="h-14 w-full shrink-0 rounded-2xl border px-4 text-xl outline-none focus-visible:border-[color:var(--text)]"
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text)" }}
         />
-      </label>
 
-      {device.browserFamily === "ios-safari" ? <RingerBanner /> : null}
+        {device.browserFamily === "ios-safari" ? <RingerBanner /> : null}
 
-      <div className="flex flex-col gap-2 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-        <span className="text-[13px]" style={{ color: "var(--muted)" }}>
-          What happens next
-        </span>
-        <div className="flex flex-col gap-2 text-sm leading-snug">
-          <span>1. Your phone syncs its clock with the hive.</span>
-          <span>2. It downloads the song&apos;s parts (a few seconds).</span>
-          <span>3. The host presses play. You&apos;re part of the speaker.</span>
-        </div>
-      </div>
+        <div className="min-h-0 grow" />
 
-      <div className="grow" />
-
-      <div className="flex flex-col gap-2.5">
         <button
           onClick={handleJoin}
           disabled={joining}
-          className="flex h-16 items-center justify-center rounded-[18px] text-lg font-semibold disabled:opacity-60"
+          className="flex h-16 shrink-0 items-center justify-center rounded-2xl text-xl font-semibold disabled:opacity-60"
           style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
         >
           {joining ? "Joining…" : "Tap to join"}
         </button>
-        <p className="text-center text-[13px] leading-snug" style={{ color: "var(--faint)" }}>
-          The tap lets your phone play sound. Keep this page open afterwards.
-        </p>
-      </div>
-    </main>
+      </main>
     );
   }
 

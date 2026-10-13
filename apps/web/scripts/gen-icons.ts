@@ -10,10 +10,14 @@ const STAGE = [0x0b, 0x0f, 0x14] as const;
 const IVORY = [0xf1, 0xf5, 0xf9] as const;
 
 function hexAt(px: number, py: number, cx: number, cy: number, r: number): boolean {
-  // point-in-regular-hexagon test (flat-top), via 6 half-plane checks
+  // Point-in-regular-hexagon, pointy-top like the logo mark (a vertex at 12 o'clock), by symmetry:
+  // inside the two vertical sides (|x| <= sqrt(3)/2 r) and under the slanted edge from (0, r) to
+  // (sqrt(3)/2 r, r/2), which is x + sqrt(3) y = sqrt(3) r.
+  // This used to test the slanted edge of a *flat-top* hexagon (sqrt(3) x + y) against the sides
+  // of a pointy-top one; the intersection of the two is an octagon with a flat top and bottom.
   const dx = Math.abs(px - cx) / r;
   const dy = Math.abs(py - cy) / r;
-  return dx <= Math.sqrt(3) / 2 && dy <= 1 && Math.sqrt(3) * dx + dy <= Math.sqrt(3);
+  return dx <= Math.sqrt(3) / 2 && dx + Math.sqrt(3) * dy <= Math.sqrt(3);
 }
 
 function drawIcon(size: number): Buffer {

@@ -1,13 +1,24 @@
 @import "tailwindcss";
 
+/* A phone held sideways: plenty of width, about 390 px of height. `sideways:flex-row` etc. */
+@custom-variant sideways (@media (orientation: landscape) and (max-height: 500px));
+
+
 :root {
   --stage: #0b0f14;
   --surface: #151b23;
   --raised: #1e2733;
+  /* Hairlines between surfaces: decoration only (1.5:1), never the only edge of a control. */
   --border: #2a3441;
+  /* The edge of anything you tap or type in: 3.5:1 on --stage, 3.2:1 on --surface (WCAG 1.4.11). */
+  --border-strong: #5b6b80;
   --text: #f1f5f9;
   --muted: #94a3b8;
-  --faint: #64748b;
+  /* Helper text. Was #64748b: 4.0:1 on --stage and 3.6:1 on a card, under AA for the 12-13 px
+     lines it is used for. Now 6.3 / 5.6 / 4.9 on --stage / --surface / --raised. */
+  --faint: #8794a8;
+  /* Error text (7.0:1 on --stage). --health-bad stays for rings and dots, where 3:1 is enough. */
+  --danger: #f87171;
 
   --primary-fill: #f1f5f9;
   --primary-text: #0b0f14;
@@ -17,6 +28,11 @@
   --role-vocals: #22d3ee;
   --role-other: #34d399;
   --role-unison: #f8fafc;
+  /* Bass is the one role whose fill is dark enough to need light ink, and #8b5cf6 only gives it
+     4.05:1. A whole phone screen in bass uses the deeper violet (5.45:1); bass as *text* on a
+     dark card uses the lighter one (6.4:1). Dots, rings and pills keep --role-bass. */
+  --role-bass-screen: #7c3aed;
+  --role-bass-text: #a78bfa;
   --host-ring: #f1f5f9;
 
   --health-good: #22c55e;
@@ -27,6 +43,37 @@
   --ringer-fg: #f5c451;
   --ringer-bg: #1f1a0f;
   --ringer-border: #7c5a0b;
+  --ringer-body: #cbb27a;
+
+  /* The one scrim: panels laid over a role colour. At 0.72, #f1f5f9 text on it is 7.3:1 or better
+     on every role, and the same text at 80 % is 5.4:1 or better. */
+  --scrim: rgba(11, 15, 20, 0.72);
+
+  /*
+   * The scale. Everything on a screen picks from these; nothing invents a value in between.
+   *   space    4 8 12 16 24 32          (Tailwind 1 2 3 4 6 8)   page gutter 20 (5)
+   *   type     12 14 16 20 32 + role    (text-xs text-sm text-base text-xl text-[2rem]); the role
+   *            label alone is sized from the viewport
+   *   weight   400 600 body, 700 800 display
+   *   radius   12 inner, 16 controls and cards, 24 panels and sheets, full for pills
+   *            (rounded-xl rounded-2xl rounded-3xl rounded-full)
+   *   control  44 compact, 56 standard, 64 for the one action a screen exists for
+   *            (h-11 h-14 h-16)
+   */
+  --space-gutter: 20px;
+  --space-page-top: 16px;
+  --space-page-bottom: 16px;
+  --text-caption: 12px;
+  --text-small: 14px;
+  --text-body: 16px;
+  --text-title: 20px;
+  --text-headline: 32px;
+  --radius-inner: 12px;
+  --radius-control: 16px;
+  --radius-panel: 24px;
+  --control-compact: 44px;
+  --control: 56px;
+  --control-hero: 64px;
 
   --font-display: "Bricolage Grotesque", system-ui, sans-serif;
   --font-body: "IBM Plex Sans", system-ui, sans-serif;
@@ -77,4 +124,40 @@ button,
 
 .font-mono {
   font-family: var(--font-mono);
+}
+
+/*
+ * The landing headline, one sentence to a line. In this face at weight 800 "Party wherever." is
+ * 7.48 em wide, so (width - gutters) / 7.7 is the largest size at which it still holds one line;
+ * "Become the speaker." (9.82 em) then breaks once, as "Become the / speaker.", until the column is
+ * wide enough for it (about 710 px), where the headline is three lines of 72 px.
+ */
+:root {
+  --landing-headline: min(72px, calc((100vw - 40px) / 7.7));
+  /* The byline is 15.7 em wide; one line, as large as fits, 20 px at most. */
+  --landing-byline: min(20px, calc((100vw - 40px) / 16.2));
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  :root {
+    --landing-headline: min(40px, calc((50vw - 36px) / 7.7), 10dvh);
+    --landing-byline: min(20px, calc((50vw - 36px) / 16.2));
+  }
+}
+
+/* Small print in capitals above a value ("YOU ARE", "YOU'LL PLAY", "GET READY"). */
+.eyebrow {
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

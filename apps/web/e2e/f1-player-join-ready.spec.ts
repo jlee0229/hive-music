@@ -12,7 +12,8 @@ test("F1: join reaches Ready with audio === 'ready' and the role card shows the 
 
   // Ready screen: sync ring + "Synced" once syncErrMs resolves, stem progress, You'll play card.
   await expect(page.getByText("Synced", { exact: true })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText("Downloading the song")).toBeVisible();
+  // "Loading the song" while it downloads (the stub takes half a second), then "Song ready".
+  await expect(page.getByText("Song ready")).toBeVisible();
   await expect(page.getByText(/parts/)).toBeVisible();
   await expect(page.getByText("YOU'LL PLAY")).toBeVisible({ timeout: 10_000 });
 
