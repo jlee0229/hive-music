@@ -12,7 +12,7 @@
  * is exercised.
  */
 import {
-  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, SET_POSITION_MAX_HZ,
+  CLIENT_STATUS_INTERVAL_MS, NTP_BURST_COUNT, NTP_BURST_WINDOW_MS, NTP_STEADY_INTERVAL_MS, ROOM_STATE_MAX_HZ, SET_POSITION_MAX_HZ,
   trackTimeSec as transportTrackTimeSec,
   type Assignment, type AudioState, type ClientRecord, type HealthSnapshot, type ModeKind, type ModeParams,
   type RoomState, type ScenePlan, type StemRole,
@@ -33,8 +33,28 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
   let pairTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPositionSent = 0;
   let probeGroup = 0;
+  let lastReadyAnnounceAt = -Infinity;
+  let lastReadyAnnounced: string | null = null;
 
   const me = (): ClientRecord | null => room?.clients[clientId] ?? null;
+
+  /**
+   * AUDIO_READY, driven by what the server says it knows — the real engine's rule. The stub used to
+   * announce once, inside unlock(), and only if a snapshot already existed; the player page unlocks
+   * *before* it connects, so no stub player ever announced, and the calibration e2e passed only
+   * because the mock did not ask (PROTO-15). Self-limiting: it stops once the snapshot reflects it.
+   */
+  function announceReadyIfUnknown(): void {
+    const track = room?.track;
+    const mine = me();
+    if (audioState !== "ready" || !track || !mine) return;
+    if (mine.audioReadyTrackId === track.id) return;
+    // The same announcement may still be in flight; a different track is always news.
+    if (lastReadyAnnounced === track.id && localNow() - lastReadyAnnounceAt < 1000 / ROOM_STATE_MAX_HZ) return;
+    lastReadyAnnounceAt = localNow();
+    lastReadyAnnounced = track.id;
+    transport.send({ type: "AUDIO_READY", trackId: track.id });
+  }
   const status = (): SyncStatus => ({
     clockOffsetMs: clock.offsetMs,
     rttMs: clock.rttMs,
@@ -65,6 +85,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
             ev.emit("state", room);
             const next = me()?.assignment ?? null;
             if (prev !== JSON.stringify(next)) ev.emit("assignment", next);
+            announceReadyIfUnknown();
             break;
           }
           case "HEALTH":
@@ -148,7 +169,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
         }
         audioState = "ready";
         ev.emit("audio", audioState, 1);
-        if (room?.track) transport.send({ type: "AUDIO_READY", trackId: room.track.id });
+        announceReadyIfUnknown(); // nothing to announce to yet if this ran before connect(): ROOM_STATE does it
       },
       get state() { return audioState; },
       get loadProgress() { return loadProgress; },
