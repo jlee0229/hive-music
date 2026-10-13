@@ -738,21 +738,23 @@ export class Room {
       this.sockets.set(id, heir);
       return;
     }
+    this.sockets.delete(id); // before the broadcast below: a closed socket is not a recipient
     const c = this.room.clients[id];
     if (c) {
       c.connected = false;
-      this.dirty = true;
-      this.flush();
+      // `connected` is a planner input (PROTO-05): a phone that drops takes its stem with it unless
+      // the plan is redone — its ORCHESTRA stem is folded onto the phones still here, STROBE groups
+      // are re-dealt over them. Marking the snapshot dirty alone left that part of the song silent
+      // until something else happened to trigger a re-plan.
+      this.replan();
     }
-    this.sockets.delete(id);
     this.clearDisconnectTimer(id);
     const timer = setTimeout(() => {
       delete this.room.clients[id];
       this.health.delete(id); // or the map grows by one entry per device that ever joined
       this.room.hostClientIds = this.room.hostClientIds.filter((hid) => hid !== id);
       this.disconnectTimers.delete(id);
-      this.dirty = true;
-      this.flush();
+      this.replan(); // the roster changed: layouts and group deals are computed over it
       this.checkIdle();
     }, DISCONNECT_RETENTION_MS);
     this.disconnectTimers.set(id, timer);
