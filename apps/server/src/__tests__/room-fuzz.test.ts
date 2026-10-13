@@ -14,7 +14,7 @@ import {
   type ScenePlan,
 } from "@hive/protocol";
 import { MAX_ROOMS, MAX_ROOM_CLIENTS, ROOM_UNCLAIMED_TTL_MS, RoomManager, type Conn, type Room } from "../rooms";
-import type { LibraryEntry } from "../library";
+import { ownerIdOf, type LibraryEntry } from "../library";
 
 /**
  * Audit SG-13: a stateful fuzz of the room server. Several fake sockets — hosts with the key,
@@ -59,6 +59,10 @@ const LIBRARY: LibraryEntry[] = [
   { id: "stems", title: "Stems", durationSec: 9, stems: [...STEMS], bpm: 96.5 },
   { id: "synth", title: "Synthetic", durationSec: 60, stems: [...STEMS], bpm: 120, generated: true },
 ];
+/** Two browsers' library keys; one of them owns a track (contracts/library-scope.md). */
+const LIBRARY_KEYS = ["fuzz-library-key-one-0123456789abcdef", "fuzz-library-key-two-0123456789abcdef"] as const;
+const OWNER_IDS = LIBRARY_KEYS.map(ownerIdOf);
+LIBRARY.push({ id: "owned", title: "Owned by one", durationSec: 5, stems: ["mix"], owner: OWNER_IDS[0]! });
 const FAMILIES = ["ios-safari", "android-chrome", "desktop-chrome", "desktop-safari", "other"] as const;
 
 interface Sock {
@@ -90,6 +94,8 @@ const coverage = {
   serverHangups: 0,
   restoredRooms: 0,
   heldJoinsAdmitted: 0,
+  ownedTrackSelected: 0,
+  ownedTrackRefused: 0,
   notHostAnswers: 0,
   collectedRooms: 0,
   playlistAdvances: 0,
@@ -150,6 +156,7 @@ function runSeed(seed: number, steps: number) {
       send: (raw: string) => {
         const msg = parseServerMessage(raw);
         if (!msg) throw new Error(`sent an unparsable message: ${raw.slice(0, 300)}`);
+        if (OWNER_IDS.some((id) => raw.includes(id)) || LIBRARY_KEYS.some((k) => raw.includes(k))) throw new Error(`a library key or owner id was sent to a client: ${raw.slice(0, 200)}`);
         if (msg.type === "ERROR") s.errors.push(msg.code);
         if (msg.type === "ROOM_STATE") {
           const t = wallNow();
@@ -234,6 +241,7 @@ function runSeed(seed: number, steps: number) {
       kind,
       plays: r.chance(0.5),
       hostKey,
+      libraryKey: r.chance(0.6) ? r.pick(LIBRARY_KEYS) : undefined,
       name: r.chance(0.5) ? `N${r.int(99)}` : undefined,
       device: { userAgent: "ua".repeat(r.int(200)), platform: "p", browserFamily: r.pick(FAMILIES), model: r.chance(0.3) ? "m" : undefined },
       protocolVersion: r.chance(0.9) ? PROTOCOL_VERSION : r.int(9),
@@ -248,6 +256,7 @@ function runSeed(seed: number, steps: number) {
     switch (r.int(17)) {
       case 0:
         return { type: "SET_TRACK", trackId: r.chance(0.9) ? r.pick(LIBRARY).id : "no-such-track" };
+      // (LIBRARY includes "owned": a room whose host does not own it must answer NO_TRACK — checked below)
       case 1:
       case 2:
         return { type: "TRANSPORT", action: r.pick(["PLAY", "PLAY", "PAUSE", "SEEK"]), trackTimeSec: r.pick([undefined, undefined, 0, r.next() * (track?.durationSec ?? 5) * 1.5, 1e9]) };
@@ -338,6 +347,7 @@ function runSeed(seed: number, steps: number) {
   }
   /** What a JOIN from a socket without the key must leave alone. */
   function joinView(room: RoomState): string {
+    const live = roomsOf().get(room.code);
     return JSON.stringify({
       track: room.track,
       transport: room.transport,
@@ -345,6 +355,7 @@ function runSeed(seed: number, steps: number) {
       scenePlan: room.scenePlan,
       calibration: room.calibration,
       hostClientIds: room.hostClientIds,
+      libraryOwner: live?.libraryOwner ?? null, // only a JOIN that proved it is the host may say whose library this is
       // (assignments are recomputed for everyone on any join; everything else about a host is off limits)
       hosts: Object.values(room.clients)
         .filter((c) => c.kind === "host")
@@ -385,7 +396,9 @@ function runSeed(seed: number, steps: number) {
 
       for (const id of room.health.keys()) if (!state.clients[id]) throw new Error(`health entry for ${id}, which has no record`);
       // nextTrack is always what the rotation would do right now with the library as it is right now
-      const promised = state.track ? nextInRotation(mgr.getLibrary(), state.track.id) : null;
+      // (…as THIS room may see it: shared tracks plus its own host's uploads, never another owner's)
+      const promised = state.track ? nextInRotation(room.library(), state.track.id) : null;
+      if (promised?.owner !== undefined && promised.owner !== room.libraryOwner) throw new Error(`the rotation of ${room.code} leads to another owner's upload`);
       if ((state.nextTrack?.id ?? null) !== (promised?.id ?? null)) throw new Error(`nextTrack says ${state.nextTrack?.id ?? null}, the rotation would go to ${promised?.id ?? null}`);
       if (state.calibration.state === "done") coverage.calibrationsDone++;
       if (state.calibration.state === "failed") coverage.calibrationsFailed++;
@@ -488,6 +501,14 @@ function runSeed(seed: number, steps: number) {
           coverage.notHostAnswers++;
         }
         if (room && Object.keys(room.room.clients).length < idsBefore) coverage.kicks++;
+        if (room && (msg as { type: string; trackId?: string }).type === "SET_TRACK" && (msg as { trackId?: string }).trackId === "owned" && s.privileged && !s.pendingClose) {
+          const mayUse = room.libraryOwner === OWNER_IDS[0] && mgr.getLibrary().some((t) => t.id === "owned");
+          if (mayUse) coverage.ownedTrackSelected++;
+          else {
+            coverage.ownedTrackRefused++;
+            if (s.errors.at(-1) !== "NO_TRACK") throw new Error(`a room that does not own "owned" selected it (answer: ${s.errors.at(-1)})`);
+          }
+        }
         if (before !== null && s.room && mgr.get(s.room)) expect(hostOnlyView(mgr.get(s.room)!.room, s.clientId)).toBe(before);
       } else if (roll < 0.7) {
         // ---- garbage, or a second JOIN on a socket that already has a seat ------------------------

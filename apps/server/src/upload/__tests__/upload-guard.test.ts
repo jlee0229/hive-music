@@ -39,6 +39,9 @@ async function setup() {
   await manager.loadLibrary();
   const room = manager.createRoom();
   if ("error" in room) throw new Error(room.error);
+  // the host page's JOIN: it carries the browser's libraryKey, which is what lets the room upload
+  const ws = { data: { clientId: null, roomCode: null }, send: () => {}, subscribe: () => {}, close: () => {} } as unknown as WS;
+  manager.handleMessage(ws, JSON.stringify({ type: "JOIN", clientId: "host-setup-0001", roomCode: room.code, kind: "host", plays: false, hostKey: room.hostKey, libraryKey: "upload-guard-library-key-0001", device: { userAgent: "t", platform: "t", browserFamily: "other" }, protocolVersion: PROTOCOL_VERSION }));
   return { fixtures, manager, room };
 }
 
@@ -83,7 +86,7 @@ async function upload(ctx: Ctx, title: string, files: Record<string, Uint8Array>
   form.set("title", title);
   for (const [field, bytes] of Object.entries(files)) form.set(field, new File([bytes as unknown as BlobPart], `${field}.wav`, { type: "audio/wav" }));
   const res = await handleUploadTracks(new Request("http://hive.test/tracks", { method: "POST", body: form }), ctx.manager, ctx.fixtures, "http://hive.test", {}, limits);
-  return { status: res.status, headers: res.headers, body: (await res.json()) as { track?: { id: string; durationSec: number; bpm?: number; energy?: number[] }; error?: string } };
+  return { status: res.status, headers: res.headers, body: (await res.json()) as { track?: { id: string; durationSec: number; bpm?: number; energy?: number[]; mine?: boolean }; error?: string; message?: string } };
 }
 const trackDirs = (ctx: Ctx) => (existsSync(join(ctx.fixtures, "tracks")) ? readdirSync(join(ctx.fixtures, "tracks")).filter((d) => !d.startsWith(".")) : []);
 
@@ -218,7 +221,8 @@ describe("SG-07: an upload cannot exhaust memory or disk", () => {
     expect((await upload(ctx, "fits 2", { mix: tone(2) }, limits)).status).toBe(201);
     const full = await upload(ctx, "does not fit", { mix: tone(2) }, limits);
     expect(full.status).toBe(507);
-    expect(full.body.error).toContain("library is full");
+    expect(full.body.error).toBe("library_full"); // a code the page switches on…
+    expect(full.body.message).toContain("library is full"); // …and a sentence it can show
     expect(trackDirs(ctx).length).toBe(2);
     expect(await librarySizeBytes(ctx.fixtures)).toBeLessThanOrEqual(400_000);
   });

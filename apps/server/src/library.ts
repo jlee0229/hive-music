@@ -2,9 +2,31 @@
 // loadLibrary. Entries are stored without `urls` — those are built per-request from the request's own
 // origin (buildTrackUrls), so the same binary serves http://localhost:8080 and https://<app>.fly.dev
 // with no configured base (engine's R-1 review of the old apps/server implementation).
+import { createHash } from "node:crypto";
 import { STEMS, TrackLibraryEntrySchema, type TrackLibraryEntry } from "@hive/protocol";
 
-export type LibraryEntry = Omit<TrackLibraryEntry, "urls">;
+/**
+ * A library entry as the server holds it. `owner` is server-only (contracts/library-scope.md): the
+ * id of the browser that uploaded the track, absent on shared tracks (the built-in ones and
+ * everything uploaded before uploads were owned). It never leaves the process — not in ROOM_STATE
+ * (Room.trackInfo copies named fields), not in GET /tracks (withUrls drops it), not in an error.
+ */
+export type LibraryEntry = Omit<TrackLibraryEntry, "urls"> & { owner?: string };
+
+/** `global`: one list for everyone, as before owned uploads. `owner`: shared tracks plus the room's own. */
+export type LibraryScope = "owner" | "global";
+
+const OWNER_ID = /^[0-9a-f]{32}$/;
+/** The only form in which the server ever keeps a browser's libraryKey. */
+export function ownerIdOf(libraryKey: string): string {
+  return createHash("sha256").update(libraryKey).digest("hex").slice(0, 32);
+}
+
+/** What a room whose host owns `owner` (null: nobody) may list, select and rotate through. */
+export function visibleLibrary(library: readonly LibraryEntry[], owner: string | null, scope: LibraryScope): LibraryEntry[] {
+  if (scope === "global") return [...library];
+  return library.filter((t) => t.owner === undefined || t.owner === owner);
+}
 
 const CoreSchema = TrackLibraryEntrySchema.pick({ title: true, durationSec: true, stems: true });
 const OptionalSchema = TrackLibraryEntrySchema.pick({ bpm: true, beatOffsetSec: true, energy: true, clickTimesSec: true, dropSec: true, generated: true });
@@ -25,7 +47,10 @@ function toEntry(dirName: string, meta: unknown): (LibraryEntry & { _order: numb
   const core = CoreSchema.safeParse(m);
   // The directory name is the id: it is what the audio URLs are built from, whatever meta.id says.
   if (!core.success || !URL_SAFE.test(dirName) || dirName.length > 64 || !core.data.stems.every((s) => URL_SAFE.test(s))) return null;
-  const entry: LibraryEntry = { id: dirName, ...core.data };
+  // A track with an owner field that is not an owner id is not made shared by dropping the field —
+  // that would show one person's upload to everyone. It is not a track.
+  if (m.owner !== undefined && m.owner !== null && !(typeof m.owner === "string" && OWNER_ID.test(m.owner))) return null;
+  const entry: LibraryEntry = { id: dirName, ...core.data, ...(typeof m.owner === "string" ? { owner: m.owner } : {}) };
   for (const key of Object.keys(OptionalSchema.shape) as Array<keyof typeof OptionalSchema.shape>) {
     if (m[key] === undefined || m[key] === null) continue;
     const field = OptionalSchema.shape[key].safeParse(m[key]);
@@ -69,6 +94,11 @@ export function buildTrackUrls(entry: LibraryEntry, origin: string): Record<stri
   return urls;
 }
 
-export function withUrls(entry: LibraryEntry, origin: string): TrackLibraryEntry {
-  return { ...entry, urls: buildTrackUrls(entry, origin) };
+/**
+ * The entry as a client sees it: audio URLs added, `owner` removed. `mine: true` (when the asking
+ * room's host owns the track) is the only ownership fact that is ever sent.
+ */
+export function withUrls(entry: LibraryEntry, origin: string, askingOwner: string | null = null): TrackLibraryEntry & { mine?: true } {
+  const { owner, ...publicEntry } = entry;
+  return { ...publicEntry, urls: buildTrackUrls(entry, origin), ...(owner !== undefined && owner === askingOwner ? { mine: true as const } : {}) };
 }

@@ -31,7 +31,7 @@ import {
   type ServerMessage,
   type TrackInfo,
 } from "@hive/protocol";
-import { loadLibrary, type LibraryEntry } from "./library";
+import { loadLibrary, ownerIdOf, visibleLibrary, type LibraryEntry, type LibraryScope } from "./library";
 import { HostKeys, safeEqual } from "./host-key";
 import { RateLimiter } from "./rate-limit";
 
@@ -177,6 +177,7 @@ export class Room {
     private getLibrary: () => LibraryEntry[],
     /** The manager passes a signed key (host-key.ts); a bare Room (tests) gets an unguessable random one. */
     hostKey: string = crypto.randomUUID(),
+    private libraryScope: LibraryScope = "owner",
   ) {
     this.code = code;
     this.hostKey = hostKey;
@@ -371,6 +372,17 @@ export class Room {
     this.server.publish(this.code, JSON.stringify({ type: "PING", serverTime: t } satisfies ServerMessage));
   }
 
+  /**
+   * Whose uploads this room may use: the id of its host's browser (a hash of the libraryKey its
+   * JOIN carried), or null — shared tracks only. Not part of RoomState, never broadcast.
+   */
+  libraryOwner: string | null = null;
+
+  /** The tracks this room can list, select and rotate through: shared ones plus its host's own. */
+  library(): LibraryEntry[] {
+    return visibleLibrary(this.getLibrary(), this.libraryOwner, this.libraryScope);
+  }
+
   private static trackInfo(t: LibraryEntry): TrackInfo {
     return { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
   }
@@ -387,7 +399,7 @@ export class Room {
    * the track (setTrack) and the library (onLibraryChanged). Returns whether it changed.
    */
   private refreshNextTrack(): boolean {
-    const next = this.room.track ? nextInRotation(this.getLibrary(), this.room.track.id) : null;
+    const next = this.room.track ? nextInRotation(this.library(), this.room.track.id) : null;
     const info = next ? Room.trackInfo(next) : null;
     if (JSON.stringify(info) === JSON.stringify(this.room.nextTrack ?? null)) return false; // absent and null mean the same
     this.room.nextTrack = info;
@@ -463,7 +475,7 @@ export class Room {
     // Playlist rotation (nextInRotation, shared with the mock): real songs only, so a party never
     // lands on a synthetic test track unless the library holds nothing else. The library is read
     // live — a song uploaded mid-show joins the rotation before the current one ends.
-    const next = nextInRotation(this.getLibrary(), this.room.track.id);
+    const next = nextInRotation(this.library(), this.room.track.id);
 
     if (next) {
       // Advance to the next song. Phones have not downloaded it yet, so the start gets a breather
@@ -685,6 +697,15 @@ export class Room {
     ws.data.clientId = rec.id;
     ws.data.roomCode = this.code;
     ws.data.host = wantsHost;
+    // Only a JOIN that proved it is the host says whose library this room uses; the last one wins.
+    // A host JOIN without a libraryKey (an older client) leaves things as they are.
+    if (wantsHost && msg.libraryKey) {
+      const owner = ownerIdOf(msg.libraryKey);
+      if (owner !== this.libraryOwner) {
+        this.libraryOwner = owner;
+        this.refreshNextTrack(); // the rotation may lead somewhere else now; the replan below publishes it
+      }
+    }
     const previous = this.sockets.get(rec.id);
     if (previous && previous !== ws) {
       const older = this.standby.get(rec.id) ?? [];
@@ -836,7 +857,8 @@ export class Room {
         return;
       case "SET_TRACK": {
         if (!hostOnly()) return;
-        const track = this.getLibrary().find((t) => t.id === msg.trackId);
+        // (another owner's upload is not in library(): it answers NO_TRACK exactly like an id that does not exist)
+        const track = this.library().find((t) => t.id === msg.trackId);
         if (!track) return send(ws, { type: "ERROR", code: "NO_TRACK", message: `unknown track ${msg.trackId}` });
         // A vibe plan is scene boundaries in ONE song's track time. The playlist advance already
         // drops it (loopBack); switching songs by hand kept it, and the next PLAY drove the new
@@ -1009,7 +1031,7 @@ export class RoomManager {
    * host can bring their room back under the same code after a deploy; leave it out and keys are
    * only good for the life of this process.
    */
-  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string }) {
+  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string; libraryScope?: LibraryScope }) {
     this.keys = new HostKeys(opts.hostKeySecret);
   }
 
@@ -1033,8 +1055,28 @@ export class RoomManager {
 
   /** True if `key` is the current hostKey of any room in this process (POST /tracks has no room in its path). */
   isKnownHostKey(key: string): boolean {
-    for (const room of this.rooms.values()) if (room.hostKey === key) return true;
+    return this.roomForHostKey(key) !== undefined;
+  }
+
+  /** The live room whose hostKey this is: how the REST routes that carry no room code find their room. */
+  roomForHostKey(key: string | undefined | null): Room | undefined {
+    if (!key) return undefined;
+    for (const room of this.rooms.values()) if (room.hostKey === key) return room;
+    return undefined;
+  }
+
+  get libraryScope(): LibraryScope {
+    return this.opts.libraryScope ?? "owner";
+  }
+
+  /** Codes are not returned: only whether some live room has this track selected right now. */
+  isTrackInUse(trackId: string): boolean {
+    for (const room of this.rooms.values()) if (room.room.track?.id === trackId) return true;
     return false;
+  }
+
+  get fixturesDir(): string {
+    return this.opts.fixturesDir;
   }
 
   private randomCode(): string {
@@ -1061,6 +1103,7 @@ export class RoomManager {
       },
       () => this.library,
       hostKey ?? this.keys.issue(code, now()),
+      this.libraryScope,
     );
     this.rooms.set(code, room);
     return room;

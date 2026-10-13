@@ -10,7 +10,7 @@ let proc: ReturnType<typeof Bun.spawn>;
 const uploadedIds: string[] = [];
 
 beforeAll(async () => {
-  proc = Bun.spawn(["bun", `${import.meta.dir}/../../index.ts`], { env: { ...process.env, PORT: String(PORT), CORS_ORIGIN: "*", ROOM_FIXED_CODE: "" }, stdout: "ignore", stderr: "inherit" });
+  proc = Bun.spawn(["bun", `${import.meta.dir}/../../index.ts`], { env: { ...process.env, PORT: String(PORT), CORS_ORIGIN: "*", ROOM_FIXED_CODE: "", LIBRARY_SCOPE: "global" /* these tests predate owned uploads: one shared list (library-scope.test.ts covers the default) */ }, stdout: "ignore", stderr: "inherit" });
   for (let i = 0; i < 50; i++) {
     try {
       if ((await fetch(`${BASE}/health`)).ok) return;

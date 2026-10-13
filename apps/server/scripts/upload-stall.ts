@@ -26,7 +26,7 @@ const now = () => performance.timeOrigin + performance.now();
 const dir = join(tmpdir(), `hive-upload-stall-${process.pid}-${crypto.randomUUID().slice(0, 8)}`);
 await mkdir(join(dir, "tracks"), { recursive: true });
 const proc = Bun.spawn([process.execPath, `${import.meta.dir}/../src/index.ts`], {
-  env: { ...process.env, PORT: String(PORT), CORS_ORIGIN: "*", ROOM_FIXED_CODE: "", FIXTURES_DIR: dir },
+  env: { ...process.env, PORT: String(PORT), CORS_ORIGIN: "*", ROOM_FIXED_CODE: "", FIXTURES_DIR: dir, LIBRARY_SCOPE: "global" /* no host JOIN here, so no library owner */ },
   stdout: "ignore",
   stderr: "inherit",
 });

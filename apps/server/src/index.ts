@@ -5,7 +5,8 @@ import { z } from "zod";
 import { directScene } from "./vibe/director";
 import { withUrls } from "./library";
 import { RoomManager, type Conn } from "./rooms";
-import { MAX_UPLOAD_BYTES, handleUploadTracks } from "./upload/route";
+import { MAX_UPLOAD_BYTES, handleDeleteTrack, handleUploadTracks } from "./upload/route";
+import { visibleLibrary } from "./library";
 import { RateLimiter, callerKey } from "./rate-limit";
 import { safeEqual } from "./host-key";
 
@@ -17,7 +18,7 @@ const FIXED_CODE = process.env.ROOM_FIXED_CODE;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": CORS_ORIGIN,
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
@@ -96,7 +97,11 @@ async function readSmallJson(req: Request): Promise<unknown | typeof TOO_LARGE> 
   }
 }
 
-const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret() });
+// LIBRARY_SCOPE=global: one song list for every hive, as before uploads were owned. Default: a hive
+// sees the shared tracks plus its own host's uploads (contracts/library-scope.md).
+const LIBRARY_SCOPE = process.env.LIBRARY_SCOPE === "global" ? "global" : "owner";
+
+const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret(), libraryScope: LIBRARY_SCOPE });
 
 const server = Bun.serve<Conn>({
   port: PORT,
@@ -185,11 +190,19 @@ const server = Bun.serve<Conn>({
 
     if (url.pathname === "/tracks" && req.method === "GET") {
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
-      const tracks = manager
-        .getLibrary()
+      // With a live room's hostKey: that room's library (shared + its host's own, marked `mine`).
+      // Without one — a guest, a stale key — the shared tracks only.
+      const asking = manager.roomForHostKey(req.headers.get("authorization")?.match(/^Bearer\s+(\S{1,64})$/i)?.[1]);
+      const owner = asking?.libraryOwner ?? null;
+      const tracks = visibleLibrary(manager.getLibrary(), owner, LIBRARY_SCOPE)
         .filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q))
-        .map((t) => withUrls(t, url.origin));
+        .map((t) => withUrls(t, url.origin, owner));
       return json({ tracks });
+    }
+
+    const trackMatch = url.pathname.match(/^\/tracks\/([A-Za-z0-9_-]{1,64})$/);
+    if (trackMatch && req.method === "DELETE") {
+      return handleDeleteTrack(req, trackMatch[1]!, manager, FIXTURES_DIR, corsHeaders);
     }
 
     if (url.pathname === "/tracks" && req.method === "POST") {
