@@ -6,8 +6,8 @@
  */
 import type { TrackLibraryEntry } from "@hive/protocol";
 
-/** `mine` is not in TrackLibraryEntrySchema yet; when the protocol gains it this alias can go. */
-export type LibraryTrack = TrackLibraryEntry & { mine?: boolean };
+/** A library entry as the host page lists it (`mine` marks this browser's own uploads). */
+export type LibraryTrack = TrackLibraryEntry;
 
 /** GET /tracks as this hive's host. Throws on anything but a JSON list, so the caller can retry. */
 export async function fetchLibrary(apiUrl: string, hostKey: string): Promise<LibraryTrack[]> {

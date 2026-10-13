@@ -36,6 +36,12 @@ export const TrackLibraryEntrySchema = TrackInfoSchema.extend({
    */
   dropSec: z.number().nonnegative().optional(),
   generated: z.boolean().optional(),
+  /**
+   * True on a track the asking hive's host uploaded (GET /tracks called with that hive's host key).
+   * The only ownership fact a client ever sees: the owner's identity is never sent. Absent on
+   * shared tracks and for callers without a key.
+   */
+  mine: z.boolean().optional(),
 });
 export type TrackLibraryEntry = z.infer<typeof TrackLibraryEntrySchema>;
 export const TrackLibraryResponseSchema = z.object({ tracks: z.array(TrackLibraryEntrySchema) });
