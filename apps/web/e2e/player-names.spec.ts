@@ -68,17 +68,34 @@ test("Enter in the name box joins", async ({ page }) => {
 
 test("HTML in a name is shown as text on the projector, never run", async ({ page, browser }) => {
   const hostile = "<img src=x onerror=alert(1)>";
+  let dialogs = 0;
+  page.on("dialog", (d) => {
+    dialogs++;
+    void d.dismiss();
+  });
   await joinAs(page, hostile);
+  // In full, as inert text, on the guest's own screen.
+  await expect(page.getByText(hostile, { exact: true })).toBeVisible();
+  await expect(page.locator("img[src='x']")).toHaveCount(0);
 
   const projector = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const screen = await projector.newPage();
-  let dialogs = 0;
   screen.on("dialog", (d) => {
     dialogs++;
     void d.dismiss();
   });
   await screen.goto("/screen/BZQ7");
-  await expect(screen.locator("svg[aria-label^='Hive map'] text").filter({ hasText: hostile })).toHaveCount(1, { timeout: 10_000 });
+  // The map shortens a long name to fit between its neighbours ("<img src=x…"), so the label is a
+  // prefix of the name rather than all of it. What matters is unchanged: exactly one label carries
+  // the markup, as characters in a text node — the angle bracket is on screen, no element was made.
+  const label = screen.locator("svg[aria-label^='Hive map'] text").filter({ hasText: "<img" });
+  await expect(label).toHaveCount(1, { timeout: 10_000 });
+  const shown = (await label.textContent())!;
+  const stem = shown.replace(/…$/, "");
+  expect(stem.length, `label "${shown}" is too short to prove anything`).toBeGreaterThanOrEqual(4);
+  expect(hostile.startsWith(stem), `label "${shown}" is not the start of the name`).toBe(true);
+  expect(await label.evaluate((el) => el.childElementCount)).toBe(0);
+  await expect(screen.locator("svg[aria-label^='Hive map'] :is(img, image, foreignObject, script)")).toHaveCount(0);
   await expect(screen.locator("img[src='x']")).toHaveCount(0);
   expect(dialogs).toBe(0);
   await projector.close();
