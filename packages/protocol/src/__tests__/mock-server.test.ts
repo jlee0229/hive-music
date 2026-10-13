@@ -100,9 +100,13 @@ describe("mock server", () => {
     expect(Object.keys(health.clients)).toContain("play-000001");
 
     host.send({ type: "SET_MODE", mode: "ORCHESTRA", params: {} });
-    const orch = await p2.next("ROOM_STATE", (m) => m.room.mode.kind === "ORCHESTRA");
+    // The roster is read off the host's snapshot: a player is sent its own record only (as apps/server).
+    const orch = await host.next("ROOM_STATE", (m) => m.room.mode.kind === "ORCHESTRA");
     const labels = new Set(Object.values(orch.room.clients).filter((c) => c.plays).map((c) => c.assignment!.label));
     expect(labels.size).toBeGreaterThan(1);
+    const mine = await p2.next("ROOM_STATE", (m) => m.room.mode.kind === "ORCHESTRA");
+    expect(Object.keys(mine.room.clients)).toEqual(["play-000002"]);
+    expect(mine.room.clients["play-000002"]!.assignment!.label).toBe(orch.room.clients["play-000002"]!.assignment!.label);
 
     host.send({ type: "TRANSPORT", action: "PLAY", trackTimeSec: 0 });
     const playing = await p1.next("ROOM_STATE", (m) => m.room.transport.state === "playing");

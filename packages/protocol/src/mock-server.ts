@@ -10,6 +10,13 @@
  * `POST /tracks` upload (501), no idle TTL, no ping timeout, a fixed 2 Hz publish tick instead of the
  * server's leading-edge coalescer, and a short audio cache lifetime. Everything else must behave like
  * `apps/server/src/rooms.ts`; `scripts/parity-probe.ts` runs the same probes against both.
+ *
+ * ROOM_STATE in particular is sent **per recipient**, as the server sends it (`sendState` there,
+ * `playerRoomView` here): a player is told the room-level state and its own record, nothing about
+ * anyone else. Only *what* is sent is mirrored, not how often — the server also skips a recipient whose
+ * message would be byte-identical to its last one, holds back a socket that has not drained, and
+ * repeats the state on a heartbeat while playing; the mock sends every recipient its view on every
+ * publish.
  */
 import { z } from "zod";
 import {
@@ -50,6 +57,35 @@ export const ScenarioSchema = z.object({
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type ScenarioInput = z.input<typeof ScenarioSchema>;
+
+/**
+ * The ROOM_STATE a **player** is sent: the room-level state, a roster of exactly one (itself), no host
+ * ids, and the calibration block cut down to what its own tuning screen shows. The same projection as
+ * `playerView` in apps/server/src/rooms.ts (`sendState`), field for field — keep the two in step.
+ *
+ * This is the reason the mock sends state per recipient at all. While it published the whole room to
+ * everyone, guest code that looked another client up in the roster (the host, to decide "the host has
+ * gone") passed every browser test and could never work in production.
+ */
+export function playerRoomView(room: RoomState, id: string): RoomState {
+  const { clients, calibration, hostClientIds: _hosts, ...level } = room;
+  const inFlight = calibration.state === "countdown" || calibration.state === "running";
+  const mine = calibration.results[id];
+  const isReference = calibration.referenceClientId === id;
+  return {
+    ...level,
+    hostClientIds: [],
+    calibration: {
+      state: calibration.state,
+      referenceClientId: isReference ? id : null,
+      startServerTime: calibration.startServerTime,
+      // The slots, with every id but its own blanked: enough for "click 7 of 30, yours is the 12th".
+      order: inFlight ? calibration.order.map((o) => (o === id ? o : "")) : [],
+      results: mine ? { [id]: mine } : {},
+    },
+    clients: { [id]: clients[id]! },
+  };
+}
 
 /** Upper bound on one client→server frame (proposed for apps/server too: PROTO-03). */
 export const MAX_CLIENT_FRAME_BYTES = 64 * 1024;
@@ -122,6 +158,11 @@ export function startMockServer(opts: MockServerOptions = {}) {
   let joinCounter = 0;
   const health = new Map<string, { rttMs: number | null; syncErrMs: number | null; outputLatencyMs: number | null; audioState: AudioState; lastSeenServerTime: number }>();
   const sockets = new Map<string, Bun.ServerWebSocket<{ clientId: string | null }>>();
+  /**
+   * Every open socket that JOINed as a client — the newest per id (`sockets`) and any older one still
+   * open (the server's `standby`: one browser's tabs share a client id). All of them are sent state.
+   */
+  const members = new Set<Bun.ServerWebSocket<{ clientId: string | null }>>();
   let dirty = false;
   let calibrationTimers: ReturnType<typeof setTimeout>[] = [];
   let sceneTimer: ReturnType<typeof setTimeout> | null = null;
@@ -297,6 +338,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
       },
       close(ws) {
         observers.delete(ws);
+        members.delete(ws); // before the publish below: a closed socket is not a recipient
         const id = ws.data.clientId;
         if (!id || !room.clients[id]) return;
         /*
@@ -368,7 +410,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
           observers.add(ws);
           ws.subscribe(room.code);
           send(ws, { type: "WELCOME", clientId: msg.clientId, roomCode: room.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: false });
-          send(ws, { type: "ROOM_STATE", room });
+          send(ws, { type: "ROOM_STATE", room }); // an observer watches the whole room, like a host or a viewer
           return;
         }
         /*
@@ -428,12 +470,15 @@ export function startMockServer(opts: MockServerOptions = {}) {
         if (rec.kind !== "host") room.hostClientIds = room.hostClientIds.filter((id) => id !== rec.id);
         ws.data.clientId = rec.id;
         sockets.set(rec.id, ws);
-        ws.subscribe(room.code);
+        members.add(ws);
+        ws.subscribe(room.code); // PING is still a topic broadcast; ROOM_STATE is not (see sendState)
         clearDisconnectTimer(rec.id);
         health.set(rec.id, { rttMs: null, syncErrMs: null, outputLatencyMs: null, audioState: "locked", lastSeenServerTime: now() });
         send(ws, { type: "WELCOME", clientId: rec.id, roomCode: room.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: rec.kind === "host" });
         replan();
-        flush(); // a joiner gets its snapshot immediately
+        // A joiner gets its snapshot immediately — its own view of the room, like everyone else's: the
+        // server has no separate "initial state" either, a JOIN is one more change that is published.
+        flush();
         log(`join ${rec.kind} ${rec.name} (${rec.id})`);
         return;
       }
@@ -516,8 +561,13 @@ export function startMockServer(opts: MockServerOptions = {}) {
       case "KICK":
         if (!hostOnly()) return;
         if (room.clients[msg.clientId]) {
-          const s = sockets.get(msg.clientId);
-          if (s) { send(s, { type: "ERROR", code: "KICKED", message: "removed by host" }); s.close(); }
+          // Every socket of that client, not only the newest (as the server).
+          for (const s of [...members]) {
+            if (s.data.clientId !== msg.clientId) continue;
+            send(s, { type: "ERROR", code: "KICKED", message: "removed by host" });
+            members.delete(s);
+            s.close();
+          }
           sockets.delete(msg.clientId);
           clearDisconnectTimer(msg.clientId);
           delete room.clients[msg.clientId];
@@ -666,11 +716,27 @@ export function startMockServer(opts: MockServerOptions = {}) {
     room.hostConnected = room.hostClientIds.some((id) => room.clients[id]?.connected === true);
   }
 
+  /**
+   * One ROOM_STATE per recipient, as apps/server's `sendState`: a **player** gets `playerRoomView`;
+   * **hosts, viewers and observers** get the full room. Seeded `mock-*` players have no socket and so
+   * are nobody's recipient. This used to be one `server.publish` of the whole room to everyone.
+   */
+  function sendState() {
+    stampHostConnected();
+    let full: string | null = null;
+    const fullView = () => (full ??= JSON.stringify({ type: "ROOM_STATE", room } satisfies ServerMessage));
+    for (const ws of members) {
+      const rec = ws.data.clientId ? room.clients[ws.data.clientId] : undefined;
+      if (!rec) continue;
+      ws.send(rec.kind === "player" ? JSON.stringify({ type: "ROOM_STATE", room: playerRoomView(room, rec.id) } satisfies ServerMessage) : fullView());
+    }
+    for (const ws of observers) ws.send(fullView());
+  }
+
   function flush() {
     if (!dirty) return;
     dirty = false;
-    stampHostConnected();
-    server.publish(room.code, JSON.stringify({ type: "ROOM_STATE", room } satisfies ServerMessage));
+    sendState();
   }
 
   const stateTimer = setInterval(flush, 1000 / ROOM_STATE_MAX_HZ);
@@ -696,7 +762,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
    */
   function simulateRestart() {
     log("chaos: simulating server restart");
-    for (const s of sockets.values()) s.close(1012, "mock restart");
+    for (const s of [...members]) s.close(1012, "mock restart");
+    members.clear();
     sockets.clear();
     for (const c of Object.values(room.clients)) if (!c.id.startsWith("mock-")) c.connected = false;
     dirty = true;
