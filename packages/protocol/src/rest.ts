@@ -3,8 +3,19 @@ import { ScenePlanSchema } from "./scene";
 import { TrackInfoSchema } from "./room";
 
 /** POST /rooms */
-export const CreateRoomRequestSchema = z.object({ code: z.string().min(3).max(8).optional() });
-export const CreateRoomResponseSchema = z.object({ code: z.string(), hostKey: z.string(), joinUrl: z.string() });
+/**
+ * `{}` creates a room. `{code, hostKey}` is the host coming back: the key is echoed only to a caller
+ * that already presents it (anyone else gets 403 NOT_HOST and never a key), and a key the server
+ * issued for that code re-creates a room that was lost to a restart.
+ */
+export const CreateRoomRequestSchema = z.object({ code: z.string().min(3).max(8).optional(), hostKey: z.string().max(64).optional() });
+export const CreateRoomResponseSchema = z.object({
+  code: z.string(),
+  hostKey: z.string(),
+  joinUrl: z.string(),
+  /** True when the room did not exist and was re-created, empty, from the caller's own key. */
+  restored: z.boolean().optional(),
+});
 export type CreateRoomResponse = z.infer<typeof CreateRoomResponseSchema>;
 
 /** GET /rooms/:code */

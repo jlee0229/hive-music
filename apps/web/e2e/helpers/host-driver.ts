@@ -3,12 +3,14 @@
  * "a host client" — e.g. sending ASSIGN to prove a player's screen reacts to a real ROOM_STATE
  * change (F3), without needing the Hive Map UI (that's F4). Test-only: never used by app code.
  */
-import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from "@hive/protocol";
+import { PROTOCOL_VERSION, type ClientMessage, type RoomState, type ServerMessage } from "@hive/protocol";
 import { MOCK_URL } from "./mock";
 
 export interface HostDriver {
   send: (msg: ClientMessage) => void;
   waitForRoomState: () => Promise<ServerMessage & { type: "ROOM_STATE" }>;
+  /** The most recent snapshot this driver has received (null before the first). */
+  latestRoom: () => RoomState | null;
   close: () => void;
 }
 
@@ -16,6 +18,7 @@ export async function connectAsHost(roomCode: string, hostKey = "mock-host-key")
   const wsUrl = MOCK_URL.replace(/^http/, "ws") + "/ws";
   const ws = new WebSocket(wsUrl);
   const roomStateWaiters: Array<(m: ServerMessage & { type: "ROOM_STATE" }) => void> = [];
+  let latest: RoomState | null = null;
 
   await new Promise<void>((resolve, reject) => {
     ws.onopen = () => {
@@ -36,7 +39,10 @@ export async function connectAsHost(roomCode: string, hostKey = "mock-host-key")
     ws.onmessage = (e) => {
       const msg = JSON.parse(String(e.data)) as ServerMessage;
       if (msg.type === "WELCOME") resolve();
-      if (msg.type === "ROOM_STATE") for (const w of roomStateWaiters.splice(0)) w(msg);
+      if (msg.type === "ROOM_STATE") {
+        latest = msg.room;
+        for (const w of roomStateWaiters.splice(0)) w(msg);
+      }
     };
   });
 
@@ -46,6 +52,7 @@ export async function connectAsHost(roomCode: string, hostKey = "mock-host-key")
       new Promise((resolve) => {
         roomStateWaiters.push(resolve);
       }),
+    latestRoom: () => latest,
     close: () => ws.close(),
   };
 }

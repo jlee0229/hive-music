@@ -32,7 +32,10 @@ const post = (path: string, body?: unknown) => fetch(`${API}${path}`, { method: 
 describe("mock ↔ server parity: REST", () => {
   test("POST /rooms refuses a code that is not the room, as the server refuses an unknown code", async () => {
     expect((await post("/rooms", { code: "ZZ99" })).status).toBe(400); // was 200 with the scenario room's hostKey
-    expect((await post("/rooms", { code: "bzq7" })).status).toBe(200);
+    // The room's own code used to answer 200 with the key for anyone; like the server since SG-01 it is
+    // 403 without the key and 200 only for a caller that presents it (expectation changed deliberately).
+    expect((await post("/rooms", { code: "bzq7" })).status).toBe(403);
+    expect((await post("/rooms", { code: "bzq7", hostKey: mock.hostKey })).status).toBe(200);
     expect((await post("/rooms")).status).toBe(200);
   });
 

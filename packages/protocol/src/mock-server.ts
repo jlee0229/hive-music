@@ -227,9 +227,15 @@ export function startMockServer(opts: MockServerOptions = {}) {
       }
       if (url.pathname === "/health") return json({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: now(), mock: true });
       if (url.pathname === "/rooms" && req.method === "POST") {
-        // One room only, but the same refusal as the real server for a code that is not it.
-        const body = (await req.json().catch(() => ({}))) as { code?: unknown };
-        if (typeof body.code === "string" && body.code && body.code.toUpperCase() !== room.code) return json({ error: "unknown room code" }, 400);
+        // One room only, but the same answers as the real server (apps/server, audit SG-01):
+        //   {}                      -> "Host a hive": the room and its key
+        //   {code} of another room  -> 400 unknown room code
+        //   {code} of this room     -> the key is echoed only to a caller that already presents it;
+        //                              anyone else gets 403 NOT_HOST and never a key
+        const body = ((await req.json().catch(() => ({}))) ?? {}) as { code?: unknown; hostKey?: unknown };
+        const asked = typeof body.code === "string" && body.code ? body.code.toUpperCase() : null;
+        if (asked && asked !== room.code) return json({ error: "unknown room code" }, 400);
+        if (asked && body.hostKey !== hostKey) return json({ error: "NOT_HOST" }, 403);
         return json({ code: room.code, hostKey, joinUrl: `${process.env.NEXT_PUBLIC_WEB_URL ?? "http://localhost:3000"}/j/${room.code}` });
       }
       const roomMatch = url.pathname.match(/^\/rooms\/([A-Za-z0-9]+)$/);
@@ -284,6 +290,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
         handle(ws, msg);
       },
       close(ws) {
+        observers.delete(ws);
         const id = ws.data.clientId;
         if (!id || !room.clients[id]) return;
         /*
@@ -320,6 +327,8 @@ export function startMockServer(opts: MockServerOptions = {}) {
     disconnectTimers.delete(id);
   }
 
+  /** Read-only sockets with no client identity: a keyless JOIN that named a host record (see JOIN). */
+  const observers = new Set<Bun.ServerWebSocket<{ clientId: string | null }>>();
   const received: Partial<Record<ClientMessage["type"], number>> = {};
 
   function handle(ws: Bun.ServerWebSocket<{ clientId: string | null }>, msg: ClientMessage) {
@@ -339,14 +348,23 @@ export function startMockServer(opts: MockServerOptions = {}) {
         // The user agent (up to 512 chars) is dead weight on every ROOM_STATE; never store it (as the server).
         const device = { ...msg.device, userAgent: "" };
         /*
-         * R-16/R-15. `hostClientIds.length === 0` is ported from `apps/server/src/rooms.ts`: a fixed-code
-         * demo room re-spawned after a restart mints a fresh `hostKey`, which the host's stored key can
-         * never match, so without this clause the host is demoted forever and every host command answers
-         * NOT_HOST.
+         * Host is granted by exactly one thing: this JOIN carries the room's hostKey — on the first join
+         * and on every reconnect (apps/server, audit SG-02). It used to be granted as well when the record
+         * was already a host, or when the room had no host yet; but every client id is in every ROOM_STATE
+         * and "no host yet" is true before the host's first JOIN, so either clause let any guest take the
+         * room without the key.
+         *
+         * A keyless JOIN that names an existing host record gets a read-only observer seat instead: it
+         * watches, it has no client identity, it cannot displace the host's socket or change the record.
          */
-        const wantsHost =
-          msg.kind === "host" &&
-          (msg.hostKey === hostKey || existing?.kind === "host" || room.hostClientIds.length === 0);
+        const wantsHost = msg.kind === "host" && msg.hostKey === hostKey;
+        if (existing?.kind === "host" && !wantsHost) {
+          observers.add(ws);
+          ws.subscribe(room.code);
+          send(ws, { type: "WELCOME", clientId: msg.clientId, roomCode: room.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: false });
+          send(ws, { type: "ROOM_STATE", room });
+          return;
+        }
         /*
          * A viewer (v4, R-13) needs no credential and must not become a speaker. `plays` is forced false
          * rather than trusted: the field is what a client *asked* for, and a display that inflated the
@@ -659,6 +677,7 @@ export function startMockServer(opts: MockServerOptions = {}) {
       const s = sockets.get(id);
       if (s) send(s, { type: "HEALTH", serverTime: t, clients });
     }
+    for (const s of observers) send(s, { type: "HEALTH", serverTime: t, clients });
   }, 1000 / HEALTH_HZ);
   const pingTimer = setInterval(() => server.publish(room.code, JSON.stringify({ type: "PING", serverTime: now() } satisfies ServerMessage)), 20_000);
 
