@@ -113,7 +113,7 @@ test("07a-restart: server restarts mid-song with the host present", async ({ par
   if (sp.residualSpreadMs !== null) expect.soft(sp.residualSpreadMs, "sync spread after the restart (ms)").toBeLessThan(15);
   // Requests that fail while the server is down are the outage itself, not a second finding.
   party.metrics.issuesAll = party.issues();
-  const unexpected = party.issues().filter((i) => !/ERR_CONNECTION_REFUSED|WebSocket connection to|Failed to fetch|net::ERR_/.test(i.text));
+  const unexpected = party.unexpectedIssues(/ERR_CONNECTION_REFUSED|WebSocket connection to|Failed to fetch|net::ERR_/);
   expect.soft(unexpected, "errors other than the outage itself").toEqual([]);
 });
 
@@ -203,6 +203,6 @@ test("07b-restart: server restarts while the host's tab is closed (guests alone)
   expect.soft(party.metrics.restart && (party.metrics.restart as { playersAfter: number }).playersAfter, "all three guests are back in the room").toBe(3);
   expect.soft(soundBackAt, "every guest sounding again after the host returned").not.toBeNull();
   party.metrics.issuesAll = party.issues();
-  const unexpected = party.issues().filter((i) => !/ERR_CONNECTION_REFUSED|WebSocket connection to|Failed to fetch|net::ERR_/.test(i.text));
+  const unexpected = party.unexpectedIssues(/ERR_CONNECTION_REFUSED|WebSocket connection to|Failed to fetch|net::ERR_/);
   expect.soft(unexpected, "errors other than the outage itself").toEqual([]);
 });

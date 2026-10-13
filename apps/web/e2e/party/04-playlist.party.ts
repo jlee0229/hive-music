@@ -34,7 +34,7 @@ test("04-playlist: three short songs advance on their own", async ({ party }) =>
   const t0 = performance.now();
   const fromWall = await party.host.pageWall();
   const offset = (await party.host.serverOffsetMs()) ?? 0;
-  const liveLog: Array<{ atSec: number; perGuest: Array<{ name: string; buf: number | null; sounding: boolean; pos: number | null; track: string | null }> }> = [];
+  const liveLog: Array<{ atSec: number; perGuest: Array<{ name: string; buf: number | null; sounding: boolean; pos: number | null; track: string | null; residual: number | null }> }> = [];
   while (performance.now() - t0 < 62_000) {
     const room = party.host.room!;
     if (room.track && room.track.id !== current && room.transport.state === "playing") {
@@ -43,7 +43,7 @@ test("04-playlist: three short songs advance on their own", async ({ party }) =>
       current = room.track.id;
     }
     const samples = await party.sampleAll(party.guests);
-    liveLog.push({ atSec: round((performance.now() - t0) / 1000)!, perGuest: samples.map((s) => ({ name: s.name, buf: s.bufferId, sounding: s.rms > SOUND_RMS, pos: s.posSec, track: s.trackId })) });
+    liveLog.push({ atSec: round((performance.now() - t0) / 1000)!, perGuest: samples.map((s) => ({ name: s.name, buf: s.bufferId, sounding: s.rms > SOUND_RMS, pos: s.posSec, track: s.trackId, residual: s.residualMs })) });
     await sleep(200);
   }
   const toWall = await party.host.pageWall();
@@ -54,11 +54,14 @@ test("04-playlist: three short songs advance on their own", async ({ party }) =>
   const perAdvance: Array<Record<string, unknown>> = [];
   for (const adv of advances) {
     const startWallHost = adv.startServerTime - offset; // every page shares this machine's clock
-    const rows: Array<{ name: string; readyMs: number | null; firstSoundMs: number | null; gapMs: number; wrongAudio: boolean }> = [];
+    const rows: Array<{ name: string; fetchedMs: number | null; readyMs: number | null; firstSoundMs: number | null; gapMs: number; wrongAudio: boolean }> = [];
     for (const g of party.guests) {
       const ready = g.sent.find((m) => m.type === "AUDIO_READY" && m.detail === adv.to && m.at > adv.announcedWall - 60_000);
       // Node's clock and the page's are the same wall clock; `sent.at` is node-side.
       const readyMs = ready ? Math.round(ready.at - startWallHost) : null;
+      // Prefetch: when the next song's last stem finished downloading on this phone, relative to its start.
+      const fetches = g.audioFetches.filter((f) => f.track === adv.to && f.at > adv.announcedWall - 120_000 && f.at < startWallHost + 10_000);
+      const fetchedMs = fetches.length && fetches.every((f) => f.doneAt !== null) ? Math.round(Math.max(...fetches.map((f) => f.doneAt!)) - startWallHost) : null;
       const ring = await g.ringSince(startWallHost - 8000);
       const around = ring.filter(([t]) => t <= startWallHost + 6000);
       const firstLoud = around.find(([t, rms]) => t >= startWallHost - 30 && rms > SOUND_RMS);
@@ -79,13 +82,22 @@ test("04-playlist: three short songs advance on their own", async ({ party }) =>
       const afterRow = liveLog.find((l) => l.atSec > startSec + 1.5)?.perGuest.find((p) => p.name === g.name);
       rows.push({
         name: g.name,
+        fetchedMs,
         readyMs,
         firstSoundMs: firstLoud ? Math.round(firstLoud[0] - startWallHost) : null,
         gapMs: Math.round(gap),
         wrongAudio: !!afterRow && afterRow.buf !== null && afterRow.buf === beforeBuf,
       });
     }
-    perAdvance.push({ from: adv.from, to: adv.to, announcedLeadMs: adv.leadMs, guests: rows });
+    // Sync spread across the guests in the first seconds of the new song.
+    const startSec = (startWallHost - fromWall) / 1000;
+    const spreadAt = (afterSec: number) => {
+      const res = liveLog.find((l) => l.atSec >= startSec + afterSec)?.perGuest.map((p) => p.residual).filter((x): x is number => x !== null) ?? [];
+      return res.length === party.guests.length ? round(Math.max(...res) - Math.min(...res)) : null;
+    };
+    const spreadAfterStartMs = { "0.5s": spreadAt(0.5), "2s": spreadAt(2), "5s": spreadAt(5), "9s": spreadAt(9) };
+    perAdvance.push({ from: adv.from, to: adv.to, announcedLeadMs: adv.leadMs, spreadAfterStartMs, guests: rows });
+    if (spreadAfterStartMs["2s"] !== null) expect.soft(spreadAfterStartMs["2s"], `${adv.from}→${adv.to}: sync spread 2 s into the new song (ms)`).toBeLessThan(10);
     for (const r of rows) {
       if (startWallHost + 6000 > toWall) continue; // the watch ended before this advance played out
       expect.soft(r.firstSoundMs, `${adv.from}→${adv.to}: ${r.name} never sounded on the new song`).not.toBeNull();
@@ -110,5 +122,5 @@ test("04-playlist: three short songs advance on their own", async ({ party }) =>
     )
     .toEqual([]);
   await party.screenshots("end");
-  expect.soft(party.issues(), "console errors / page errors / failed requests in any context").toEqual([]);
+  expect.soft(party.unexpectedIssues(), "console errors / page errors / failed requests in any context").toEqual([]);
 });

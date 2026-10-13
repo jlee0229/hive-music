@@ -158,7 +158,7 @@ test("03-songs: upload, ownership, play, remove", async ({ party, server, browse
   party.metrics.health = await server.current.health();
   party.metrics.serverLogTail = server.current.log().split("\n").slice(-15);
   // The 409 for "remove while playing" is the refusal under test, not a second finding.
-  const unexpected = party.issues().filter((i) => !/409 DELETE/.test(i.text));
+  const unexpected = party.unexpectedIssues(/409 DELETE|status of 409/);
   party.metrics.issuesAll = party.issues();
   expect.soft(unexpected, "console errors / page errors / failed requests in any context").toEqual([]);
 });

@@ -139,6 +139,6 @@ test("01-basic: landing → host → five guests → Start → 60 s of music", a
 
   party.metrics.health = await server.current.health();
   await party.screenshots("end");
-  const issues = party.issues();
+  const issues = party.unexpectedIssues();
   expect.soft(issues, "console errors / page errors / failed requests in any context").toEqual([]);
 });

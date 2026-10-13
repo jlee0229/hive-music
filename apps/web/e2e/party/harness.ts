@@ -48,10 +48,10 @@ export interface SeedTrack {
 }
 
 /** A private fixtures dir holding only the synthetic pair (plus `seed`), so nothing touches the repo's library. */
-export function makeFixturesDir(seed: SeedTrack[] = [], opts: { synthetic?: boolean } = {}): string {
+export function makeFixturesDir(seed: SeedTrack[] = [], opts: { synthetic?: boolean | string[] } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "hive-party-"));
   mkdirSync(join(dir, "tracks"), { recursive: true });
-  for (const id of opts.synthetic === false ? [] : ["synthetic-60s", "synthetic-30s-lite"]) {
+  for (const id of opts.synthetic === false ? [] : Array.isArray(opts.synthetic) ? opts.synthetic : ["synthetic-60s", "synthetic-30s-lite"]) {
     const src = join(REPO_ROOT, "fixtures", "tracks", id);
     if (!existsSync(join(src, "drums.wav"))) throw new Error(`missing ${src}/*.wav — run \`bun run fixtures\` first`);
     cpSync(src, join(dir, "tracks", id), { recursive: true });
@@ -152,6 +152,7 @@ interface CtxSnap {
   live: Array<{ id: number; buf: number; pos: number; posOut: number | null; when: number; offset: number; dur: number; rate: number }>;
   pending: number;
   rms: number;
+  peakHz: number;
 }
 interface PageSnap {
   wall: number;
@@ -193,6 +194,8 @@ export interface DeviceSample {
   /** Longest gap in the page's 50 ms sampler over the last 20 s: main-thread stall, ms. */
   stallMs: number | null;
   startCalls: number;
+  /** Strongest spectral component above 150 Hz in what this phone is emitting, Hz (bin width ~23 Hz). */
+  peakHz: number | null;
   rate: number | null;
   role: string | null;
   label: string | null;
@@ -217,6 +220,8 @@ export class Device {
   readonly wsLog: Array<{ at: number; event: "open" | "close" | "welcome" }> = [];
   readonly sent: Array<{ at: number; type: string; detail?: string }> = [];
   readonly stateBytes: number[] = [];
+  /** Every stem download this phone made: when it was asked for and when the last byte arrived (node wall clock). */
+  readonly audioFetches: Array<{ track: string; stem: string; at: number; doneAt: number | null }> = [];
   openSockets = 0;
   private clockOffset: { offsetMs: number; at: number } | null = null;
 
@@ -236,6 +241,13 @@ export class Device {
     });
     page.on("pageerror", (e) => push("pageerror", `${e.name}: ${e.message}`));
     page.on("requestfailed", (r) => push("requestfailed", `${r.method()} ${r.url()} — ${r.failure()?.errorText ?? "?"}`));
+    page.on("request", (r) => {
+      const m = r.url().match(/\/audio\/([^/]+)\/([^/.]+)\.wav/);
+      if (!m) return;
+      const entry = { track: m[1]!, stem: m[2]!, at: wallNow(), doneAt: null as number | null };
+      this.audioFetches.push(entry);
+      void r.response().then((res) => res?.finished()).then(() => (entry.doneAt = wallNow()), () => {});
+    });
     page.on("response", (r) => {
       if (r.status() >= 400) push("http", `${r.status()} ${r.request().method()} ${r.url()}`);
     });
@@ -352,6 +364,7 @@ export class Device {
       bufferId: branch?.buf ?? null,
       stallMs: s?.stallMs20s ?? null,
       startCalls: s?.startCalls ?? 0,
+      peakHz: ctx?.peakHz ?? null,
       rate: branch?.rate ?? null,
       role: a?.role ?? null,
       label: a?.label ?? null,
@@ -558,6 +571,11 @@ export class Party {
     await page.getByText(`Up next:`).waitFor({ timeout: 10_000 });
   }
 
+  async pickSongIfNeeded(title: string) {
+    for (let i = 0; i < 50 && !this.host.room?.track; i++) await sleep(100);
+    if (this.host.room?.track?.title !== title) await this.pickSong(title);
+  }
+
   /** Server clock "now" as the host page sees it. */
   async serverNow(): Promise<number> {
     return (await this.host.pageWall()) + ((await this.host.serverOffsetMs()) ?? 0);
@@ -679,6 +697,15 @@ export class Party {
       }
     }
     return [...by.values()].map((e) => ({ kind: e.kind, text: e.text, count: e.count, devices: [...e.devices].slice(0, 8) }));
+  }
+
+  /**
+   * issues() minus what is known to be harmless in any scenario:
+   *  - Next's <Link> prefetch of /qr/CODE (an RSC request) aborted when the stage re-renders;
+   *  - the upload's duration probe dropping its blob: URL (apps/web/lib/hive/upload-track.ts).
+   */
+  unexpectedIssues(alsoBenign?: RegExp) {
+    return this.issues().filter((i) => !/\?_rsc=.*ERR_ABORTED|GET blob:.*ERR_ABORTED/.test(i.text) && !(alsoBenign && alsoBenign.test(i.text)));
   }
 
   async screenshots(tag: string) {

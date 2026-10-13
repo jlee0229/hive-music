@@ -16,8 +16,8 @@ export interface ServerControl {
 export interface LibraryOption {
   /** Extra one-stem tracks to put in the server's library before it boots. */
   seed?: SeedTrack[];
-  /** false = start without the synthetic pair (a library of only `seed`). */
-  synthetic?: boolean;
+  /** false = start without the synthetic pair (a library of only `seed`); a list = only those synthetic ids. */
+  synthetic?: boolean | string[];
 }
 
 export const test = base.extend<{ server: ServerControl; party: Party; library: LibraryOption }>({

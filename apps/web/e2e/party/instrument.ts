@@ -150,6 +150,21 @@ export function instrumentPage(): void {
     for (let i = 0; i < buf.length; i++) s += buf[i]! * buf[i]!;
     return Math.sqrt(s / buf.length);
   };
+  /** Strongest spectral component above 150 Hz (so a kick drum does not win), Hz; 0 when silent. */
+  const peakHzOf = (an: AnalyserNode, sampleRate: number): number => {
+    const bins = new Float32Array(an.frequencyBinCount);
+    an.getFloatFrequencyData(bins);
+    const binHz = sampleRate / an.fftSize;
+    let best = -Infinity;
+    let at = 0;
+    for (let i = Math.ceil(150 / binHz); i < bins.length; i++) {
+      if (bins[i]! > best) {
+        best = bins[i]!;
+        at = i;
+      }
+    }
+    return best > -70 ? Math.round(at * binHz) : 0;
+  };
   const rmsNow = (): number => {
     let best = 0;
     for (let i = 0; i < P.ctxs.length; i++) if (P.ctxs[i]!.state === "running") best = Math.max(best, rmsOf(P.analysers[i]!));
@@ -235,6 +250,7 @@ export function instrumentPage(): void {
         live,
         pending,
         rms: ctx.state === "running" ? rmsOf(P.analysers[i]!) : 0,
+        peakHz: ctx.state === "running" ? peakHzOf(P.analysers[i]!, ctx.sampleRate) : 0,
       };
     });
     const recent = P.ring.slice(-20);
