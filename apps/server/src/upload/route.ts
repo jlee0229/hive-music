@@ -127,7 +127,12 @@ export async function handleUploadTracks(
 ): Promise<Response> {
   const tooLarge = () => json({ error: `upload is too large — the limit is ${Math.round(limits.maxUploadBytes / MIB)} MB` }, 413, corsHeaders);
   const notHost = () => json({ error: "NOT_HOST", message: "a valid hostKey is required to upload a track" }, 403, corsHeaders);
-  const refuse = (code: keyof typeof REFUSALS) => json({ error: code, message: REFUSALS[code].message }, REFUSALS[code].status, corsHeaders);
+  const startedAt = performance.now();
+  const sizeMb = Number.isNaN(Number(req.headers.get("content-length"))) ? "?" : (Number(req.headers.get("content-length")) / MIB).toFixed(1);
+  const refuse = (code: keyof typeof REFUSALS) => {
+    manager.log(`upload refused: ${code} (${sizeMb} MB)`);
+    return json({ error: code, message: REFUSALS[code].message }, REFUSALS[code].status, corsHeaders);
+  };
   const ownerMaxTracks = limits.ownerMaxTracks ?? OWNER_MAX_TRACKS;
   const ownerMaxBytes = limits.ownerMaxBytes ?? OWNER_MAX_BYTES;
   /** Whose upload this is, or the refusal: an owner-scoped library takes no upload from a room without an owner. */
@@ -140,7 +145,10 @@ export async function handleUploadTracks(
 
   // Everything that can be refused without reading the body is refused first.
   const declared = Number(req.headers.get("content-length") ?? NaN);
-  if (declared > limits.maxUploadBytes) return tooLarge();
+  if (declared > limits.maxUploadBytes) {
+    manager.log(`upload refused: too large (${sizeMb} MB)`);
+    return tooLarge();
+  }
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(\S{1,64})$/i)?.[1];
   if (req.headers.has("authorization") && !(bearer && manager.isKnownHostKey(bearer))) return notHost();
   if (bearer) {
@@ -194,6 +202,7 @@ export async function handleUploadTracks(
           // parseWav's own messages are written for the uploader; anything else (a RangeError from
           // a hostile header, say) is not something to echo back.
           const known = e instanceof Error && e.constructor === Error;
+          manager.log(`upload refused: stem '${name}' ${known ? (e as Error).message : "unparsable"} (${sizeMb} MB)`);
           return json({ error: `stem '${name}': ${known ? (e as Error).message : "could not be parsed as WAV"}` }, 400, corsHeaders);
         }
       }
@@ -230,6 +239,7 @@ export async function handleUploadTracks(
         // The entry as the library now holds it (validated on load), as this owner is allowed to see it.
         const entry = manager.getLibrary().find((t) => t.id === id);
         if (!entry) throw new Error("the track did not load back from disk");
+        manager.log(`upload accepted: ${id} — ${stemNames.length} stem(s), ${entry.durationSec.toFixed(1)} s of audio, ${sizeMb} MB, ${Math.round(performance.now() - startedAt)} ms${entry.bpm ? `, ${entry.bpm} BPM` : ""}`);
         return json({ track: withUrls(entry, origin, owner) }, 201, corsHeaders);
       } catch (e) {
         await rm(trackDir, { recursive: true, force: true }).catch(() => {});
@@ -259,5 +269,6 @@ export async function handleDeleteTrack(req: Request, id: string, manager: RoomM
   // `id` is a directory name the library loader accepted ([A-Za-z0-9_-]+): it cannot climb out of tracks/.
   await rm(`${fixturesDir}/tracks/${id}`, { recursive: true, force: true });
   await manager.reloadLibrary(); // every room's nextTrack follows (Room.onLibraryChanged)
+  manager.log(`track removed by its owner: ${id}`);
   return json({ ok: true }, 200, corsHeaders);
 }

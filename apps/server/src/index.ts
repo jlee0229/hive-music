@@ -101,7 +101,16 @@ async function readSmallJson(req: Request): Promise<unknown | typeof TOO_LARGE> 
 // sees the shared tracks plus its own host's uploads (contracts/library-scope.md).
 const LIBRARY_SCOPE = process.env.LIBRARY_SCOPE === "global" ? "global" : "owner";
 
-const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret(), libraryScope: LIBRARY_SCOPE });
+const manager = new RoomManager({
+  fixturesDir: FIXTURES_DIR,
+  fixedCode: FIXED_CODE,
+  hostKeySecret: await resolveHostKeySecret(),
+  libraryScope: LIBRARY_SCOPE,
+  log: (line) => console.log(`[hive-server] ${line}`),
+});
+/** Every open WebSocket, joined or not: the count /health reports and the set a shutdown closes. */
+const openSockets = new Set<Bun.ServerWebSocket<Conn>>();
+const bootedAt = performance.now();
 
 const server = Bun.serve<Conn>({
   port: PORT,
@@ -119,7 +128,9 @@ const server = Bun.serve<Conn>({
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: performance.timeOrigin + performance.now() });
+      // Counts only — enough for an operator to see whether a party is live before deploying, and
+      // nothing a stranger could use: no codes, no ids.
+      return json({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: performance.timeOrigin + performance.now(), ...manager.stats(), connections: openSockets.size, uptimeSec: Math.round((performance.now() - bootedAt) / 1000) });
     }
 
     if (req.method === "POST" && url.pathname === "/rooms") {
@@ -258,13 +269,14 @@ const server = Bun.serve<Conn>({
     // socket with no close — a handful of phones on dead cellular against a 256 MB machine.
     backpressureLimit: 1024 * 1024,
     closeOnBackpressureLimit: true,
-    open() {
-      /* subscribed to its room's topic once JOIN resolves which room it is */
+    open(ws) {
+      openSockets.add(ws); // (subscribed to its room's topic once JOIN resolves which room it is)
     },
     message(ws, raw) {
       manager.handleMessage(ws, raw);
     },
     close(ws) {
+      openSockets.delete(ws);
       manager.handleClose(ws);
     },
   },
@@ -273,7 +285,27 @@ const server = Bun.serve<Conn>({
 manager.attachServer(server);
 await manager.loadLibrary();
 
-console.log(`[hive-server] listening on http://localhost:${server.port} (protocol v${PROTOCOL_VERSION}, cors ${CORS_ORIGIN})`);
+console.log(`[hive-server] listening on http://localhost:${server.port} (protocol v${PROTOCOL_VERSION}, cors ${CORS_ORIGIN}, library scope ${LIBRARY_SCOPE})`);
+
+/**
+ * A deploy sends SIGINT (fly.toml kill_signal), waits kill_timeout, then SIGKILLs. Rooms live in
+ * memory and die with the process either way; what this buys is that every phone is told now —
+ * close code 1012, "service restart" — and starts reconnecting to the next process at once, where
+ * the host's signed key brings the room back and waiting guests are let in (SG-01, SG-15).
+ */
+let stopping = false;
+function stop(signal: string) {
+  if (stopping) return;
+  stopping = true;
+  const { rooms, playing } = manager.stats();
+  const closed = manager.shutdown();
+  for (const ws of openSockets) ws.close(1012, "server restarting"); // sockets that never joined anything
+  console.log(`[hive-server] ${signal}: stopping with ${rooms} room(s) live (${playing} playing); told ${closed} socket(s) to reconnect`);
+  server.stop(true);
+  setTimeout(() => process.exit(0), 150); // let the close frames leave
+}
+process.on("SIGINT", () => stop("SIGINT"));
+process.on("SIGTERM", () => stop("SIGTERM"));
 
 /**
  * Tempo backfill: tracks uploaded before BPM detection existed have no `bpm` in meta.json, so the

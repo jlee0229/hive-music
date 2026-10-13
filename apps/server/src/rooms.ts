@@ -162,6 +162,16 @@ function send(ws: WS, msg: ServerMessage) {
 const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
 const backlog = (ws: WS): number => (typeof ws.getBufferedAmount === "function" ? ws.getBufferedAmount() : 0);
 
+/**
+ * While a room is playing, every recipient is sent the current state again if it has been sent
+ * nothing for this long (ENGINE-SYNC-P5). ROOM_STATE is otherwise only sent on change, so a phone
+ * that lost one snapshot — a tab frozen for a second, a socket replaced mid-broadcast — stayed
+ * wrong until the next change, which in the middle of a song can be minutes away.
+ */
+export const STATE_HEARTBEAT_MS = 5000;
+/** WebSocket close code "Service Restart" (RFC 6455 registry): what every socket gets when the process is told to stop. */
+export const CLOSE_SERVICE_RESTART = 1012;
+
 /** One room: state + sockets + every timer that keeps it alive. */
 export class Room {
   code: string;
@@ -220,7 +230,10 @@ export class Room {
       calibration: IDLE_CALIBRATION,
       clients: {},
     };
-    this.healthTimer = setInterval(() => this.publishHealth(), 1000 / HEALTH_HZ);
+    this.healthTimer = setInterval(() => {
+      this.publishHealth();
+      this.heartbeat();
+    }, 1000 / HEALTH_HZ);
     this.pingTimer = setInterval(() => this.tickPing(), PING_INTERVAL_MS);
     this.idleTimer = setTimeout(() => this.onEmpty(), ROOM_UNCLAIMED_TTL_MS); // cleared by the first JOIN
   }
@@ -283,7 +296,7 @@ export class Room {
         this.trailingTimer = null;
       }
       // A recipient that could not take this snapshot (backlog) is retried on the next window.
-      if (this.sendState()) this.dirty = true;
+      if (this.sendState().skipped) this.dirty = true;
     }
     if (this.dirty && !this.trailingTimer) {
       this.trailingTimer = setTimeout(() => {
@@ -313,9 +326,12 @@ export class Room {
    * one record, not a hundred phones' worth of state), unless `refreshOlderThanMs` says its copy is
    * old enough to repeat anyway (the heartbeat).
    *
-   * Returns true if some recipient was skipped because it has not drained what it was sent before.
+   * `onlyStale` (the heartbeat) does not even build a message for a recipient whose copy is fresh.
+   *
+   * Returns how many recipients were sent something, and whether some recipient was skipped
+   * because it has not drained what it was sent before.
    */
-  private sendState(refreshOlderThanMs = Infinity): boolean {
+  private sendState(refreshOlderThanMs = Infinity, onlyStale = false): { sent: number; skipped: boolean } {
     const t = now();
     const { clients, calibration, hostClientIds: _hosts, ...level } = this.room;
     let full: string | null = null;
@@ -343,8 +359,10 @@ export class Room {
     };
 
     let skipped = false;
+    let sent = 0;
     const deliver = (ws: WS, view: () => string) => {
       const last = this.lastSent.get(ws);
+      if (onlyStale && last && t - last.at < refreshOlderThanMs) return;
       if (backlog(ws) > SNAPSHOT_BACKLOG_BYTES) {
         // Whatever it holds is stale by now; make sure it gets the current state once it drains.
         if (last) this.lastSent.delete(ws);
@@ -354,6 +372,7 @@ export class Room {
       const msg = view();
       if (last && last.msg === msg && t - last.at < refreshOlderThanMs) return;
       ws.send(msg);
+      sent++;
       this.lastSent.set(ws, { msg, at: t });
     };
     const viewFor = (id: string): (() => string) | null => {
@@ -370,7 +389,21 @@ export class Room {
       if (view) for (const ws of older) deliver(ws, view);
     }
     for (const ws of this.observers) deliver(ws, fullView);
-    return skipped;
+    return { sent, skipped };
+  }
+
+  /** See STATE_HEARTBEAT_MS. Runs on the 1 Hz health tick; shares the coalescing window with flush(). */
+  private heartbeat() {
+    if (this.room.transport.state !== "playing" || this.dirty) return; // a pending flush will say it all anyway
+    if (now() - this.lastPublishAt < 1000 / ROOM_STATE_MAX_HZ) return;
+    if (this.sendState(STATE_HEARTBEAT_MS, true).sent > 0) this.lastPublishAt = now();
+  }
+
+  /** Hang up on everyone in this room (process shutdown): they reconnect to whatever comes next. */
+  closeAll(code: number, reason: string): number {
+    const all = new Set<WS>([...this.sockets.values(), ...[...this.standby.values()].flat(), ...this.observers]);
+    for (const ws of all) ws.close(code, reason);
+    return all.size;
   }
 
   private publishHealth() {
@@ -1077,8 +1110,49 @@ export class RoomManager {
    * host can bring their room back under the same code after a deploy; leave it out and keys are
    * only good for the life of this process.
    */
-  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string; libraryScope?: LibraryScope }) {
+  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string; libraryScope?: LibraryScope; log?: (line: string) => void }) {
     this.keys = new HostKeys(opts.hostKeySecret);
+  }
+
+  /**
+   * The operator's log: one line per room created / ended and per upload accepted / refused. Silent
+   * unless index.ts hands in a sink (tests create thousands of rooms). Never a key, never an owner id.
+   */
+  log(line: string) {
+    this.opts.log?.(line);
+  }
+
+  /** What GET /health may say about load: how many, never which. */
+  stats(): { rooms: number; playing: number; clients: number } {
+    let playing = 0;
+    let clients = 0;
+    for (const room of this.rooms.values()) {
+      if (room.room.transport.state === "playing") playing++;
+      clients += room.sockets.size;
+    }
+    return { rooms: this.rooms.size, playing, clients };
+  }
+
+  /**
+   * The process is about to stop (a deploy): close every socket with 1012 "service restart" so
+   * each client starts its reconnect backoff now, against the next process, instead of finding out
+   * from a dead TCP connection. Rooms are restored there by the host's signed key (SG-01/SG-15).
+   */
+  shutdown(): number {
+    let closed = 0;
+    for (const room of this.rooms.values()) closed += room.closeAll(CLOSE_SERVICE_RESTART, "server restarting");
+    for (const list of this.parked.values()) {
+      for (const e of list) {
+        clearTimeout(e.timer);
+        e.ws.close(CLOSE_SERVICE_RESTART, "server restarting");
+        closed++;
+      }
+    }
+    this.parked.clear();
+    this.parkedTotal = 0;
+    for (const room of this.rooms.values()) room.destroy();
+    this.rooms.clear();
+    return closed;
   }
 
   attachServer(server: Bun.Server<Conn>) {
@@ -1140,12 +1214,15 @@ export class RoomManager {
 
   private spawn(code: string, hostKey?: string): Room {
     if (!this.server) throw new Error("RoomManager.attachServer must be called before spawning rooms");
+    const bornAt = performance.now();
+    this.log(`room ${code} ${hostKey ? "restored" : "created"} (${this.rooms.size + 1} live)`);
     const room: Room = new Room(
       code,
       this.server,
       () => {
         room.destroy();
         this.rooms.delete(code);
+        this.log(`room ${code} ended after ${Math.round((performance.now() - bornAt) / 60_000)} min, ${room.joinCounter} device(s) seen (${this.rooms.size} live)`);
       },
       () => this.library,
       hostKey ?? this.keys.issue(code, now()),

@@ -89,7 +89,7 @@ function roomWith(state: RoomState) {
     inbox.set(id, got);
     room.sockets.set(id, { data: { clientId: id, roomCode: state.code }, send: (raw: string) => void got.push(raw), subscribe: () => {}, close: () => {} } as unknown as WS);
   }
-  const sendState = (refreshOlderThanMs?: number) => (room as unknown as { sendState(ms?: number): boolean }).sendState(refreshOlderThanMs);
+  const sendState = (refreshOlderThanMs?: number) => (room as unknown as { sendState(ms?: number): { sent: number; skipped: boolean } }).sendState(refreshOlderThanMs);
   return { room, inbox, sendState };
 }
 const lastRoom = (raws: string[]) => {
