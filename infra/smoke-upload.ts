@@ -93,8 +93,12 @@ if (anon.tracks.some((t) => t.id === track.id)) fail(`uploaded track ${track.id}
 const audio = await fetch(`${base}/audio/${track.id}/mix.wav`, { headers: { range: "bytes=0-1" } });
 if (audio.status !== 206) fail(`GET /audio/${track.id}/mix.wav with a Range header -> ${audio.status}, expected 206`);
 
-const del = await fetch(`${base}/tracks/${track.id}`, { method: "DELETE", headers: asHost });
-if (!del.ok) fail(`DELETE /tracks/${track.id} -> ${del.status}`);
+// SMOKE_KEEP=1 leaves the track in place (infra/smoke-test.sh then checks who owns the file on disk).
+const keep = process.env.SMOKE_KEEP === "1";
+if (!keep) {
+  const del = await fetch(`${base}/tracks/${track.id}`, { method: "DELETE", headers: asHost });
+  if (!del.ok) fail(`DELETE /tracks/${track.id} -> ${del.status}`);
+}
 ws.close();
 
-console.log(`smoke-upload: ok room=${room.code} track=${track.id} (uploaded, listed as mine, served, removed)`);
+console.log(`smoke-upload: ok room=${room.code} track=${track.id} (uploaded, listed as mine, served, ${keep ? "kept" : "removed"})`);
