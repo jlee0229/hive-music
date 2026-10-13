@@ -235,5 +235,5 @@ JSON object to diff.
 Deliberate differences, and only these: one room (the scenario's) with a fixed `hostKey`; seeded `mock-*` players with
 synthetic health and fake calibration results; a calibration order that does not yet require `AUDIO_READY` (the stub
 engine does not announce it — PROTO-15); a fixed rules-only `/vibe` plan (`UNISON @0 → ORCHESTRA @50 % → WAVE @75 %`);
-no upload; no idle TTL or ping timeout; a fixed 2 Hz publish tick; a 1 h audio cache; optional chaos (`restartAfterSec`).
+no upload; no idle TTL or ping timeout; a fixed 2 Hz publish tick; a 1 h audio cache; optional chaos (`restartAfterSec`, drop every socket; with `wipe: true` the room is also re-created empty, as a real restart leaves it).
 Scenario files are frontend-owned. The mock serves `fixtures/tracks` on `/audio`.

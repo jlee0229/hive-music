@@ -59,13 +59,28 @@ WebSockets go to Fly, not Vercel. A phone that reloads gets the new bundle.
 A server deploy stops the one machine and starts it again on the new image (the `rolling` strategy — the only one
 possible with a volume attached). Fly sends SIGINT; the server has no shutdown handler and simply exits.
 
-- Every WebSocket drops. Phones show their reconnecting state and retry.
-- When the server is back (typically well under a minute), **every room is gone**. Codes are random, so the
-  old code cannot be re-created: `POST /rooms {"code":"<old>"}` answers 400 and players get "Hive not found".
-  (Reproduced locally 2026-10-11.) The host must tap **Host a hive** again and everyone must re-scan.
+- Every WebSocket drops. Phones show their reconnecting state and retry by themselves; music that is already
+  scheduled on a phone keeps sounding meanwhile.
+- Rooms live in the server's memory, so the new process starts with none. A host page that is **open** still
+  holds its signed host key: its reconnect re-creates the hive under the **same code**, and the guests' own
+  reconnects are let into it. Nobody taps anything and nobody re-scans.
+- The re-created room is empty (no song, stopped, Unison). The host page puts the show back by itself: the song
+  that was on, the mode, and — only if it was playing when the socket dropped — the position the song would have
+  reached by now, without a tuning moment (`apps/web/lib/hive/resume-show.ts`, audit PARTY-02). Measured on the
+  real stack, 2026-10-12 (`bun run e2e:party 07-restart -g 07a`: host + 4 guests, port dark 3.1 s, two runs):
+  every phone back in the room 5.0–5.7 s after the kill, the room playing again 5.5–6.0 s after it, on the old
+  timeline to within 1 ms, **no guest silent at any point** (0 ms of dead air at 50 ms resolution). Before this
+  the room stayed stopped until the host pressed Start, which re-ran the tuning moment: 13 s of silence at best.
+- What does not come back: tuning offsets (each phone falls back to its own measured output latency until the
+  next tuning moment), a vibe plan (the mode it had reached stays), dragged map positions and pinned parts.
+  A show that was paused or stopped comes back as its song and mode, not playing. If the outage outlasts
+  5 minutes, or the song has been removed, the music does not restart by itself.
+- **A host whose page is not open is not covered** (tab closed, phone asleep): nothing re-creates the room until
+  the host returns, and guests left waiting are told "Hive not found" (audit PARTY-01).
 - Uploaded songs are untouched (volume).
 
-So: **deploy when nobody is playing.** There is currently no exact way to know — `/health` does not report
+So: **still deploy when nobody is playing** — a party whose host is looking at the stage rides a deploy out, one
+whose host has pocketed the phone may not. There is currently no exact way to know — `/health` does not report
 room counts and the server logs nothing about rooms (both are open proposals, see §10). What you can do:
 
 1. Pick a quiet hour (weekday morning US Eastern, not Friday/Saturday night).
