@@ -237,5 +237,5 @@ export type { AudioEngine, AudioEngineContext, CreateHiveClientInternals } from 
 export { createStubClient } from "./stub";
 /** The clock model and the serverTime↔AudioContext mapping (exported for the rig, /diag and tests). */
 export { ClockModel, CtxMapper, SLEW_RATE_MS_PER_SEC, localNow } from "./clock";
-export { reconnectDelayMs } from "./transport";
+export { jitteredReconnectDelayMs, reconnectDelayMs } from "./transport";
 export { CalibrationCancelledError } from "./calibration/reference";

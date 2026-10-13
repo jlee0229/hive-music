@@ -48,8 +48,21 @@ export function persistedClientId(roomCode: string): string {
   }
 }
 
-/** Reconnect backoff: 300, 600, 1200, 2400, 4800 ms then flat (docs/03-sync-engine.md). */
+/** Reconnect backoff, nominal: 300, 600, 1200, 2400, 4800 ms then flat, for attempt 0, 1, 2… (docs/03-sync-engine.md). */
 export const reconnectDelayMs = (attempt: number): number => Math.min(5000, 300 * 2 ** Math.min(attempt, 4));
+
+/** How far a reconnect delay is spread around its nominal value: ±25 %. */
+export const RECONNECT_JITTER = 0.25;
+
+/**
+ * The delay the transport actually waits before reconnect number `attempt` (0 = the first).
+ *
+ * Jittered, because the one event that disconnects a phone usually disconnects all of them: after a
+ * server restart every phone used to re-JOIN on the same millisecond at each step — N JOINs and N
+ * snapshot fan-outs in one tick, in waves (measured by scale-net: 58 connects/s from 100 phones).
+ */
+export const jitteredReconnectDelayMs = (attempt: number, random: () => number = Math.random): number =>
+  reconnectDelayMs(attempt) * (1 - RECONNECT_JITTER + 2 * RECONNECT_JITTER * random());
 
 export interface TransportHooks {
   /** Called with the arrival stamp of every server message, before it is dispatched. */
@@ -230,7 +243,9 @@ export class RoomTransport {
           this.open().catch(() => {
             /* onclose fires again and schedules the next attempt */
           });
-        }, reconnectDelayMs(this.attempt));
+          // `attempt` was just incremented: the first retry is attempt 0 — 300 ms, as documented. It used
+          // to be passed as-is, which made the real sequence 600, 1200, 2400, 4800, 5000.
+        }, jitteredReconnectDelayMs(this.attempt - 1));
       };
 
       sock.onerror = () => {
