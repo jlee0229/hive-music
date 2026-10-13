@@ -55,21 +55,28 @@ export function persistedClientId(roomCode: string, kind: HiveClientOptions["kin
   }
 }
 
-/** Reconnect backoff, nominal: 300, 600, 1200, 2400, 4800 ms then flat, for attempt 0, 1, 2… (docs/03-sync-engine.md). */
+/**
+ * Reconnect backoff, nominal: `min(5000, 300·2^min(attempt, 4))` — 300, 600, 1200, 2400, 4800 ms for
+ * attempt 0, 1, 2, 3, 4+. The transport counts its first retry as attempt 1, so what a phone actually
+ * waits is 600, 1200, 2400, 4800, 4800… (the "300" in docs/03 is this function's value at 0, which
+ * the transport never uses; the host page's own /tracks retry does).
+ */
 export const reconnectDelayMs = (attempt: number): number => Math.min(5000, 300 * 2 ** Math.min(attempt, 4));
 
-/** How far a reconnect delay is spread around its nominal value: ±25 %. */
-export const RECONNECT_JITTER = 0.25;
+/** How far a reconnect is spread *beyond* its nominal delay: up to +50 %. */
+export const RECONNECT_JITTER = 0.5;
 
 /**
- * The delay the transport actually waits before reconnect number `attempt` (0 = the first).
+ * The delay the transport actually waits before retry number `attempt` (1 = the first).
  *
  * Jittered, because the one event that disconnects a phone usually disconnects all of them: after a
  * server restart every phone used to re-JOIN on the same millisecond at each step — N JOINs and N
  * snapshot fan-outs in one tick, in waves (measured by scale-net: 58 connects/s from 100 phones).
+ * Upward only: no phone comes back sooner than it used to, so nothing that relied on the old timing
+ * (the reconnect banner being on screen long enough to read) gets a shorter window.
  */
 export const jitteredReconnectDelayMs = (attempt: number, random: () => number = Math.random): number =>
-  reconnectDelayMs(attempt) * (1 - RECONNECT_JITTER + 2 * RECONNECT_JITTER * random());
+  reconnectDelayMs(attempt) * (1 + RECONNECT_JITTER * random());
 
 /**
  * `POST /rooms/:code/vibe`, shared by the real client and the stub.
@@ -286,9 +293,7 @@ export class RoomTransport {
           this.open().catch(() => {
             /* onclose fires again and schedules the next attempt */
           });
-          // `attempt` was just incremented: the first retry is attempt 0 — 300 ms, as documented. It used
-          // to be passed as-is, which made the real sequence 600, 1200, 2400, 4800, 5000.
-        }, jitteredReconnectDelayMs(this.attempt - 1));
+        }, jitteredReconnectDelayMs(this.attempt));
       };
 
       sock.onerror = () => {

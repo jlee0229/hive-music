@@ -147,7 +147,7 @@ describe("ENGINE-SYNC-23 · a re-announce held back by the rate guard is not for
     const readies = () => r.sent.filter((m) => m.type === "AUDIO_READY").length;
     expect(readies()).toBe(1);
 
-    // The room comes back on a fresh server 300 ms later (the first step of the reconnect backoff):
+    // The room comes back on a fresh server 300 ms later (a fast reconnect, or a "Tap to resume"):
     // its snapshot says it has never heard of this phone being ready.
     vt.advance(300);
     r.apply({ audioReadyTrackId: null });

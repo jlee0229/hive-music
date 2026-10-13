@@ -330,8 +330,7 @@ export function createBrowserAudioEngine(
    * When the rate guard holds it back (our previous announcement may still be in flight) it is tried
    * again when the guard expires. It used to be left for "the next snapshot" — and the server publishes
    * only on change, so in a quiet room there was none: a phone that re-JOINed a restarted server within
-   * half a second of its last announcement stayed "not ready" on the host's screen for good. (The first
-   * retry of the reconnect backoff is 300 ms, which lands exactly there.)
+   * half a second of its last announcement stayed "not ready" on the host's screen for good.
    */
   function announceReadyIfUnknown(): void {
     const room = lastRoom;
