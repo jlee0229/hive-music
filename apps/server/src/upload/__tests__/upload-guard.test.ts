@@ -39,6 +39,9 @@ async function setup() {
   await manager.loadLibrary();
   const room = manager.createRoom();
   if ("error" in room) throw new Error(room.error);
+  // the host page's JOIN: it carries the browser's libraryKey, which is what lets the room upload
+  const ws = { data: { clientId: null, roomCode: null }, send: () => {}, subscribe: () => {}, close: () => {} } as unknown as WS;
+  manager.handleMessage(ws, JSON.stringify({ type: "JOIN", clientId: "host-setup-0001", roomCode: room.code, kind: "host", plays: false, hostKey: room.hostKey, libraryKey: "upload-guard-library-key-0001", device: { userAgent: "t", platform: "t", browserFamily: "other" }, protocolVersion: PROTOCOL_VERSION }));
   return { fixtures, manager, room };
 }
 
@@ -83,7 +86,7 @@ async function upload(ctx: Ctx, title: string, files: Record<string, Uint8Array>
   form.set("title", title);
   for (const [field, bytes] of Object.entries(files)) form.set(field, new File([bytes as unknown as BlobPart], `${field}.wav`, { type: "audio/wav" }));
   const res = await handleUploadTracks(new Request("http://hive.test/tracks", { method: "POST", body: form }), ctx.manager, ctx.fixtures, "http://hive.test", {}, limits);
-  return { status: res.status, headers: res.headers, body: (await res.json()) as { track?: { id: string; durationSec: number; bpm?: number; energy?: number[] }; error?: string } };
+  return { status: res.status, headers: res.headers, body: (await res.json()) as { track?: { id: string; durationSec: number; bpm?: number; energy?: number[]; mine?: boolean }; error?: string; message?: string } };
 }
 const trackDirs = (ctx: Ctx) => (existsSync(join(ctx.fixtures, "tracks")) ? readdirSync(join(ctx.fixtures, "tracks")).filter((d) => !d.startsWith(".")) : []);
 
@@ -95,6 +98,19 @@ describe("SG-07: an upload cannot put an unusable track into the library", () =>
     expect((await upload(ctx, "blip stems", { drums: tone(0.2), bass: tone(0.9) })).status).toBe(400);
     expect(trackDirs(ctx)).toEqual([]);
     expect((await upload(ctx, "one second", { mix: tone(1) })).status).toBe(201);
+  });
+
+  test("the upload response is the library entry, tempo included (parity probe S5)", async () => {
+    const ctx = await setup();
+    // 20 s of clicks at 120 BPM: long and rhythmic enough for the detector to commit to a tempo
+    const rate = 44100;
+    const clicks = new Float32Array(rate * 20);
+    for (let i = 0; i < clicks.length; i++) clicks[i] = i % (rate / 2) < 300 ? 0.9 * Math.sin(i / 3) : 0;
+    const r = await upload(ctx, "Tempo", { mix: encodeMonoWav16(clicks, rate) });
+    expect(r.status).toBe(201);
+    const inLibrary = ctx.manager.getLibrary().find((t) => t.id === r.body.track!.id)!;
+    expect(typeof inLibrary.bpm).toBe("number");
+    expect(r.body.track).toMatchObject({ id: inLibrary.id, title: "Tempo", durationSec: inLibrary.durationSec, bpm: inLibrary.bpm, beatOffsetSec: inLibrary.beatOffsetSec });
   });
 
   test("a float WAV full of NaN and Infinity becomes a track every client can still read", async () => {
@@ -205,7 +221,8 @@ describe("SG-07: an upload cannot exhaust memory or disk", () => {
     expect((await upload(ctx, "fits 2", { mix: tone(2) }, limits)).status).toBe(201);
     const full = await upload(ctx, "does not fit", { mix: tone(2) }, limits);
     expect(full.status).toBe(507);
-    expect(full.body.error).toContain("library is full");
+    expect(full.body.error).toBe("library_full"); // a code the page switches on…
+    expect(full.body.message).toContain("library is full"); // …and a sentence it can show
     expect(trackDirs(ctx).length).toBe(2);
     expect(await librarySizeBytes(ctx.fixtures)).toBeLessThanOrEqual(400_000);
   });

@@ -15,6 +15,11 @@ import {
   ROOM_IDLE_TTL_MS,
   ROOM_STATE_MAX_HZ,
   STARTER_LATENCY_TABLE_MS,
+  TRACK_ADVANCE_LEAD_MS,
+  currentScene,
+  loopRestartZero,
+  nextInRotation,
+  nextScene,
   parseClientMessage,
   trackTimeSec,
   withAssignments,
@@ -26,19 +31,11 @@ import {
   type ServerMessage,
   type TrackInfo,
 } from "@hive/protocol";
-import { currentScene, nextScene } from "./scene-timer";
-import { loadLibrary, type LibraryEntry } from "./library";
+import { loadLibrary, ownerIdOf, visibleLibrary, type LibraryEntry, type LibraryScope } from "./library";
 import { HostKeys, safeEqual } from "./host-key";
 import { RateLimiter } from "./rate-limit";
 
 const now = () => performance.timeOrigin + performance.now();
-
-/**
- * Gap between songs when the playlist auto-advances: long enough for most phones to download and
- * decode the next track's stems (they arrive in the same ROOM_STATE that moves the transport), so
- * the room comes in together instead of straggling. Slower phones still join mid-song when ready.
- */
-const TRACK_ADVANCE_LEAD_MS = 5000;
 
 /**
  * Hard ceiling on client records in one room (connected or retained). Not the product limit — that
@@ -99,8 +96,35 @@ export function wireSafe(value: unknown, key = ""): boolean {
   return true;
 }
 
-/** A measured output latency or calibration residual beyond this is not a measurement, it is a bug or an attack. */
+/** A reported output latency beyond this is not a measurement, it is a bug or an attack. */
 const LATENCY_SANITY_MAX_MS = 2000;
+
+/**
+ * What a tuning moment may do to a phone (ENGINE-DSP-45). Each phone clicks in its own slot of
+ * CALIBRATION_CLICK_INTERVAL_MS, and the reference attributes whatever it hears in a slot to that
+ * slot's phone. So:
+ *  - a residual of more than half a slot is not this phone's click by construction — it is a
+ *    neighbour's (phone 1 late by 300 ms is heard in phone 2's slot as "phone 2, 100 ms early,
+ *    confidence 0.89");
+ *  - a phone cannot sound earlier than its compensation allows: the offset a measurement would
+ *    leave it with cannot be meaningfully negative (the slack covers the reference removing the
+ *    median). That is what catches the example above — nothing about "−100 ms" is odd except that
+ *    phone 2 would need less than no latency;
+ *  - and no chain of reports may walk an offset out of the range real output paths have (a
+ *    Bluetooth speaker is ~300 ms).
+ * A measurement that breaks one of these is not applied; a report where that is most of what it
+ * says measured something other than this room's clicks and is thrown away whole.
+ */
+export const CALIBRATION_MAX_STEP_MS = CALIBRATION_CLICK_INTERVAL_MS / 2;
+export const CALIBRATED_OFFSET_MIN_MS = -40;
+export const CALIBRATED_OFFSET_MAX_MS = 400;
+/**
+ * How long after the last click a report may take, per phone on top of a fixed 5 s. The reference
+ * cross-correlates every slot on a phone: measured on a desktop 0.48 s at 50 phones, 1.24 s at 100,
+ * 3.8 s at 200 (SCALE-NET-09) — call a phone four times slower. The fixed 5 s alone failed every big room.
+ */
+export const CALIBRATION_REPORT_GRACE_MS = 5000;
+export const CALIBRATION_REPORT_GRACE_PER_PHONE_MS = 100;
 
 /**
  * Per-socket message budget. A healthy client peaks around 15 messages a second (the NTP burst, a
@@ -128,6 +152,25 @@ interface HealthRecord {
 function send(ws: WS, msg: ServerMessage) {
   ws.send(JSON.stringify(msg));
 }
+
+/**
+ * A state snapshot (ROOM_STATE, HEALTH) is superseded by the next one, so it is never queued behind
+ * data a socket has not taken yet: a phone that stopped reading — locked screen, dead spot — would
+ * otherwise collect every snapshot the room publishes until it is closed. Measured before this
+ * existed: 10 such sockets in a 200-phone room added 142 MB to the server in 69 s (SCALE-NET-03).
+ */
+const SNAPSHOT_BACKLOG_BYTES = 64 * 1024;
+const backlog = (ws: WS): number => (typeof ws.getBufferedAmount === "function" ? ws.getBufferedAmount() : 0);
+
+/**
+ * While a room is playing, every recipient is sent the current state again if it has been sent
+ * nothing for this long (ENGINE-SYNC-P5). ROOM_STATE is otherwise only sent on change, so a phone
+ * that lost one snapshot — a tab frozen for a second, a socket replaced mid-broadcast — stayed
+ * wrong until the next change, which in the middle of a song can be minutes away.
+ */
+export const STATE_HEARTBEAT_MS = 5000;
+/** WebSocket close code "Service Restart" (RFC 6455 registry): what every socket gets when the process is told to stop. */
+export const CLOSE_SERVICE_RESTART = 1012;
 
 /** One room: state + sockets + every timer that keeps it alive. */
 export class Room {
@@ -161,6 +204,8 @@ export class Room {
    *  never delayed by a full window the way a plain setInterval poll would (docs/PROTOCOL-REQUESTS.md R-1). */
   private lastPublishAt = -Infinity;
   private trailingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The last ROOM_STATE each socket was sent, and when: what makes the per-recipient dedupe possible. */
+  private lastSent = new WeakMap<WS, { msg: string; at: number }>();
 
   constructor(
     code: string,
@@ -169,6 +214,7 @@ export class Room {
     private getLibrary: () => LibraryEntry[],
     /** The manager passes a signed key (host-key.ts); a bare Room (tests) gets an unguessable random one. */
     hostKey: string = crypto.randomUUID(),
+    private libraryScope: LibraryScope = "owner",
   ) {
     this.code = code;
     this.hostKey = hostKey;
@@ -184,7 +230,10 @@ export class Room {
       calibration: IDLE_CALIBRATION,
       clients: {},
     };
-    this.healthTimer = setInterval(() => this.publishHealth(), 1000 / HEALTH_HZ);
+    this.healthTimer = setInterval(() => {
+      this.publishHealth();
+      this.heartbeat();
+    }, 1000 / HEALTH_HZ);
     this.pingTimer = setInterval(() => this.tickPing(), PING_INTERVAL_MS);
     this.idleTimer = setTimeout(() => this.onEmpty(), ROOM_UNCLAIMED_TTL_MS); // cleared by the first JOIN
   }
@@ -201,6 +250,12 @@ export class Room {
     if (this.trailingTimer) clearTimeout(this.trailingTimer);
     for (const t of this.disconnectTimers.values()) clearTimeout(t);
     for (const t of this.calibrationTimers) clearTimeout(t);
+    // A room ends with no client records, but observers are not records: a display left open on a
+    // room that idled out would otherwise stay attached to nothing — and now that state is sent
+    // per recipient rather than to a topic, it would never hear from a re-created room either.
+    // Hung up on, it reconnects and re-JOINs like anyone else.
+    for (const ws of this.observers) ws.close(1001, "room ended");
+    this.observers.clear();
   }
 
   private checkIdle() {
@@ -240,13 +295,115 @@ export class Room {
         clearTimeout(this.trailingTimer);
         this.trailingTimer = null;
       }
-      this.server.publish(this.code, JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
-    } else if (!this.trailingTimer) {
+      // A recipient that could not take this snapshot (backlog) is retried on the next window.
+      if (this.sendState().skipped) this.dirty = true;
+    }
+    if (this.dirty && !this.trailingTimer) {
       this.trailingTimer = setTimeout(() => {
         this.trailingTimer = null;
         this.flush();
-      }, minGapMs - elapsed + Room.TRAILING_GUARD_MS);
+      }, Math.max(0, minGapMs - (now() - this.lastPublishAt)) + Room.TRAILING_GUARD_MS);
     }
+  }
+
+  /**
+   * One ROOM_STATE per recipient, built from what that recipient reads (SCALE-NET-02).
+   *
+   * The whole roster used to go to every socket: ~650 bytes per client, to every client, at up to
+   * 2 Hz — quadratic in the size of the party (8.7 MB/s at 100 phones with a busy host, 35 MB/s at
+   * 200, and past the 64 KB message budget near 74 phones). But a phone only ever reads the
+   * room-level state and its own record; the planner runs here and stamps each record with its
+   * finished assignment. So:
+   *
+   *  - a **player** gets the room-level state and a roster of exactly one: itself. `hostClientIds`
+   *    is empty for it and the calibration block is cut to what its tuning screen shows (how many
+   *    clicks, which one is its own, its own result) — other clients' ids are not sent to players;
+   *  - **hosts, viewers and observers** get the full snapshot: the map, the roster and the health
+   *    view are made of it.
+   *
+   * Both are valid ROOM_STATEs under the unchanged schema. A recipient whose message would be
+   * byte-identical to the last one it was sent is skipped (a dot dragged on the host's map changes
+   * one record, not a hundred phones' worth of state), unless `refreshOlderThanMs` says its copy is
+   * old enough to repeat anyway (the heartbeat).
+   *
+   * `onlyStale` (the heartbeat) does not even build a message for a recipient whose copy is fresh.
+   *
+   * Returns how many recipients were sent something, and whether some recipient was skipped
+   * because it has not drained what it was sent before.
+   */
+  private sendState(refreshOlderThanMs = Infinity, onlyStale = false): { sent: number; skipped: boolean } {
+    const t = now();
+    const { clients, calibration, hostClientIds: _hosts, ...level } = this.room;
+    let full: string | null = null;
+    const fullView = () => (full ??= JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage));
+
+    // `{"code":…,"transport":…` — everything every player gets, serialised once, left open.
+    const shared = JSON.stringify({ ...level, hostClientIds: [] }).slice(0, -1);
+    const inFlight = calibration.state === "countdown" || calibration.state === "running";
+    const quiet = { state: calibration.state, referenceClientId: null, startServerTime: calibration.startServerTime, order: [] as string[], results: {} };
+    const quietJson = JSON.stringify(quiet);
+    const playerView = (id: string, rec: ClientRecord): string => {
+      const mine = calibration.results[id];
+      const isReference = calibration.referenceClientId === id;
+      const cal =
+        inFlight || mine || isReference
+          ? JSON.stringify({
+              ...quiet,
+              referenceClientId: isReference ? id : null,
+              // The slots, with every id but its own blanked: enough for "click 7 of 30, yours is the 12th".
+              order: inFlight ? calibration.order.map((o) => (o === id ? o : "")) : [],
+              results: mine ? { [id]: mine } : {},
+            })
+          : quietJson;
+      return `{"type":"ROOM_STATE","room":${shared},"calibration":${cal},"clients":{${JSON.stringify(id)}:${JSON.stringify(rec)}}}}`;
+    };
+
+    let skipped = false;
+    let sent = 0;
+    const deliver = (ws: WS, view: () => string) => {
+      const last = this.lastSent.get(ws);
+      if (onlyStale && last && t - last.at < refreshOlderThanMs) return;
+      if (backlog(ws) > SNAPSHOT_BACKLOG_BYTES) {
+        // Whatever it holds is stale by now; make sure it gets the current state once it drains.
+        if (last) this.lastSent.delete(ws);
+        skipped = true;
+        return;
+      }
+      const msg = view();
+      if (last && last.msg === msg && t - last.at < refreshOlderThanMs) return;
+      ws.send(msg);
+      sent++;
+      this.lastSent.set(ws, { msg, at: t });
+    };
+    const viewFor = (id: string): (() => string) | null => {
+      const rec = clients[id];
+      if (!rec) return null;
+      return rec.kind === "player" ? () => playerView(id, rec) : fullView;
+    };
+    for (const [id, ws] of this.sockets) {
+      const view = viewFor(id);
+      if (view) deliver(ws, view);
+    }
+    for (const [id, older] of this.standby) {
+      const view = viewFor(id);
+      if (view) for (const ws of older) deliver(ws, view);
+    }
+    for (const ws of this.observers) deliver(ws, fullView);
+    return { sent, skipped };
+  }
+
+  /** See STATE_HEARTBEAT_MS. Runs on the 1 Hz health tick; shares the coalescing window with flush(). */
+  private heartbeat() {
+    if (this.room.transport.state !== "playing" || this.dirty) return; // a pending flush will say it all anyway
+    if (now() - this.lastPublishAt < 1000 / ROOM_STATE_MAX_HZ) return;
+    if (this.sendState(STATE_HEARTBEAT_MS, true).sent > 0) this.lastPublishAt = now();
+  }
+
+  /** Hang up on everyone in this room (process shutdown): they reconnect to whatever comes next. */
+  closeAll(code: number, reason: string): number {
+    const all = new Set<WS>([...this.sockets.values(), ...[...this.standby.values()].flat(), ...this.observers]);
+    for (const ws of all) ws.close(code, reason);
+    return all.size;
   }
 
   private publishHealth() {
@@ -259,11 +416,11 @@ export class Room {
     for (const c of Object.values(this.room.clients)) {
       if (c.kind !== "host" && c.kind !== "viewer") continue;
       const s = this.sockets.get(c.id);
-      if (s) send(s, { type: "HEALTH", serverTime: t, clients });
+      if (s && backlog(s) <= SNAPSHOT_BACKLOG_BYTES) send(s, { type: "HEALTH", serverTime: t, clients });
     }
     // Observers too: HEALTH needs no credential (any viewer gets it), and the usual observer is the
     // host's own /screen tab, whose sync tile is made of these numbers.
-    for (const s of this.observers) send(s, { type: "HEALTH", serverTime: t, clients });
+    for (const s of this.observers) if (backlog(s) <= SNAPSHOT_BACKLOG_BYTES) send(s, { type: "HEALTH", serverTime: t, clients });
   }
 
   private tickPing() {
@@ -275,9 +432,45 @@ export class Room {
     this.server.publish(this.code, JSON.stringify({ type: "PING", serverTime: t } satisfies ServerMessage));
   }
 
+  /**
+   * Whose uploads this room may use: the id of its host's browser (a hash of the libraryKey its
+   * JOIN carried), or null — shared tracks only. Not part of RoomState, never broadcast.
+   */
+  libraryOwner: string | null = null;
+
+  /** The tracks this room can list, select and rotate through: shared ones plus its host's own. */
+  library(): LibraryEntry[] {
+    return visibleLibrary(this.getLibrary(), this.libraryOwner, this.libraryScope);
+  }
+
+  private static trackInfo(t: LibraryEntry): TrackInfo {
+    return { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
+  }
+
   private setTrack(t: LibraryEntry) {
-    const info: TrackInfo = { id: t.id, title: t.title, durationSec: t.durationSec, stems: t.stems, bpm: t.bpm, beatOffsetSec: t.beatOffsetSec };
-    this.room.track = info;
+    this.room.track = Room.trackInfo(t);
+    this.refreshNextTrack();
+  }
+
+  /**
+   * `room.nextTrack`: the song the rotation would advance to when the current one ends (null for a
+   * single-song loop or no track). Phones start downloading it during the current song — the
+   * advance itself only gives TRACK_ADVANCE_LEAD_MS. A hint, recomputed whenever its inputs move:
+   * the track (setTrack) and the library (onLibraryChanged). Returns whether it changed.
+   */
+  private refreshNextTrack(): boolean {
+    const next = this.room.track ? nextInRotation(this.library(), this.room.track.id) : null;
+    const info = next ? Room.trackInfo(next) : null;
+    if (JSON.stringify(info) === JSON.stringify(this.room.nextTrack ?? null)) return false; // absent and null mean the same
+    this.room.nextTrack = info;
+    return true;
+  }
+
+  /** An upload (or the tempo backfill) changed the library: the rotation may now lead somewhere else. */
+  onLibraryChanged() {
+    if (this.destroyed || !this.refreshNextTrack()) return;
+    this.dirty = true;
+    this.flush();
   }
 
   // ---- scene timer (B5s) -------------------------------------------------------
@@ -339,16 +532,12 @@ export class Room {
   private loopBack(endServerTime: number) {
     this.loopTimer = null;
     if (this.room.transport.state !== "playing" || !this.room.track) return;
-    // Playlist rotation: real songs only, so a party never lands on a synthetic test track unless
-    // the library holds nothing else. The library is read live — a song uploaded mid-show joins
-    // the rotation before the current one ends.
-    const lib = this.getLibrary();
-    const real = lib.filter((t) => !t.generated);
-    const pool = real.length > 0 ? real : lib;
-    const idx = pool.findIndex((t) => t.id === this.room.track!.id);
-    const next = pool.length > 0 ? pool[(idx + 1) % pool.length]! : null;
+    // Playlist rotation (nextInRotation, shared with the mock): real songs only, so a party never
+    // lands on a synthetic test track unless the library holds nothing else. The library is read
+    // live — a song uploaded mid-show joins the rotation before the current one ends.
+    const next = nextInRotation(this.library(), this.room.track.id);
 
-    if (next && next.id !== this.room.track.id) {
+    if (next) {
       // Advance to the next song. Phones have not downloaded it yet, so the start gets a breather
       // (TRACK_ADVANCE_LEAD_MS) — fast phones start together on that instant, slow ones drop in
       // mid-song the moment their stems decode, exactly like a late joiner.
@@ -362,8 +551,7 @@ export class Room {
       // fires LEAD_MS early); a boundary too close or already past (a SEEK beyond the end, or a
       // room found stuck from before this timer existed) restarts with the standard lead instead —
       // a serverTimeAtTrackZero in the past would start mid-track.
-      const zero = endServerTime > now() + 100 ? endServerTime : now() + LEAD_MS;
-      this.room.transport = { state: "playing", serverTimeAtTrackZero: zero };
+      this.room.transport = { state: "playing", serverTimeAtTrackZero: loopRestartZero(endServerTime, now()) };
       this.dirty = true;
       this.flush();
     }
@@ -475,7 +663,7 @@ export class Room {
             this.flush();
           }
         },
-        CALIBRATION_COUNTDOWN_MS + order.length * CALIBRATION_CLICK_INTERVAL_MS + 5000,
+        CALIBRATION_COUNTDOWN_MS + order.length * CALIBRATION_CLICK_INTERVAL_MS + CALIBRATION_REPORT_GRACE_MS + order.length * CALIBRATION_REPORT_GRACE_PER_PHONE_MS,
       ),
     );
   }
@@ -485,10 +673,17 @@ export class Room {
     // Only while a run is in flight. `done` used to be accepted too, so a second report for the same
     // run was added on top of the first: calibratedOffsetMs = base + residual + residual.
     if (this.room.calibration.state !== "countdown" && this.room.calibration.state !== "running") return;
+    // First decide what the report is worth as a whole, then apply — never half of a report that
+    // turns out to be nonsense.
+    const seen = new Set<string>();
+    let repeated = false;
+    const plausible: Array<{ c: ClientRecord; residualMs: number; confidence: number; offset: number }> = [];
+    let implausible = 0;
     for (const m of msg.measurements) {
       const c = this.room.clients[m.clientId];
       if (!c || m.confidence < 0.5) continue; // low-confidence peaks are ignored
-      if (Math.abs(m.residualMs) > LATENCY_SANITY_MAX_MS) continue; // not a click heard in a room
+      if (seen.has(m.clientId)) repeated = true; // one slot, one click, one measurement
+      seen.add(m.clientId);
       // Before any calibration, a client with no table entry (STARTER_LATENCY_TABLE_MS.other is null)
       // silently subtracts its own ctx.outputLatency locally (docs/02-protocol.md §1: "no table AND no
       // calibration"). Once calibratedOffsetMs is non-null the client stops doing that — so basing the
@@ -496,8 +691,20 @@ export class Room {
       // phone late by exactly its outputLatency. Falling back to the client's own reported
       // outputLatencyMs (CLIENT_STATUS) instead of 0 preserves it across the transition.
       const base = c.calibratedOffsetMs ?? c.tableLatencyMs ?? this.health.get(m.clientId)?.outputLatencyMs ?? 0;
-      c.calibratedOffsetMs = base + m.residualMs;
-      this.room.calibration.results[m.clientId] = { residualMs: m.residualMs, confidence: m.confidence };
+      const offset = base + m.residualMs;
+      if (Math.abs(m.residualMs) > CALIBRATION_MAX_STEP_MS || offset < CALIBRATED_OFFSET_MIN_MS || offset > CALIBRATED_OFFSET_MAX_MS) implausible++;
+      else plausible.push({ c, residualMs: m.residualMs, confidence: m.confidence, offset });
+    }
+    if (repeated || (implausible > 0 && (plausible.length === 0 || implausible > plausible.length))) {
+      console.warn(`[hive-server] room ${this.code}: calibration report rejected (${implausible} implausible of ${implausible + plausible.length} measurements${repeated ? ", repeated client" : ""})`);
+      this.clearCalibrationTimers();
+      this.room.calibration = { ...this.room.calibration, state: "failed" };
+      this.dirty = true;
+      return this.flush();
+    }
+    for (const m of plausible) {
+      m.c.calibratedOffsetMs = m.offset;
+      this.room.calibration.results[m.c.id] = { residualMs: m.residualMs, confidence: m.confidence };
     }
     this.room.calibration = { ...this.room.calibration, state: "done" };
     this.replan();
@@ -527,7 +734,22 @@ export class Room {
     // every projector a phantom speaker that stole a stem in ORCHESTRA and padded the player count.
     const isViewer = !wantsHost && msg.kind === "viewer";
     const rec: ClientRecord = existing
-      ? { ...existing, connected: true, name: msg.name ?? existing.name, device, kind: wantsHost ? "host" : existing.kind, plays: wantsHost ? msg.plays : existing.kind === "viewer" ? false : existing.plays }
+      ? {
+          ...existing,
+          connected: true,
+          name: msg.name ?? existing.name,
+          device,
+          // A viewer record that re-JOINs as a player becomes one (parity probe S2). One browser
+          // shares its client id between /screen and /j, so "look at the display, then join as a
+          // phone" arrives exactly like that, and keeping `viewer, plays:false` left the phone
+          // silent for the rest of the night. The reverse is deliberately NOT followed (the mock
+          // does): a player record that re-JOINs as a viewer stays a player — the phone tab is
+          // still open and playing, and anyone who can read the roster could otherwise silence any
+          // phone by joining as a display under its id. (A host record never gets here without the
+          // key — see observe() — so a JOIN can never demote a host either.)
+          kind: wantsHost ? "host" : existing.kind === "viewer" && !isViewer ? "player" : existing.kind,
+          plays: wantsHost ? msg.plays : existing.kind === "viewer" ? !isViewer : existing.plays,
+        }
       : {
           id: msg.clientId,
           kind: wantsHost ? "host" : isViewer ? "viewer" : "player",
@@ -547,10 +769,22 @@ export class Room {
         };
     this.room.clients[rec.id] = rec;
     if (rec.kind === "host" && !this.room.hostClientIds.includes(rec.id)) this.room.hostClientIds.push(rec.id);
+    // Unreachable today (a host record is only re-joined with the key, as a host), kept so that
+    // "in hostClientIds" can never outlive "is a host record" whatever the rules above become.
+    if (rec.kind !== "host") this.room.hostClientIds = this.room.hostClientIds.filter((id) => id !== rec.id);
 
     ws.data.clientId = rec.id;
     ws.data.roomCode = this.code;
     ws.data.host = wantsHost;
+    // Only a JOIN that proved it is the host says whose library this room uses; the last one wins.
+    // A host JOIN without a libraryKey (an older client) leaves things as they are.
+    if (wantsHost && msg.libraryKey) {
+      const owner = ownerIdOf(msg.libraryKey);
+      if (owner !== this.libraryOwner) {
+        this.libraryOwner = owner;
+        this.refreshNextTrack(); // the rotation may lead somewhere else now; the replan below publishes it
+      }
+    }
     const previous = this.sockets.get(rec.id);
     if (previous && previous !== ws) {
       const older = this.standby.get(rec.id) ?? [];
@@ -592,7 +826,9 @@ export class Room {
     ws.subscribe(this.code);
     this.observers.add(ws);
     send(ws, { type: "WELCOME", clientId: claimedId, roomCode: this.code, serverTime: now(), protocolVersion: PROTOCOL_VERSION, isHost: false });
-    send(ws, { type: "ROOM_STATE", room: this.room });
+    const snapshot = JSON.stringify({ type: "ROOM_STATE", room: this.room } satisfies ServerMessage);
+    ws.send(snapshot);
+    this.lastSent.set(ws, { msg: snapshot, at: now() });
   }
 
   disconnect(ws: WS) {
@@ -620,21 +856,23 @@ export class Room {
       this.sockets.set(id, heir);
       return;
     }
+    this.sockets.delete(id); // before the broadcast below: a closed socket is not a recipient
     const c = this.room.clients[id];
     if (c) {
       c.connected = false;
-      this.dirty = true;
-      this.flush();
+      // `connected` is a planner input (PROTO-05): a phone that drops takes its stem with it unless
+      // the plan is redone — its ORCHESTRA stem is folded onto the phones still here, STROBE groups
+      // are re-dealt over them. Marking the snapshot dirty alone left that part of the song silent
+      // until something else happened to trigger a re-plan.
+      this.replan();
     }
-    this.sockets.delete(id);
     this.clearDisconnectTimer(id);
     const timer = setTimeout(() => {
       delete this.room.clients[id];
       this.health.delete(id); // or the map grows by one entry per device that ever joined
       this.room.hostClientIds = this.room.hostClientIds.filter((hid) => hid !== id);
       this.disconnectTimers.delete(id);
-      this.dirty = true;
-      this.flush();
+      this.replan(); // the roster changed: layouts and group deals are computed over it
       this.checkIdle();
     }, DISCONNECT_RETENTION_MS);
     this.disconnectTimers.set(id, timer);
@@ -698,7 +936,8 @@ export class Room {
         return;
       case "SET_TRACK": {
         if (!hostOnly()) return;
-        const track = this.getLibrary().find((t) => t.id === msg.trackId);
+        // (another owner's upload is not in library(): it answers NO_TRACK exactly like an id that does not exist)
+        const track = this.library().find((t) => t.id === msg.trackId);
         if (!track) return send(ws, { type: "ERROR", code: "NO_TRACK", message: `unknown track ${msg.trackId}` });
         // A vibe plan is scene boundaries in ONE song's track time. The playlist advance already
         // drops it (loopBack); switching songs by hand kept it, and the next PLAY drove the new
@@ -871,8 +1110,49 @@ export class RoomManager {
    * host can bring their room back under the same code after a deploy; leave it out and keys are
    * only good for the life of this process.
    */
-  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string }) {
+  constructor(private opts: { fixturesDir: string; fixedCode?: string; hostKeySecret?: string; libraryScope?: LibraryScope; log?: (line: string) => void }) {
     this.keys = new HostKeys(opts.hostKeySecret);
+  }
+
+  /**
+   * The operator's log: one line per room created / ended and per upload accepted / refused. Silent
+   * unless index.ts hands in a sink (tests create thousands of rooms). Never a key, never an owner id.
+   */
+  log(line: string) {
+    this.opts.log?.(line);
+  }
+
+  /** What GET /health may say about load: how many, never which. */
+  stats(): { rooms: number; playing: number; clients: number } {
+    let playing = 0;
+    let clients = 0;
+    for (const room of this.rooms.values()) {
+      if (room.room.transport.state === "playing") playing++;
+      clients += room.sockets.size;
+    }
+    return { rooms: this.rooms.size, playing, clients };
+  }
+
+  /**
+   * The process is about to stop (a deploy): close every socket with 1012 "service restart" so
+   * each client starts its reconnect backoff now, against the next process, instead of finding out
+   * from a dead TCP connection. Rooms are restored there by the host's signed key (SG-01/SG-15).
+   */
+  shutdown(): number {
+    let closed = 0;
+    for (const room of this.rooms.values()) closed += room.closeAll(CLOSE_SERVICE_RESTART, "server restarting");
+    for (const list of this.parked.values()) {
+      for (const e of list) {
+        clearTimeout(e.timer);
+        e.ws.close(CLOSE_SERVICE_RESTART, "server restarting");
+        closed++;
+      }
+    }
+    this.parked.clear();
+    this.parkedTotal = 0;
+    for (const room of this.rooms.values()) room.destroy();
+    this.rooms.clear();
+    return closed;
   }
 
   attachServer(server: Bun.Server<Conn>) {
@@ -881,6 +1161,7 @@ export class RoomManager {
 
   async loadLibrary() {
     this.library = await loadLibrary(this.opts.fixturesDir);
+    for (const room of this.rooms.values()) room.onLibraryChanged();
   }
 
   getLibrary(): LibraryEntry[] {
@@ -894,8 +1175,28 @@ export class RoomManager {
 
   /** True if `key` is the current hostKey of any room in this process (POST /tracks has no room in its path). */
   isKnownHostKey(key: string): boolean {
-    for (const room of this.rooms.values()) if (room.hostKey === key) return true;
+    return this.roomForHostKey(key) !== undefined;
+  }
+
+  /** The live room whose hostKey this is: how the REST routes that carry no room code find their room. */
+  roomForHostKey(key: string | undefined | null): Room | undefined {
+    if (!key) return undefined;
+    for (const room of this.rooms.values()) if (room.hostKey === key) return room;
+    return undefined;
+  }
+
+  get libraryScope(): LibraryScope {
+    return this.opts.libraryScope ?? "owner";
+  }
+
+  /** Codes are not returned: only whether some live room has this track selected right now. */
+  isTrackInUse(trackId: string): boolean {
+    for (const room of this.rooms.values()) if (room.room.track?.id === trackId) return true;
     return false;
+  }
+
+  get fixturesDir(): string {
+    return this.opts.fixturesDir;
   }
 
   private randomCode(): string {
@@ -913,15 +1214,19 @@ export class RoomManager {
 
   private spawn(code: string, hostKey?: string): Room {
     if (!this.server) throw new Error("RoomManager.attachServer must be called before spawning rooms");
+    const bornAt = performance.now();
+    this.log(`room ${code} ${hostKey ? "restored" : "created"} (${this.rooms.size + 1} live)`);
     const room: Room = new Room(
       code,
       this.server,
       () => {
         room.destroy();
         this.rooms.delete(code);
+        this.log(`room ${code} ended after ${Math.round((performance.now() - bornAt) / 60_000)} min, ${room.joinCounter} device(s) seen (${this.rooms.size} live)`);
       },
       () => this.library,
       hostKey ?? this.keys.issue(code, now()),
+      this.libraryScope,
     );
     this.rooms.set(code, room);
     return room;

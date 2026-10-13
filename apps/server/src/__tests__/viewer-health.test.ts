@@ -80,3 +80,33 @@ describe("SG-11: viewers receive HEALTH", () => {
     room.destroy();
   });
 });
+
+describe("parity probe S2: a display that becomes a phone must play", () => {
+  test("a viewer record that re-JOINs as a player is a player with an assignment; a player that re-JOINs as a viewer stays a playing phone", () => {
+    const room = new Room("S2S2", fakeServer(), () => {}, () => []);
+    const host = fakeWs();
+    room.join(host.ws, join(room, "host-s2-000001", "host"));
+
+    // one browser: /screen first, then /j under the same persisted client id
+    const screenTab = fakeWs();
+    room.join(screenTab.ws, join(room, "browser-s2-0001", "viewer"));
+    expect(room.room.clients["browser-s2-0001"]).toMatchObject({ kind: "viewer", plays: false, assignment: null });
+    const phoneTab = fakeWs();
+    room.join(phoneTab.ws, join(room, "browser-s2-0001", "player"));
+    const rec = room.room.clients["browser-s2-0001"]!;
+    expect(rec).toMatchObject({ kind: "player", plays: true, joinIndex: 1 }); // same record, same seat
+    expect(rec.assignment).not.toBeNull();
+
+    // the other order: a playing phone whose browser then opens /screen keeps playing
+    const phone = fakeWs();
+    room.join(phone.ws, join(room, "browser-s2-0002", "player"));
+    const display = fakeWs();
+    room.join(display.ws, join(room, "browser-s2-0002", "viewer"));
+    expect(room.room.clients["browser-s2-0002"]).toMatchObject({ kind: "player", plays: true });
+    expect(room.room.clients["browser-s2-0002"]!.assignment).not.toBeNull();
+
+    // and neither path ever touches hostClientIds
+    expect(room.room.hostClientIds).toEqual(["host-s2-000001"]);
+    room.destroy();
+  });
+});

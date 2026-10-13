@@ -34,10 +34,17 @@ export class RateLimiter {
 }
 
 /**
- * Who is calling. Behind Fly's proxy every connection comes from the proxy, which reports the real
- * peer in Fly-Client-IP (set by the edge, not forwarded from the client); anywhere else it is the
- * socket's own address.
+ * Who is calling: the socket's own remote address — unless the operator says this process sits
+ * behind a proxy that overwrites `Fly-Client-IP` (TRUST_PROXY_IP=1; fly.toml sets it). Behind Fly
+ * every connection comes from the proxy, so the header is the only way to tell callers apart there;
+ * anywhere else it is just a header the caller typed, and trusting it meant every budget in this
+ * file could be reset by changing a string (red-team RT-04: 40 of 40 requests past a 30/min cap).
  */
-export function callerKey(req: Request, srv: { requestIP(req: Request): { address: string } | null }): string {
-  return req.headers.get("fly-client-ip") ?? srv.requestIP(req)?.address ?? "unknown";
+export function callerKey(
+  req: Request,
+  srv: { requestIP(req: Request): { address: string } | null },
+  trustProxy: boolean = process.env.TRUST_PROXY_IP === "1",
+): string {
+  const peer = srv.requestIP(req)?.address ?? "unknown";
+  return trustProxy ? (req.headers.get("fly-client-ip")?.trim().slice(0, 64) || peer) : peer;
 }

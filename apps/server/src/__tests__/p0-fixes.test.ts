@@ -131,7 +131,7 @@ describe("P0-2: host re-join after the fixed-code room is re-spawned", () => {
 
 describe("P0-4: a stale socket's close must not demote the live one", () => {
   test("join with socket A, reconnect the same clientId with socket B, close A — client stays connected and B still gets broadcasts", () => {
-    const { server, published } = fakeServer();
+    const { server } = fakeServer();
     const room = new Room("P0B", server, () => {}, () => []);
     const wsA = fakeWs();
     room.join(wsA.ws, { type: "JOIN", clientId: "play-p0b-01", roomCode: "P0B", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
@@ -141,10 +141,10 @@ describe("P0-4: a stale socket's close must not demote the live one", () => {
     room.join(wsB.ws, { type: "JOIN", clientId: "play-p0b-01", roomCode: "P0B", kind: "player", plays: true, device, protocolVersion: PROTOCOL_VERSION });
     expect(room.room.clients["play-p0b-01"]!.connected).toBe(true);
 
-    const publishedBefore = published.length;
+    const sentBefore = wsB.sent.length;
     room.disconnect(wsA.ws); // A's close event arrives late, after B already took over
     expect(room.room.clients["play-p0b-01"]!.connected).toBe(true); // still connected via B
-    expect(published.length).toBe(publishedBefore); // no spurious "disconnected" broadcast either
+    expect(wsB.sent.length).toBe(sentBefore); // no spurious "disconnected" snapshot either
 
     // B receives further broadcasts (it is still the registered socket for this clientId)
     room.handle(wsA.ws, { type: "SET_PLAYS", plays: false }); // stray message from the dead socket: no-op, not host

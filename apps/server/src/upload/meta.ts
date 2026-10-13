@@ -19,6 +19,8 @@ export interface UploadedTrackMeta {
   /** Which detector produced `bpm`; the startup backfill re-analyzes anything older. */
   bpmVersion?: number;
   generated: false;
+  /** Owner id of the uploading browser (library.ts); written by the upload route, absent on shared tracks. */
+  owner?: string;
 }
 
 /** Sum the stems into one mixdown for tempo analysis (a "mix" upload is already the mixdown). */

@@ -1,10 +1,12 @@
 // HiveMusic room server — see agents/SERVER-AGENT.md. Port of packages/protocol/src/mock-server.ts to real,
 // multi-room state: Bun.serve with WS + REST, the shared planner, and the vibe director.
-import { PROTOCOL_VERSION, VibeRequestSchema, type ScenePlan } from "@hive/protocol";
+import { CreateRoomRequestSchema, PROTOCOL_VERSION, VibeRequestSchema, type ScenePlan } from "@hive/protocol";
+import { z } from "zod";
 import { directScene } from "./vibe/director";
 import { withUrls } from "./library";
 import { RoomManager, type Conn } from "./rooms";
-import { MAX_UPLOAD_BYTES, handleUploadTracks } from "./upload/route";
+import { MAX_UPLOAD_BYTES, handleDeleteTrack, handleUploadTracks } from "./upload/route";
+import { visibleLibrary } from "./library";
 import { RateLimiter, callerKey } from "./rate-limit";
 import { safeEqual } from "./host-key";
 
@@ -16,7 +18,7 @@ const FIXED_CODE = process.env.ROOM_FIXED_CODE;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": CORS_ORIGIN,
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
@@ -66,6 +68,9 @@ const vibeInFlight = new Set<string>();
  */
 const VIBE_REQUIRE_HOST_KEY = process.env.VIBE_REQUIRE_HOST_KEY === "1";
 
+/** POST /rooms: the protocol's request shape plus the key a host presents to re-claim or restore its room (SG-01). */
+const RoomRequestSchema = CreateRoomRequestSchema.extend({ hostKey: z.string().max(64).optional() });
+
 /** The JSON routes take a few hundred bytes; the server-wide body cap exists for uploads. */
 const SMALL_BODY_BYTES = 16 * 1024;
 const TOO_LARGE = Symbol("too large");
@@ -92,7 +97,20 @@ async function readSmallJson(req: Request): Promise<unknown | typeof TOO_LARGE> 
   }
 }
 
-const manager = new RoomManager({ fixturesDir: FIXTURES_DIR, fixedCode: FIXED_CODE, hostKeySecret: await resolveHostKeySecret() });
+// LIBRARY_SCOPE=global: one song list for every hive, as before uploads were owned. Default: a hive
+// sees the shared tracks plus its own host's uploads (contracts/library-scope.md).
+const LIBRARY_SCOPE = process.env.LIBRARY_SCOPE === "global" ? "global" : "owner";
+
+const manager = new RoomManager({
+  fixturesDir: FIXTURES_DIR,
+  fixedCode: FIXED_CODE,
+  hostKeySecret: await resolveHostKeySecret(),
+  libraryScope: LIBRARY_SCOPE,
+  log: (line) => console.log(`[hive-server] ${line}`),
+});
+/** Every open WebSocket, joined or not: the count /health reports and the set a shutdown closes. */
+const openSockets = new Set<Bun.ServerWebSocket<Conn>>();
+const bootedAt = performance.now();
 
 const server = Bun.serve<Conn>({
   port: PORT,
@@ -110,7 +128,9 @@ const server = Bun.serve<Conn>({
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: performance.timeOrigin + performance.now() });
+      // Counts only — enough for an operator to see whether a party is live before deploying, and
+      // nothing a stranger could use: no codes, no ids.
+      return json({ ok: true, protocolVersion: PROTOCOL_VERSION, serverTime: performance.timeOrigin + performance.now(), ...manager.stats(), connections: openSockets.size, uptimeSec: Math.round((performance.now() - bootedAt) / 1000) });
     }
 
     if (req.method === "POST" && url.pathname === "/rooms") {
@@ -119,9 +139,11 @@ const server = Bun.serve<Conn>({
       // string is treated as absent rather than trusted.
       const raw = await readSmallJson(req);
       if (raw === TOO_LARGE) return json({ error: "body too large" }, 413);
-      const body = (raw && typeof raw === "object" ? raw : {}) as { code?: unknown; hostKey?: unknown };
-      const str = (v: unknown, max: number) => (typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined);
-      const result = manager.createRoom(str(body.code, 8), str(body.hostKey, 64));
+      // No body, `null` and `{}` all mean "a new room". Anything else has to be the documented
+      // shape: `{"code":123}` used to be a 500, then was quietly treated as `{}` — it is a 400.
+      const body = RoomRequestSchema.safeParse(raw ?? {});
+      if (!body.success) return json({ error: "bad request" }, 400);
+      const result = manager.createRoom(body.data.code, body.data.hostKey || undefined);
       if ("error" in result) return json({ error: result.error }, result.status);
       return json({ code: result.code, hostKey: result.hostKey, joinUrl: `${WEB_URL}/j/${result.code}`, ...(result.restored ? { restored: true } : {}) });
     }
@@ -179,11 +201,19 @@ const server = Bun.serve<Conn>({
 
     if (url.pathname === "/tracks" && req.method === "GET") {
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
-      const tracks = manager
-        .getLibrary()
+      // With a live room's hostKey: that room's library (shared + its host's own, marked `mine`).
+      // Without one — a guest, a stale key — the shared tracks only.
+      const asking = manager.roomForHostKey(req.headers.get("authorization")?.match(/^Bearer\s+(\S{1,64})$/i)?.[1]);
+      const owner = asking?.libraryOwner ?? null;
+      const tracks = visibleLibrary(manager.getLibrary(), owner, LIBRARY_SCOPE)
         .filter((t) => !q || t.title.toLowerCase().includes(q) || t.id.includes(q))
-        .map((t) => withUrls(t, url.origin));
+        .map((t) => withUrls(t, url.origin, owner));
       return json({ tracks });
+    }
+
+    const trackMatch = url.pathname.match(/^\/tracks\/([A-Za-z0-9_-]{1,64})$/);
+    if (trackMatch && req.method === "DELETE") {
+      return handleDeleteTrack(req, trackMatch[1]!, manager, FIXTURES_DIR, corsHeaders);
     }
 
     if (url.pathname === "/tracks" && req.method === "POST") {
@@ -232,13 +262,21 @@ const server = Bun.serve<Conn>({
     // (JOIN ~1 KB, a CALIBRATION_REPORT for a full room ~25 KB); anything bigger closes the socket
     // before it is ever buffered or parsed.
     maxPayloadLength: 64 * 1024,
-    open() {
-      /* subscribed to its room's topic once JOIN resolves which room it is */
+    // What the server will hold for a socket that is not reading. State snapshots are never queued
+    // behind a backlog (rooms.ts SNAPSHOT_BACKLOG_BYTES), so a healthy-but-slow phone stays far
+    // below this; a socket that reaches it is not coming back in time to matter, and closing it
+    // frees the memory at once instead of at the 45 s ping timeout. Bun's default is 16 MB per
+    // socket with no close — a handful of phones on dead cellular against a 256 MB machine.
+    backpressureLimit: 1024 * 1024,
+    closeOnBackpressureLimit: true,
+    open(ws) {
+      openSockets.add(ws); // (subscribed to its room's topic once JOIN resolves which room it is)
     },
     message(ws, raw) {
       manager.handleMessage(ws, raw);
     },
     close(ws) {
+      openSockets.delete(ws);
       manager.handleClose(ws);
     },
   },
@@ -247,7 +285,27 @@ const server = Bun.serve<Conn>({
 manager.attachServer(server);
 await manager.loadLibrary();
 
-console.log(`[hive-server] listening on http://localhost:${server.port} (protocol v${PROTOCOL_VERSION}, cors ${CORS_ORIGIN})`);
+console.log(`[hive-server] listening on http://localhost:${server.port} (protocol v${PROTOCOL_VERSION}, cors ${CORS_ORIGIN}, library scope ${LIBRARY_SCOPE})`);
+
+/**
+ * A deploy sends SIGINT (fly.toml kill_signal), waits kill_timeout, then SIGKILLs. Rooms live in
+ * memory and die with the process either way; what this buys is that every phone is told now —
+ * close code 1012, "service restart" — and starts reconnecting to the next process at once, where
+ * the host's signed key brings the room back and waiting guests are let in (SG-01, SG-15).
+ */
+let stopping = false;
+function stop(signal: string) {
+  if (stopping) return;
+  stopping = true;
+  const { rooms, playing } = manager.stats();
+  const closed = manager.shutdown();
+  for (const ws of openSockets) ws.close(1012, "server restarting"); // sockets that never joined anything
+  console.log(`[hive-server] ${signal}: stopping with ${rooms} room(s) live (${playing} playing); told ${closed} socket(s) to reconnect`);
+  server.stop(true);
+  setTimeout(() => process.exit(0), 150); // let the close frames leave
+}
+process.on("SIGINT", () => stop("SIGINT"));
+process.on("SIGTERM", () => stop("SIGTERM"));
 
 /**
  * Tempo backfill: tracks uploaded before BPM detection existed have no `bpm` in meta.json, so the
