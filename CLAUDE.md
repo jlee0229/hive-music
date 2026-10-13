@@ -47,7 +47,8 @@ bun run mock --scenario apps/web/mocks/scenarios/party-12.json     # scripted fa
 - No service worker. No new runtime dependency without a stated reason.
 - Never commit audio or `.env*` files. Never copy anything from `fixtures/tracks/` other than the synthetic pair.
 - **Never deploy, and never run `flyctl`/`vercel` against production, unless the human asked for exactly that.**
-  A server deploy or restart ends every party in progress (`docs/13-operations.md` §2.3).
+  A server deploy or restart interrupts every party in progress: the music carries on only where the host's
+  page is open to put the show back (`docs/13-operations.md` §2.3).
 - Product taste: simple, minimal, automatic. Do not add settings, readouts, jargon or explanatory filler to the UI.
 
 ## Gotchas that have cost time

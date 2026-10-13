@@ -126,6 +126,7 @@ in memory and codes are random), and there must only ever be **one** server mach
 | doc | status |
 |---|---|
 | [13-operations.md](docs/13-operations.md) | **current** — deploy, verify, roll back, volume, incidents |
+| [14-audit-2026-10.md](docs/14-audit-2026-10.md) | **current** — the October 2026 audit: what was found, fixed, left open, and what needs a decision or a real phone |
 | [11-windows-dev.md](docs/11-windows-dev.md) | **current** — Windows setup notes |
 | [12-domain.md](docs/12-domain.md) | DNS records are current; the setup steps are historical |
 | [02-protocol.md](docs/02-protocol.md), [05-effect-modes.md](docs/05-effect-modes.md) | the wire contract and the modes; `packages/protocol/src` is the source of truth |
