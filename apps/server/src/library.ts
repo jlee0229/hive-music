@@ -11,7 +11,7 @@ import { STEMS, TrackLibraryEntrySchema, type TrackLibraryEntry } from "@hive/pr
  * everything uploaded before uploads were owned). It never leaves the process — not in ROOM_STATE
  * (Room.trackInfo copies named fields), not in GET /tracks (withUrls drops it), not in an error.
  */
-export type LibraryEntry = Omit<TrackLibraryEntry, "urls"> & { owner?: string };
+export type LibraryEntry = Omit<TrackLibraryEntry, "urls" | "mine"> & { owner?: string };
 
 /** `global`: one list for everyone, as before owned uploads. `owner`: shared tracks plus the room's own. */
 export type LibraryScope = "owner" | "global";
@@ -98,7 +98,7 @@ export function buildTrackUrls(entry: LibraryEntry, origin: string): Record<stri
  * The entry as a client sees it: audio URLs added, `owner` removed. `mine: true` (when the asking
  * room's host owns the track) is the only ownership fact that is ever sent.
  */
-export function withUrls(entry: LibraryEntry, origin: string, askingOwner: string | null = null): TrackLibraryEntry & { mine?: true } {
+export function withUrls(entry: LibraryEntry, origin: string, askingOwner: string | null = null): TrackLibraryEntry {
   const { owner, ...publicEntry } = entry;
-  return { ...publicEntry, urls: buildTrackUrls(entry, origin), ...(owner !== undefined && owner === askingOwner ? { mine: true as const } : {}) };
+  return { ...publicEntry, urls: buildTrackUrls(entry, origin), ...(owner !== undefined && owner === askingOwner ? { mine: true } : {}) };
 }

@@ -139,12 +139,17 @@ export interface UploadLimits {
   volumeFreeBytes?: (fixturesDir: string) => Promise<number | null>;
 }
 
-/** Sentences the host page shows as they are; `error` is the stable code it switches on. */
+/**
+ * The refusals the host page knows (contracts/library-scope.md, as host-ui built it). `no_library` and
+ * `library_full` are codes it switches on, sent in `error` with the sentence in `message`. The two
+ * per-owner limits have no code on the page — it shows `error` as it comes — so for those `error` IS
+ * the sentence and the code travels in `code`.
+ */
 const REFUSALS = {
-  no_library: { status: 400, message: "Reload this page, then try again." },
-  library_full: { status: 507, message: "The song library is full — no more songs can be added right now." },
-  too_many_tracks: { status: 413, message: "You have reached the limit of songs you can add — remove one first." },
-  owner_quota: { status: 413, message: "Your songs have used all the space you can have here — remove one first." },
+  no_library: { status: 400, codeInError: true, message: "Reload this page, then try again." },
+  library_full: { status: 507, codeInError: true, message: "The song library is full — no more songs can be added right now." },
+  too_many_tracks: { status: 413, codeInError: false, message: "You have added as many songs as one host can keep here — remove one first." },
+  owner_quota: { status: 413, codeInError: false, message: "Your songs have used all the space one host can have here — remove one first." },
 } as const;
 
 export async function handleUploadTracks(
@@ -161,7 +166,8 @@ export async function handleUploadTracks(
   const sizeMb = Number.isNaN(Number(req.headers.get("content-length"))) ? "?" : (Number(req.headers.get("content-length")) / MIB).toFixed(1);
   const refuse = (code: keyof typeof REFUSALS) => {
     manager.log(`upload refused: ${code} (${sizeMb} MB)`);
-    return json({ error: code, message: REFUSALS[code].message }, REFUSALS[code].status, corsHeaders);
+    const r = REFUSALS[code];
+    return json(r.codeInError ? { error: code, message: r.message } : { error: r.message, code }, r.status, corsHeaders);
   };
   const ownerMaxTracks = limits.ownerMaxTracks ?? OWNER_MAX_TRACKS;
   const ownerMaxBytes = limits.ownerMaxBytes ?? OWNER_MAX_BYTES;

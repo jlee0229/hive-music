@@ -218,18 +218,18 @@ describe("owned uploads — contract tests 1-4, 7", () => {
     const b = w.hive(KEY_B, "host-B-000001");
     expect((await a.upload("one", 2, { ownerMaxTracks: 2 })).status).toBe(201);
     expect((await a.upload("two", 2, { ownerMaxTracks: 2 })).status).toBe(201);
-    expect(await a.upload("three", 2, { ownerMaxTracks: 2 })).toMatchObject({ status: 413, body: { error: "too_many_tracks" } });
+    // per-owner limits: the page shows `error` as it comes, so it is the sentence; the code rides along
+    expect(await a.upload("three", 2, { ownerMaxTracks: 2 })).toEqual({ status: 413, body: { error: "You have added as many songs as one host can keep here — remove one first.", code: "too_many_tracks" } });
     expect((await b.upload("b one", 2, { ownerMaxTracks: 2 })).status).toBe(201); // B has its own allowance
 
     // ~176 KB per 2 s song: A holds two (≈353 KB); a 400 KB allowance has no room for a third
-    expect(await a.upload("too big", 2, { ownerMaxBytes: 400_000 })).toMatchObject({ status: 413, body: { error: "owner_quota" } });
+    expect(await a.upload("too big", 2, { ownerMaxBytes: 400_000 })).toEqual({ status: 413, body: { error: "Your songs have used all the space one host can have here — remove one first.", code: "owner_quota" } });
     expect((await a.upload("fits", 2, { ownerMaxBytes: 600_000 })).status).toBe(201);
 
     // the volume: an upload that would leave less than the reserve free is refused, whoever asks
     const nearlyFull = { volumeFreeBytes: async () => 100 * 1024 * 1024 + 100_000 }; // 100 KB above the 100 MB reserve
-    expect(await b.upload("no room", 2, nearlyFull)).toMatchObject({ status: 507, body: { error: "library_full" } });
+    expect(await b.upload("no room", 2, nearlyFull)).toEqual({ status: 507, body: { error: "library_full", message: "The song library is full — no more songs can be added right now." } });
     expect((await b.upload("room", 2, { volumeFreeBytes: async () => 101 * 1024 * 1024 })).status).toBe(201);
-    for (const r of [await a.upload("x", 2, { ownerMaxTracks: 0 }), await b.upload("y", 2, nearlyFull)]) expect(typeof r.body.message).toBe("string"); // a sentence the page can show
   });
 
   test("7. neither the libraryKey nor an owner id ever appears in anything the server sends, publishes or writes to a client", async () => {
@@ -343,8 +343,18 @@ describe("owned uploads over HTTP — contract test 6 and the REST surface", () 
     expect((await audio.arrayBuffer()).byteLength).toBe(tone(2).byteLength);
 
     // the browser's preflight for DELETE, then the delete itself — B is refused, A succeeds
-    const preflight = await fetch(`${BASE}/tracks/${track.id}`, { method: "OPTIONS" });
-    expect(preflight.headers.get("access-control-allow-methods")).toContain("DELETE");
+    const preflight = await fetch(`${BASE}/tracks/${track.id}`, { method: "OPTIONS", headers: { origin: "https://playhivemusic.com", "access-control-request-method": "DELETE", "access-control-request-headers": "authorization" } });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-methods")!.split(/,\s*/)).toContain("DELETE");
+    expect(preflight.headers.get("access-control-allow-headers")!.toLowerCase().split(/,\s*/)).toContain("authorization");
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("*"); // CORS_ORIGIN unset in this test; production pins it
+    // …and the answers themselves carry the CORS header, or the page could not read a refusal
+    expect((await fetch(`${BASE}/tracks/${track.id}`, { method: "DELETE", headers: b.auth })).headers.get("access-control-allow-origin")).toBe("*");
+    // the same preflight for the keyed GET /tracks and POST /tracks
+    for (const method of ["GET", "POST"]) {
+      const pf = await fetch(`${BASE}/tracks`, { method: "OPTIONS", headers: { origin: "https://playhivemusic.com", "access-control-request-method": method, "access-control-request-headers": "authorization" } });
+      expect(pf.headers.get("access-control-allow-methods")!.split(/,\s*/)).toContain(method);
+    }
     expect((await fetch(`${BASE}/tracks/${track.id}`, { method: "DELETE", headers: b.auth })).status).toBe(404);
     expect((await fetch(`${BASE}/tracks/${track.id}`, { method: "DELETE" })).status).toBe(403);
     const gone = await fetch(`${BASE}/tracks/${track.id}`, { method: "DELETE", headers: a.auth });
