@@ -564,3 +564,51 @@ test.describe("small things", () => {
     });
   }
 });
+
+test.describe("landing page: why a hive could not be started", () => {
+  test.use({ mockScenario: "join.json" });
+
+  async function hostWith(page: Page, respond: "abort" | { status: number; body: unknown }) {
+    await page.route("**/rooms", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      if (respond === "abort") return route.abort();
+      return route.fulfill({ status: respond.status, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify(respond.body) });
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Host a hive" }).click();
+    const alert = page.locator("main").getByRole("alert");
+    await expect(alert).toBeVisible();
+    // Whatever went wrong, the button comes back and the message is not for a developer.
+    await expect(page.getByRole("button", { name: "Host a hive" })).toBeEnabled();
+    await expect(alert).not.toContainText(/rate_limited|server_full|server|429|503/i);
+    return alert;
+  }
+
+  test("429 rate_limited: says to wait a minute, not to check the connection", async ({ page }) => {
+    const alert = await hostWith(page, { status: 429, body: { error: "rate_limited" } });
+    await expect(alert).toContainText(/wait a minute/i);
+    await expect(alert).not.toContainText(/connection/i);
+  });
+
+  test("503 server_full: says it is full for now, not to check the connection", async ({ page }) => {
+    const alert = await hostWith(page, { status: 503, body: { error: "server_full" } });
+    await expect(alert).toContainText(/full/i);
+    await expect(alert).toContainText(/try again/i);
+    await expect(alert).not.toContainText(/connection/i);
+  });
+
+  test("a 500, a 503 that is not about capacity, and a dead network keep the connection sentence", async ({ page }) => {
+    await expect(await hostWith(page, { status: 500, body: { error: "boom" } })).toContainText(/check your connection/i);
+    await page.unroute("**/rooms");
+    await expect(await hostWith(page, { status: 503, body: {} })).toContainText(/check your connection/i);
+    await page.unroute("**/rooms");
+    await expect(await hostWith(page, "abort")).toContainText(/check your connection/i);
+  });
+
+  test("320x568: the longest of these messages still leaves everything on one screen", async ({ page }) => {
+    await page.setViewportSize(SMALLEST);
+    await hostWith(page, { status: 429, body: { error: "rate_limited" } });
+    expect(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBe(0);
+    await expect(page.getByRole("link", { name: "HiveMusic on GitHub" })).toBeInViewport({ ratio: 1 });
+  });
+});

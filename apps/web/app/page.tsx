@@ -9,6 +9,19 @@ import { Creators } from "@/components/Creators";
 /** The server accepts 3–8 character codes (random ones are 4); see ClientMessageSchema JOIN. */
 const CODE_MIN = 3;
 const CODE_MAX = 8;
+/**
+ * Why "Host a hive" did not work, in the page's own words. The service says no for two reasons a
+ * person can act on, and "check your connection" is the wrong advice for both of them.
+ */
+const HOST_ERRORS = {
+  /** 429 rate_limited: too many hives started from this network in the last minute. */
+  tooMany: "Too many hives started from here just now. Wait a minute and try again.",
+  /** 503 server_full: every hive the service can run is running. */
+  full: "HiveMusic is full right now. Try again in a little while.",
+  /** No answer, a dropped request, or any other failure. */
+  connection: "Couldn't start a hive. Check your connection and try again.",
+} as const;
+
 /** A cold server can take a few seconds to answer; past this the guest needs their button back. */
 const HOST_TIMEOUT_MS = 10_000;
 
@@ -41,7 +54,14 @@ export default function LandingPage() {
         body: JSON.stringify({}),
         signal: abort.signal,
       });
-      if (!res.ok) throw new Error(`POST /rooms failed: ${res.status}`);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (res.status === 429) setError(HOST_ERRORS.tooMany);
+        else if (res.status === 503 && body?.error === "server_full") setError(HOST_ERRORS.full);
+        else setError(HOST_ERRORS.connection);
+        setHosting(false);
+        return;
+      }
       const data = (await res.json()) as { code: string; hostKey: string };
       try {
         globalThis.localStorage?.setItem(`hive:hostKey:${data.code}`, data.hostKey);
@@ -50,7 +70,7 @@ export default function LandingPage() {
       }
       router.push(`/h/${data.code}`);
     } catch {
-      setError("Couldn't start a hive. Check your connection and try again.");
+      setError(HOST_ERRORS.connection);
       setHosting(false);
     } finally {
       clearTimeout(deadline);
