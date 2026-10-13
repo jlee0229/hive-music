@@ -28,12 +28,22 @@ async function startWithoutATrack(page: import("@playwright/test").Page) {
 test("host setup: a failed first /tracks request is retried, so the splash ends", async ({ page }) => {
   await startWithoutATrack(page);
   let calls = 0;
-  await page.route(`${MOCK_URL}/tracks`, (route) => (++calls <= 2 ? route.abort("connectionrefused") : route.continue()));
+  // The page auto-picks whatever the library lists first. Which song that is depends on the
+  // checkout: the mock serves every folder under fixtures/tracks, and a developer's machine has
+  // more there than the two synthetic tracks — so read it from the answer instead of assuming.
+  let firstTitle: string | null = null;
+  await page.route(`${MOCK_URL}/tracks`, async (route) => {
+    if (++calls <= 2) return route.abort("connectionrefused");
+    const res = await route.fetch();
+    firstTitle ??= ((await res.json()) as { tracks: Array<{ title: string }> }).tracks[0]!.title;
+    return route.fulfill({ response: res });
+  });
 
   await page.goto("/h/BZQ7");
   await expect(page.getByText("Setting up your hive…")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: /Start the hive|Start anyway|Waiting for phones/ })).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("Up next:")).toContainText("Synthetic");
+  expect(firstTitle).toBeTruthy();
+  await expect(page.getByText("Up next:")).toContainText(firstTitle!);
   expect(calls).toBeGreaterThanOrEqual(3);
 });
 

@@ -2,7 +2,7 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from "bun:test";
 import { IDLE_CALIBRATION, PROTOCOL_VERSION, type ClientRecord, type RoomState } from "@hive/protocol";
-import { planStart, showTuningScreen, tuningFailsafeMs, tuningNote } from "./start-flow";
+import { planStart, showTuningScreen, tuningCancelLabel, tuningFailsafeMs, tuningNote } from "./start-flow";
 
 function player(i: number, over: Partial<ClientRecord> = {}): ClientRecord {
   return {
@@ -75,6 +75,15 @@ describe("tuningNote", () => {
   test("a failed run and a blocked microphone each get one short line", () => {
     expect(tuningNote({ calibrationState: "failed", micBlocked: false })).toMatch(/didn.t finish/);
     expect(tuningNote({ calibrationState: "idle", micBlocked: true })).toMatch(/microphone/);
+  });
+});
+
+describe("tuningCancelLabel", () => {
+  test("during Start's automatic tuning the button starts the music untuned, and says so", () => {
+    expect(tuningCancelLabel({ autoStart: true })).toBe("Skip tuning");
+  });
+  test("a tuning the host asked for is cancelled", () => {
+    expect(tuningCancelLabel({ autoStart: false })).toBe("Cancel");
   });
 });
 
