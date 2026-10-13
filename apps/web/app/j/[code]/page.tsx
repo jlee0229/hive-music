@@ -262,6 +262,16 @@ export default function PlayerPage({ params }: { params: Promise<{ code: string 
   useEffect(() => {
     if (hostHere) setHostSeen(true);
   }, [hostHere]);
+  // Also straight off the engine: "host arrived" and "host left" can land in one render batch (a
+  // slow phone, a busy main thread), and a render that only ever sees the second would not know
+  // there had been a host to come back.
+  useEffect(
+    () =>
+      client.on("state", (r) => {
+        if (r && (r.hostConnected ?? r.hostClientIds.some((id) => r.clients[id]?.connected))) setHostSeen(true);
+      }),
+    [client],
+  );
   const hostAway = hostSeen && !hostHere;
   const waitLine = hostAway ? "Waiting for the host to come back" : room?.transport.state === "paused" ? "Paused — waiting for the host" : "Waiting for the host to start";
 

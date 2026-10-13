@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AudioState, ClientRecord, Pattern, Role, RoomState } from "@hive/protocol";
 import { ROLE_COLORS } from "@hive/protocol";
 import type { ConnectionState, HiveClient, SyncStatus } from "@hive/sync-client";
@@ -124,8 +124,8 @@ export function PlayerPlayingScreen({
   // The beat pulse and the dim run at display rate, so they are written straight to the DOM: a
   // setState here re-rendered the whole screen 60 times a second on a phone that also has to keep
   // an audio thread fed. React state only carries the clock, which changes once a second.
-  useEffect(() => {
-    let raf: number;
+  useLayoutEffect(() => {
+    let raf = 0;
     let lastSec = -1;
     const bpm = room.track?.bpm;
     const tick = () => {
@@ -147,7 +147,10 @@ export function PlayerPlayingScreen({
       }
       raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    // Before the first paint, not a frame after it: this loop owns the ink colour, and when the
+    // part changes React repaints the fill at once but leaves whatever ink the old part's loop wrote
+    // last — a frame of the previous part's ink on the new colour.
+    tick();
     return () => cancelAnimationFrame(raf);
   }, [client, room.track?.bpm, pattern, depth, roleColor, ink, reducedMotion]);
 
