@@ -87,8 +87,8 @@ not set as of 2026-10-11 — without it the workflow stops in its first step and
 
 **First deploy after 2026-10-11 changes three things at once** — watch `fly logs` during it:
 the image is new (pinned Bun, non-root, self-seeding entrypoint: expect `[hive-entrypoint]` lines only if
-something had to be done or could not be), `fly.toml` now sets the machine to 1 GB + 512 MB swap (a cost change;
-see §7), and the restart policy is `always`. If the server does not come up, §4.
+something had to be done or could not be), `fly.toml` now writes the machine size out (256 MB, what production
+already ran on, plus 512 MB of swap; see §7), and the restart policy is `always`. If the server does not come up, §4.
 
 ### 2.4 Both (any change to `packages/protocol`, especially `PROTOCOL_VERSION`)
 
@@ -208,14 +208,17 @@ two synthetic tracks if the folder holds no track at all. The old manual step
 
 ## 7. Memory, and the tempo backfill
 
-**Memory** (measured locally 2026-10-11, Bun 1.4.2): idle ≈ 53 MB; one 10-minute upload peaks at ≈ 363 MB;
-four back to back ≈ 748 MB. `fly.toml` therefore asks for a 1 GB machine with 512 MB swap. Before 2026-10-11 the
-size was not in `fly.toml` at all; if `fly scale show` reports 256 MB on a machine deployed before that, long
-uploads have been able to kill the server. Do not size the machine below 512 MB.
+**Memory** (measured locally 2026-10-12, Bun 1.4.2): idle ≈ 53 MB; one upload peaks at ≈ 114 MB for a
+1-minute song, ≈ 178 MB for 4 minutes and ≈ 271 MB for the 10-minute maximum, and falls back afterwards because
+the work runs in a short-lived worker (it was ≈ 363 MB, and stayed high, before that). At most two uploads are
+processed at once. `fly.toml` keeps the machine at 256 MB — what production has always run on — with 512 MB of
+swap, so a long upload is slow rather than fatal. That is a cushion, not a fix: the audit's recommendation is
+512 MB or 1 GB (`memory = "512mb"` in `fly.toml`, then deploy), which costs a few dollars a month and is the
+owner's decision.
 
 **Tempo backfill.** Every uploaded track's `meta.json` carries `bpm`, `beatOffsetSec` and `bpmVersion`. At every
 boot the server walks the library and re-analyses any uploaded track whose `bpmVersion` differs from
-`BPM_ALGORITHM_VERSION` in `apps/server/src/upload/bpm.ts` (3 as of this writing), rewrites its `meta.json`, and
+`BPM_ALGORITHM_VERSION` in `apps/server/src/upload/bpm.ts` (4 as of this writing), rewrites its `meta.json`, and
 logs `bpm backfill: (re)analyzed tempo for N track(s) at vX`. To re-run tempo detection on the whole production
 library after improving the detector: bump that constant and deploy the server. It runs once per track per
 version (about 0.2 s per 10-minute track on a desktop, expect a few seconds each on Fly's shared CPU; it loads
