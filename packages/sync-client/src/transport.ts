@@ -4,7 +4,7 @@
  * they do with audio, so everything up to the message handler lives here and has exactly one
  * implementation to get wrong.
  */
-import { PROTOCOL_VERSION, parseServerMessage, type ClientMessage, type ServerMessage } from "@hive/protocol";
+import { PROTOCOL_VERSION, parseServerMessage, type ClientMessage, type ScenePlan, type ServerMessage } from "@hive/protocol";
 import { detectDevice, type ConnectionState, type HiveClientOptions, type HiveEvents } from "./index";
 
 export class Emitter {
@@ -70,6 +70,31 @@ export const RECONNECT_JITTER = 0.25;
  */
 export const jitteredReconnectDelayMs = (attempt: number, random: () => number = Math.random): number =>
   reconnectDelayMs(attempt) * (1 - RECONNECT_JITTER + 2 * RECONNECT_JITTER * random());
+
+/**
+ * `POST /rooms/:code/vibe`, shared by the real client and the stub.
+ *
+ * The host key goes in `Authorization: Bearer` (SG-09) so the endpoint can be locked to hosts; the
+ * server's CORS policy allows exactly `Content-Type, Authorization`. A refusal is an error the caller
+ * sees — with the status, and for 401/403 the reason — never a resolved promise with nothing in it.
+ */
+export async function postVibe(opts: Pick<HiveClientOptions, "apiUrl" | "roomCode" | "hostKey">, prompt: string): Promise<ScenePlan> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (opts.hostKey) headers.authorization = `Bearer ${opts.hostKey}`;
+  const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, { method: "POST", headers, body: JSON.stringify({ prompt }) });
+  if (!res.ok) {
+    const why =
+      res.status === 401 || res.status === 403
+        ? opts.hostKey
+          ? "the server did not accept this host key"
+          : "this client has no host key"
+        : "the request was refused";
+    throw Object.assign(new Error(`vibe failed: ${res.status} (${why})`), { status: res.status });
+  }
+  const body = (await res.json()) as { scenePlan?: ScenePlan };
+  if (!body.scenePlan) throw Object.assign(new Error("vibe failed: the server returned no scene plan"), { status: res.status });
+  return body.scenePlan;
+}
 
 export interface TransportHooks {
   /** Called with the arrival stamp of every server message, before it is dispatched. */

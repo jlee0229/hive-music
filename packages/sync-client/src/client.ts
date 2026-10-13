@@ -16,7 +16,7 @@ import {
 import { createBrowserAudioEngine } from "./audio";
 import { ClockModel, createEngineClock, CtxMapper, localNow } from "./clock";
 import type { StartDecision } from "./scheduler";
-import { Emitter, persistedClientId, RoomTransport } from "./transport";
+import { Emitter, persistedClientId, postVibe, RoomTransport } from "./transport";
 import type {
   CalibrationResult, ConnectionState, HiveAudio, HiveCalibration, HiveClient, HiveClientOptions, SyncStatus,
 } from "./index";
@@ -378,15 +378,7 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
       cancelCalibration: () => transport.send({ type: "CALIBRATION_CANCEL" }),
       resetCalibration: (clientId?: string) =>
         transport.send(clientId ? { type: "CALIBRATION_RESET", clientId } : { type: "CALIBRATION_RESET" }),
-      async vibe(prompt: string): Promise<ScenePlan> {
-        const res = await fetch(`${opts.apiUrl}/rooms/${opts.roomCode}/vibe`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ prompt }),
-        });
-        if (!res.ok) throw new Error(`vibe failed: ${res.status}`);
-        return ((await res.json()) as { scenePlan: ScenePlan }).scenePlan;
-      },
+      vibe: (prompt: string) => postVibe(opts, prompt),
     },
     get calibration() {
       return audio.calibration;
