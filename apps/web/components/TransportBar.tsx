@@ -37,13 +37,13 @@ export function TransportBar({ room, clock, host }: { room: RoomState; clock: Hi
   }
 
   return (
-    <div className="flex flex-col gap-2.5 rounded-[20px] border p-3.5" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+    <div className="flex flex-col gap-2 rounded-2xl border p-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
       <div className="flex items-center gap-3">
         <button
           aria-label={playing ? "Pause" : "Play"}
           onClick={() => (playing ? host.pause() : host.play())}
-          className="flex h-13 w-13 shrink-0 items-center justify-center rounded-full"
-          style={{ height: 52, width: 52, background: "var(--primary-fill)" }}
+          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full"
+          style={{ background: "var(--primary-fill)" }}
         >
           {playing ? (
             <svg width="18" height="18" viewBox="0 0 18 18" fill="var(--primary-text)" aria-hidden="true">
@@ -57,8 +57,8 @@ export function TransportBar({ room, clock, host }: { room: RoomState; clock: Hi
           )}
         </button>
         <div className="flex min-w-0 grow flex-col gap-0.5">
-          <span className="line-clamp-2 text-[16px] font-semibold [overflow-wrap:anywhere]">{room.track?.title ?? "No track"}</span>
-          <span className="text-[13px]" style={{ color: "var(--muted)" }}>
+          <span className="line-clamp-2 text-base font-semibold [overflow-wrap:anywhere]">{room.track?.title ?? "No song"}</span>
+          <span className="text-sm" style={{ color: "var(--muted)" }}>
             {modeLabel(room.mode.kind)} ·{" "}
             <span className="font-mono">
               {formatTrackTime(trackTimeSec)} / {formatTrackTime(duration)}

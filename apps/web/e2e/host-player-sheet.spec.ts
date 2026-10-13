@@ -14,7 +14,8 @@ test.describe("parts only where there are parts", () => {
 
     await page.goto("/h/BZQ7");
     await page.getByRole("button", { name: "Unison", exact: true }).click();
-    await expect(page.getByText("drag to place · tap a phone for more")).toBeVisible({ timeout: 10_000 });
+    // Wait for the room to be in Unison (the legend's hint line used to be the cue; it is gone).
+    await expect(page.getByRole("button", { name: "Unison", exact: true })).toHaveAttribute("aria-pressed", "true", { timeout: 10_000 });
 
     await page.locator('g[data-client-id="mock-01-maya"]').click();
     const sheet = page.getByRole("dialog");

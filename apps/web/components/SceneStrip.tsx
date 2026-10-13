@@ -39,7 +39,8 @@ export function SceneStrip({ room, clock }: { room: RoomState; clock: HiveClock 
           <div
             key={i}
             data-active={active ? "true" : "false"}
-            className="flex h-10 flex-col justify-center rounded-[10px] px-2.5"
+            // min-w-0 + truncate: a short scene's two lines used to wrap to three and spill out of the box.
+            className="flex h-11 min-w-0 flex-col justify-center rounded-xl px-2"
             style={{
               flexGrow: width || 1,
               flexBasis: 0,
@@ -48,10 +49,10 @@ export function SceneStrip({ room, clock }: { room: RoomState; clock: HiveClock 
               color: "var(--muted)",
             }}
           >
-            <span className="text-xs font-semibold" style={{ color: "var(--text)" }}>
+            <span className="truncate text-xs font-semibold" style={{ color: "var(--text)" }}>
               {scene.note}
             </span>
-            <span className="text-[11px]">
+            <span className="truncate text-xs">
               {modeLabel(scene.mode).toLowerCase()} · {formatTrackTime(scene.atTrackSec)}
             </span>
           </div>

@@ -27,24 +27,23 @@ export function StrobeControls({ room, host }: { room: RoomState; host: HiveHost
   const p = resolveModeParams(mode);
   const groups = strobeGroupsRow(room);
   const chip = (active: boolean): React.CSSProperties => ({
-    borderColor: active ? "var(--primary-fill)" : "var(--border)",
+    borderColor: active ? "var(--primary-fill)" : "var(--border-strong)",
     background: active ? "var(--primary-fill)" : "transparent",
     color: active ? "var(--primary-text)" : "var(--text)",
-    fontWeight: active ? 600 : 500,
   });
   return (
-    <div className="flex flex-col gap-1.5 rounded-2xl border p-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+    <div className="flex flex-col gap-2 rounded-2xl border p-3" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
       <span className="text-xs" style={{ color: "var(--muted)" }}>
         Beat
       </span>
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-4 gap-2">
         {DIVISIONS.map((d) => (
           <button
             key={d.label}
             onClick={() => host.setMode("STROBE", { ...mode.params, beatsPerSwitch: d.beats })}
             disabled={bpm == null}
             aria-pressed={p.beatsPerSwitch === d.beats}
-            className="h-11 min-w-0 rounded-full border text-sm disabled:opacity-50"
+            className="h-11 min-w-0 rounded-full border text-sm font-semibold disabled:opacity-50"
             style={chip(p.beatsPerSwitch === d.beats)}
           >
             {d.label}
@@ -53,17 +52,18 @@ export function StrobeControls({ room, host }: { room: RoomState; host: HiveHost
       </div>
       {groups.choices.length > 0 ? (
         <>
-          <span className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
             Groups
           </span>
-          {/* Always six columns: chips keep their size and place as phones come and go. */}
-          <div className="grid grid-cols-6 gap-1.5" data-testid="strobe-groups">
+          {/* Always the same columns: chips keep their size and place as phones come and go. Six
+              across from 360 px; three across on a narrower phone, where six would be 37 px chips. */}
+          <div className="grid grid-cols-3 gap-2 min-[360px]:grid-cols-6" data-testid="strobe-groups">
             {groups.choices.map((g) => (
               <button
                 key={g}
                 onClick={() => host.setMode("STROBE", { ...mode.params, groups: g })}
                 aria-pressed={groups.effective === g}
-                className="h-11 min-w-0 rounded-full border text-sm"
+                className="h-11 min-w-0 rounded-full border text-sm font-semibold"
                 style={chip(groups.effective === g)}
               >
                 {g}
@@ -72,7 +72,7 @@ export function StrobeControls({ room, host }: { room: RoomState; host: HiveHost
           </div>
         </>
       ) : null}
-      <span className="mt-0.5 text-xs" style={{ color: "var(--faint)" }}>
+      <span className="text-xs" style={{ color: "var(--faint)" }}>
         {bpm != null ? `${Math.round(bpm)} BPM — strobing on the beat` : "No tempo detected for this song — steady strobe"}
       </span>
     </div>

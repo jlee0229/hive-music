@@ -49,11 +49,11 @@ export function NudgeSlider({
         className="h-11 w-full"
         style={{ accentColor: dark ? "#F1F5F9" : "#0B0F14" }}
       />
-      <div className="flex justify-between text-[11px]" style={{ color: mutedColor }}>
+      <div className="flex justify-between text-xs" style={{ color: mutedColor }}>
         <span>−{NUDGE_RANGE_MS} · sounds early</span>
         <span>sounds late · +{NUDGE_RANGE_MS}</span>
       </div>
-      <span className="text-[11px]" style={{ color: mutedColor }}>
+      <span className="text-xs" style={{ color: mutedColor }}>
         Small moves are absorbed — try ±20
       </span>
     </div>
