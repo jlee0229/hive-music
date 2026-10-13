@@ -27,6 +27,8 @@ export interface RecordingServerOptions {
   protocolVersion?: number | (() => number);
   /** Status for POST /rooms/:code/vibe (default 200 with a one-scene plan). */
   vibeStatus?: number;
+  /** What WELCOME.isHost says for a JOIN; defaults to "it asked to be a host". */
+  isHost?: (join: RecordedJoin) => boolean;
 }
 
 export function startRecordingServer(opts: RecordingServerOptions = {}) {
@@ -66,9 +68,10 @@ export function startRecordingServer(opts: RecordingServerOptions = {}) {
         frames.push(text);
         const msg = JSON.parse(text) as { type: string } & Record<string, unknown>;
         if (msg.type !== "JOIN") return;
-        joins.push({ ...(msg as unknown as Omit<RecordedJoin, "raw">), raw: text });
+        const join = { ...(msg as unknown as Omit<RecordedJoin, "raw">), raw: text };
+        joins.push(join);
         const version = typeof opts.protocolVersion === "function" ? opts.protocolVersion() : (opts.protocolVersion ?? PROTOCOL_VERSION);
-        ws.send(JSON.stringify({ type: "WELCOME", clientId: msg.clientId, roomCode: msg.roomCode, serverTime: Date.now(), protocolVersion: version, isHost: msg.kind === "host" }));
+        ws.send(JSON.stringify({ type: "WELCOME", clientId: msg.clientId, roomCode: msg.roomCode, serverTime: Date.now(), protocolVersion: version, isHost: opts.isHost ? opts.isHost(join) : msg.kind === "host" }));
       },
     },
   });

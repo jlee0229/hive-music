@@ -140,6 +140,8 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
   let lastPositionSent = 0;
   let positionFlush: ReturnType<typeof setTimeout> | null = null;
 
+  /** `WELCOME.isHost`; null until the first WELCOME. */
+  let isHost: boolean | null = null;
   let protocolMismatch: { server: number; client: number } | null = null;
   /** PROTO-13: nothing used to read WELCOME.protocolVersion, so a stale open tab never found out. */
   const noteProtocolVersion = (server: number): void => {
@@ -155,11 +157,12 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     clientId,
     {
       onWelcome: (msg) => {
+        isHost = msg.isHost;
         noteProtocolVersion(msg.protocolVersion);
         clock.onReconnect();
         startTimers();
       },
-      onConnection: (state) => ev.emit("connection", state),
+      onConnection: (state) => ev.emit("connection", state, isHost),
       onReconnect: () => {
         stopTimers();
         clock.onReconnect();
@@ -310,6 +313,9 @@ export function createHiveClient(opts: HiveClientOptions, internals: CreateHiveC
     },
     get connection(): ConnectionState {
       return transport.connection;
+    },
+    get isHost() {
+      return isHost;
     },
     get protocolMismatch() {
       return protocolMismatch;

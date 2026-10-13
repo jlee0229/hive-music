@@ -34,6 +34,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
   let pairTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPositionSent = 0;
   let protocolMismatch: { server: number; client: number } | null = null;
+  let isHost: boolean | null = null;
   let probeGroup = 0;
   let lastReadyAnnounceAt = -Infinity;
   let lastReadyAnnounced: string | null = null;
@@ -83,11 +84,12 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     clientId,
     {
       onWelcome: (msg) => {
+        isHost = msg.isHost;
         protocolMismatch = msg.protocolVersion === PROTOCOL_VERSION ? null : { server: msg.protocolVersion, client: PROTOCOL_VERSION };
         if (protocolMismatch) ev.emit("protocolMismatch", msg.protocolVersion, PROTOCOL_VERSION);
         startTimers();
       },
-      onConnection: (c) => ev.emit("connection", c),
+      onConnection: (c) => ev.emit("connection", c, isHost),
       onReconnect: () => stopTimers(),
       onMessage: (m, at) => {
         switch (m.type) {
@@ -167,6 +169,7 @@ export function createStubClient(opts: HiveClientOptions): HiveClient {
     get me() { return me(); },
     get assignment() { return me()?.assignment ?? null; },
     get connection(): ConnectionState { return transport.connection; },
+    get isHost() { return isHost; },
     get protocolMismatch() { return protocolMismatch; },
     get status() { return status(); },
     clock: {

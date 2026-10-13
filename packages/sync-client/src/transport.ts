@@ -260,8 +260,10 @@ export class RoomTransport {
         if (msg.type === "WELCOME") {
           welcomed = true;
           this.attempt = 0;
-          this.setConnection("open");
+          // The hook first: what WELCOME says (isHost, the protocol version) has to be in place by the
+          // time anyone hears that the connection is open.
           this.hooks.onWelcome(msg);
+          this.setConnection("open");
           this.hooks.onMessage?.(msg, at);
           resolve();
           return;

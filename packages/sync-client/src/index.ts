@@ -96,7 +96,12 @@ export type HiveEvents = {
   health: (clients: Record<string, HealthSnapshot>, serverTime: number) => void;
   /** Sync numbers changed (after every probe). */
   status: (status: SyncStatus) => void;
-  connection: (state: ConnectionState) => void;
+  /**
+   * The second argument is `client.isHost` at that moment: null until the first WELCOME, then what the
+   * latest WELCOME said. It is already up to date when "open" is emitted, on the first join and after
+   * every reconnect.
+   */
+  connection: (state: ConnectionState, isHost: boolean | null) => void;
   audio: (state: AudioState, loadProgress: number) => void;
   /** Own assignment changed (derived from `state`, emitted for convenience). */
   assignment: (assignment: Assignment | null) => void;
@@ -201,6 +206,14 @@ export interface HiveClient {
   readonly me: ClientRecord | null;
   readonly assignment: Assignment | null;
   readonly connection: ConnectionState;
+  /**
+   * Whether the server seated this socket as a host: `WELCOME.isHost`. Null before the first WELCOME,
+   * updated on every one — it can go from true to false across a reconnect (the room was re-created
+   * under another key), and a host JOIN with a missing or wrong key is answered `false` even though
+   * `me` may then resolve to the host's own record (a read-only observer seat). This, not
+   * `room.hostClientIds`, is what tells a page whether its controls will be obeyed.
+   */
+  readonly isHost: boolean | null;
   /** Set by the last WELCOME if its protocol version differs from this bundle's; null when they agree. */
   readonly protocolMismatch: { server: number; client: number } | null;
   readonly status: SyncStatus;
