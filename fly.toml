@@ -37,6 +37,11 @@ swap_size_mb = 512
   PORT = "8080"
   # Origin of the web app; the server builds the join URL in POST /rooms from it.
   NEXT_PUBLIC_WEB_URL = "https://playhivemusic.com"
+  # Fly's edge sets Fly-Client-IP on every request, so behind it the header is the caller. Without
+  # this the server keys its per-caller limits on the proxy's address and every phone in the world
+  # shares one budget (30 new hives a minute between them). Never set it on a host with no proxy:
+  # there the header is whatever the client typed.
+  TRUST_PROXY_IP = "1"
 
 # What production has run on since launch (`fly scale show`, 2026-10-11). Written out so a deploy
 # can never change the bill by accident. The audit's recommendation is 512mb or 1gb — a few
