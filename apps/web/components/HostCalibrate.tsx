@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { CALIBRATION_COUNTDOWN_MS, type RoomState } from "@hive/protocol";
 import type { HiveClock, HiveHostControls } from "@hive/sync-client";
-import { formatMs } from "@/lib/hive/derive";
 import { safeAreaPadding } from "@/lib/hive/safe-area";
 
 type RowStatus = "waiting" | "listening" | "clear";
@@ -51,21 +50,18 @@ export function HostCalibrate({
   });
 
   return (
-    <div className="fixed inset-0 z-40 mx-auto flex max-w-md flex-col gap-4.5" style={{ background: "var(--stage)", padding: safeAreaPadding(52, 24, 28) }}>
+    <div className="fixed inset-0 z-40 mx-auto flex max-w-md flex-col gap-4" style={{ background: "var(--stage)", padding: safeAreaPadding(16, 20, 16) }}>
       <div className="flex items-center justify-between">
         <span className="font-display text-xl font-bold">Tuning moment</span>
-        <span
-          className="font-mono rounded-full border px-3 py-1.5 text-xs tracking-widest"
-          style={{ borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
-        >
-          {state === "countdown" ? "STARTING" : state === "running" ? "LISTENING" : state === "failed" ? "FAILED" : "DONE"}
+        <span className="eyebrow rounded-full border px-3 py-1.5" style={{ borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}>
+          {state === "countdown" ? "Starting" : state === "running" ? "Listening" : state === "failed" ? "Failed" : "Done"}
         </span>
       </div>
 
       {micError ? (
         <div
           role="alert"
-          className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium"
+          className="flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold"
           style={{ background: "var(--ringer-bg)", borderColor: "var(--ringer-border)", color: "var(--ringer-fg)" }}
         >
           <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--ringer-fg)" }} />
@@ -73,7 +69,7 @@ export function HostCalibrate({
         </div>
       ) : null}
 
-      <div className="flex items-center gap-4 rounded-[20px] border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+      <div className="flex shrink-0 items-center gap-4 rounded-2xl border p-4" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
         <div className="relative flex h-[84px] w-[84px] shrink-0 items-center justify-center">
           <svg width="84" height="84" viewBox="0 0 84 84" fill="none" className="absolute left-0 top-0" aria-hidden="true">
             <circle cx="42" cy="42" r="37" stroke="var(--raised)" strokeWidth="6" />
@@ -88,27 +84,25 @@ export function HostCalibrate({
               transform="rotate(-90 42 42)"
             />
           </svg>
-          <span className="font-display text-3xl font-extrabold">{state === "countdown" ? secondsLeft : doneCount}</span>
+          <span className="font-display text-[2rem] leading-none font-extrabold">{state === "countdown" ? secondsLeft : doneCount}</span>
         </div>
         <div className="flex flex-col gap-1">
-          <span className="font-display text-[22px] font-bold leading-tight">
+          <span className="font-display text-xl font-bold leading-tight">
             {state === "failed" ? "Couldn't finish." : "Quiet, please."}
           </span>
-          <span className="text-[13px] leading-snug" style={{ color: "var(--muted)" }}>
-            {state === "failed"
-              ? "Try again in a quieter moment, or closer to the group."
-              : "Each phone plays one click. This phone listens and measures how late each one is."}
+          <span className="text-sm leading-snug" style={{ color: "var(--muted)" }}>
+            {state === "failed" ? "Try again in a quieter moment, or closer to the group." : "Each phone plays one click. This phone listens."}
           </span>
         </div>
       </div>
 
       {/* The one part of this screen that grows with the party: it scrolls, so the buttons below
           stay on screen (at 30 phones they used to be pushed far below a screen that cannot scroll). */}
-      <div className="flex min-h-0 shrink flex-col gap-2 overflow-y-auto">
+      <div className="flex min-h-0 shrink flex-col gap-2 overflow-y-auto overscroll-contain">
         {rows.map((row) => (
           <div
             key={row.id}
-            className="flex shrink-0 items-center gap-3 rounded-[14px] border px-3.5 py-3"
+            className="flex min-h-11 shrink-0 items-center gap-3 rounded-xl border px-4 py-2"
             style={{
               background: "var(--surface)",
               borderColor: row.status === "listening" ? "var(--ringer-fg)" : "var(--border)",
@@ -116,16 +110,12 @@ export function HostCalibrate({
             }}
           >
             <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: "var(--muted)", opacity: row.status === "waiting" ? 0.5 : 1 }} />
-            <span className="min-w-0 grow truncate text-[15px] font-medium">{row.name}</span>
+            <span className="min-w-0 grow truncate text-base font-semibold">{row.name}</span>
             {row.status === "clear" ? (
-              <>
-                <span className="font-mono text-[13px]" style={{ color: "var(--muted)" }}>
-                  {formatMs(results[row.id]!.residualMs)}
-                </span>
-                <span className="text-xs" style={{ color: "var(--health-good)" }}>
-                  clear ✓
-                </span>
-              </>
+              // "clear" is the news. How many milliseconds late the phone was is the engine's business.
+              <span className="text-xs" style={{ color: "var(--health-good)" }}>
+                clear ✓
+              </span>
             ) : row.status === "listening" ? (
               <span className="text-xs" style={{ color: "var(--ringer-fg)" }}>
                 listening…
@@ -137,25 +127,21 @@ export function HostCalibrate({
         ))}
       </div>
 
-      <span className="text-xs leading-snug" style={{ color: "var(--faint)" }}>
-        Faint clicks are fine. A noisy room or a phone far from this one lowers confidence; you can re-run tuning any time.
-      </span>
-
       <div className="grow" />
 
-      <div className="flex shrink-0 flex-col gap-2.5">
+      <div className="flex shrink-0 flex-col gap-2">
         {state === "done" || state === "failed" ? (
           <button
             onClick={onClose}
-            className="flex h-14 items-center justify-center rounded-2xl text-lg font-semibold"
+            className="flex h-14 items-center justify-center rounded-2xl text-xl font-semibold"
             style={{ background: "var(--primary-fill)", color: "var(--primary-text)" }}
           >
-            {state === "failed" ? "Back to the stage" : "Apply offsets"}
+            {state === "failed" ? "Back to the stage" : "Done"}
           </button>
         ) : null}
         <button
           onClick={handleCancel}
-          className="flex h-12 items-center justify-center rounded-2xl text-[15px] font-semibold"
+          className="flex h-14 items-center justify-center rounded-2xl text-base font-semibold"
           style={{ color: "var(--muted)" }}
         >
           {cancelLabel}

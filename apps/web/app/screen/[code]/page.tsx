@@ -192,7 +192,7 @@ export default function ScreenPage({ params }: { params: Promise<{ code: string 
             <div className="flex min-h-0 grow items-center justify-center">
               <HiveMap room={room} health={health} healthServerTime={healthServerTime} clock={client.clock} size={mapSize} excludeClientId={client.clientId} />
             </div>
-            <Legend readOnly />
+            <Legend readOnly mode={room.mode.kind} />
           </>
         ) : null}
       </div>
