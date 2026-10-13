@@ -202,6 +202,16 @@ test("07b-restart: server restarts while the host's tab is closed (guests alone)
   expect.soft(party.host.room?.code, "same room code").toBe(code);
   expect.soft(party.metrics.restart && (party.metrics.restart as { playersAfter: number }).playersAfter, "all three guests are back in the room").toBe(3);
   expect.soft(soundBackAt, "every guest sounding again after the host returned").not.toBeNull();
+  // PARTY-01: the guests were never refused — each one's JOIN was held by the server until the host's
+  // key restored the room, so each is WELCOMEd again on its own, and none ends up on a dead screen.
+  for (const o of await outage(party.guests, killedWall)) expect.soft(o.rejoinedMs, `${o.name} was let back into the hive without touching the phone`).not.toBeNull();
+  expect.soft(party.guests.flatMap((g) => g.serverErrors.filter((e) => e.at >= killedWall).map((e) => `${g.name}:${e.code}`)), "no guest was sent an ERROR while waiting for the host").toEqual([]);
+  expect
+    .soft(
+      end.slice(1).filter((s) => s.screen !== "guest:playing").map((s) => `${s.name}:${s.screen}`),
+      "every guest is on the playing screen once the host has pressed Start",
+    )
+    .toEqual([]);
   party.metrics.issuesAll = party.issues();
   const unexpected = party.unexpectedIssues(/ERR_CONNECTION_REFUSED|WebSocket connection to|Failed to fetch|net::ERR_/);
   expect.soft(unexpected, "errors other than the outage itself").toEqual([]);
